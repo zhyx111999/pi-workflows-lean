@@ -1,7 +1,6 @@
 /**
  * Shared registry of the built-in workflow patterns
- * (`deep-research`, `code-review`, `multi-perspective`, `codebase-audit`).
- * Cross-check passes are not included; the parent model reviews raw results.
+ * (`deep-research`). Review and audit patterns are not registered.
  *
  * This is the single place that turns a pattern's name + caller-supplied args
  * into a runnable script (and, where a pattern needs it, an exec context such
@@ -13,20 +12,9 @@
  */
 
 import { createCodingTools, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
-import { generateCodeReviewWorkflow } from "./code-review.js";
-import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
+import { generateDeepResearchWorkflow } from "./deep-research.js";
 import { createWebTools } from "./web-tools.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
-
-/** Default perspective set used when a caller gives fewer than two. */
-export const DEFAULT_MULTI_PERSPECTIVES: readonly string[] = [
-  "technical",
-  "product",
-  "security",
-  "user experience",
-  "maintainability",
-];
 
 /** A resolved, ready-to-run script plus the exec context it needs (if any). */
 export interface BuiltinWorkflowInvocation {
@@ -54,16 +42,7 @@ function requireNonEmptyString(value: unknown, argName: string, patternName: str
   return value;
 }
 
-function requireStringArray(value: unknown, argName: string, patternName: string): string[] {
-  if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v.trim())) {
-    throw new Error(
-      `Built-in workflow "${patternName}" requires args.${argName} to be a non-empty array of non-empty strings.`,
-    );
-  }
-  return value;
-}
-
-/** The 5 curated built-in workflow patterns, keyed by their stable name. */
+/** Built-in workflow patterns, keyed by their stable name. */
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
   {
     name: "deep-research",
@@ -78,44 +57,6 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
         tools: [...createCodingTools(cwd), ...createWebTools()],
         toolset: "web-research",
       };
-    },
-  },
-  {
-    name: "code-review",
-    description:
-      "Multi-angle parallel code review. Finders return raw findings. args: { diff: string, diffSource?: string }.",
-    resolve(_cwd, args) {
-      // Truncation past MAX_DIFF_CHARS already happens inside the generated
-      // script at runtime (see code-review.ts); a caller invoking by name is
-      // responsible for supplying `diff` (e.g. by running `git diff` itself),
-      // unlike the /code-review slash command, which fetches it automatically.
-      requireNonEmptyString(asRecord(args).diff, "diff", "code-review");
-      return { script: generateCodeReviewWorkflow() };
-    },
-  },
-  {
-    name: "multi-perspective",
-    description:
-      "Analyze a topic from several independent perspectives in parallel and return the analyses. args: { topic: string, perspectives?: string[] }.",
-    resolve(_cwd, args) {
-      const record = asRecord(args);
-      const topic = requireNonEmptyString(record.topic, "topic", "multi-perspective");
-      const perspectives =
-        Array.isArray(record.perspectives) && record.perspectives.length >= 2
-          ? requireStringArray(record.perspectives, "perspectives", "multi-perspective")
-          : [...DEFAULT_MULTI_PERSPECTIVES];
-      return { script: generateMultiPerspectiveWorkflow(topic, perspectives) };
-    },
-  },
-  {
-    name: "codebase-audit",
-    description:
-      "Run parallel checks against a codebase scope and return the findings. args: { scope: string, checks: string[] }.",
-    resolve(_cwd, args) {
-      const record = asRecord(args);
-      const scope = requireNonEmptyString(record.scope, "scope", "codebase-audit");
-      const checks = requireStringArray(record.checks, "checks", "codebase-audit");
-      return { script: generateCodebaseAuditWorkflow(scope, checks) };
     },
   },
 ];

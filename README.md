@@ -16,7 +16,7 @@
 
 Turn one request into a JavaScript orchestration script that fans work out across isolated subagents, routes each task to the right model, cross-checks the results, and returns one synthesized answer. Intermediate work stays in script variables instead of filling your chat context.
 
-Built for **codebase-wide audits, multi-perspective review, large refactors, and source-checked research**—the jobs that are too broad for one agent and one context window.
+Built for work that is too broad for one agent and one context window. The built-in pattern left in this fork is `/deep-research`.
 
 ![A real pi-dynamic-workflows run showing parallel agents and live progress](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/demo.gif)
 
@@ -123,33 +123,10 @@ The installed extension generates this compact index from its executable capabil
 ## Built-in workflows
 
 ```text
-/deep-research <question>   source-checked web research with citations
-/adversarial-review <task>  findings challenged by skeptical reviewers
-/multi-perspective "<topic>" [angle …]
-                            independent angles followed by synthesis
-/code-review [target]       7 parallel review angles plus verification
-/codebase-audit <scope> "<check>" …
-                            parallel checks followed by cross-validation
+/deep-research <question>   web research that returns sourced claims
 ```
 
-`/code-review` defaults to the current working diff. It also accepts a git range, a file, or a GitHub PR number:
-
-```text
-/code-review
-/code-review HEAD~3..HEAD
-/code-review src/foo.ts
-/code-review 42
-```
-
-For an always-on exhaustive mode, use `/ultracode`; `/effort high` is the lighter standing option.
-
-These same 5 patterns are also reachable by name without a slash command — Pi can recognize a decomposable request and run the matching curated pattern directly:
-
-```text
-Do a deep-research on whether Bun's test runner is production-ready.
-```
-
-is equivalent to `/deep-research "..."`. A saved workflow always wins over a built-in of the same name, on both the slash-command and natural-language paths — so saving your own `code-review` shadows the built-in one everywhere.
+`/deep-research` is also reachable by name without a slash command. A saved workflow of the same name wins over the built-in.
 
 ## Commands and run control
 
