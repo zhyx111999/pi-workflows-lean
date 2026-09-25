@@ -1,5 +1,7 @@
 # Specialized helpers
 
+`completenessCheck()` is removed. Do not call it. `loopUntilDry`, `gate`, and `checkpoint` below are still available.
+
 Preserve candidate or work identity outside helper results that may omit failed agents.
 
 ## Quality

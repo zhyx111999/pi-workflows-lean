@@ -81,7 +81,7 @@ return await agent(
 - **Git worktree isolation** — parallel agents edit on separate branches with `isolation: "worktree"`. Kept by default for merge; pass `keepWorktree: false` to delete (tests).
 - **Measured usage** — report real tokens and cost from each subagent session; add run, phase, or agent budgets only when you want them. When a provider session ends without reporting usage, the affected totals are heuristic character estimates and UI token surfaces render them with a `~` prefix (e.g. `~640 tok`) — never silently as metered figures. (Script-facing `budget.spent()/remaining()` are raw numbers and cannot carry the marker.)
 - **Visible background runs** — track phases, agents, models, fresh/cache tokens, cost, and live tok/s from the progress panel or `/workflows` navigator.
-- **Quality patterns** — compose `verify()`, `judgePanel()`, `loopUntilDry()`, and `completenessCheck()` instead of rebuilding review loops.
+- **Control helpers** — `retry()`, `gate()`, `loopUntilDry()`, and `checkpoint()` are optional script helpers. Cross-check helpers are not included.
 - **Reusable workflows** — save any run as a command and call saved workflows from other workflows.
 
 ## Supported workflow capabilities
@@ -95,10 +95,7 @@ The installed extension generates this compact index from its executable capabil
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
 | workflow | runtime-global | `workflow(savedName, childArgs?) => Promise<unknown>` | — |
-| verify | runtime-global | `verify(item: unknown, options?: { reviewers?: number; threshold?: number; lens?: string \| string[] }) => Promise<{ real: boolean; realCount: number; total: number; votes: Array<{ real: boolean; reason?: string }> }>` | `reviewers`: number (optional; default: 2)<br>`threshold`: number (optional; default: 0.5)<br>`lens`: string \| string[] (optional) |
-| judgePanel | runtime-global | `judgePanel(attempts: unknown[], options?: { judges?: number; rubric?: string }) => Promise<{ index: number; attempt: unknown; score: number; judgments: Array<{ score: number; reason?: string }> } \| undefined>` | `judges`: number (optional; default: 3)<br>`rubric`: string (optional; default: "overall quality and correctness") |
 | loopUntilDry | runtime-global | `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>` | `round`: (roundIndex: number) => unknown[] \| Promise<unknown[]> (required)<br>`key`: (item: unknown) => string (optional; default: JSON.stringify)<br>`consecutiveEmpty`: number (optional; default: 2)<br>`maxRounds`: number (optional; default: 50) |
-| completenessCheck | runtime-global | `completenessCheck(taskArgs: unknown, results: unknown) => Promise<{ complete: boolean; missing?: string[] } \| null>` | — |
 | retry | runtime-global | `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>` | `attempts`: number (optional; default: 3)<br>`until`: (result: unknown) => boolean (optional; default: accept first result when omitted) |
 | gate | runtime-global | `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>` | `attempts`: number (optional; default: 3) |
 | checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true when no UI and omitted)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
@@ -143,8 +140,6 @@ Pi can manage background runs directly with the `workflow_control` tool instead 
 | `/workflows-trigger set <word>\|reset` | Set or reset the trigger word |
 | `/workflows-progress compact\|detailed\|status\|max <N>` | Live-panel detail level (and max agents shown per phase in detailed mode) |
 | `/workflows-models` | Map model tiers and thinking levels |
-| `/ultracode [off]` | Toggle exhaustive automatic workflows |
-| `/effort off\|high\|ultra` | Set the standing orchestration effort |
 
 In the navigator: `↑/↓` select · `PgUp/PgDn` page · `Home/End` jump · `/` filter runs by name, ID, or status and saved workflows by name or description · `enter/→` open · `esc/←` back. Filter text updates the visible list immediately; `enter` commits the draft filter. In filter-edit mode, `esc` cancels the draft and keeps the committed query; in browse mode, `esc` first clears an existing filter without closing the navigator, and only a second `esc` with no filter backs/closes normally. On a run, `p` pauses (press `p` again to confirm), `x` stops (press `x` again to confirm), `r` restarts, and `s` saves; these lifecycle controls remain bound to the run while viewing its phases, agents, or detail. On a saved workflow (including its detail view), `r` renames and `x` deletes (press `x` again to confirm). Rename `enter` commits and `esc` cancels; names cannot contain whitespace, controls, or path separators. `q` quits.
 
@@ -158,10 +153,11 @@ Agent details use a compact summary by default: completed agents show their fina
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently and preserve input order |
 | `pipeline(items, ...stages)` | Fan items through sequential stages |
 | `phase(title, { budget? })` | Group work in the live view and optionally set a phase budget |
-| `verify` / `judgePanel` | Cross-check a result or choose the best candidate |
-| `loopUntilDry` / `completenessCheck` | Repeat discovery until no new findings remain |
+| `retry(thunk, opts)` | Rerun a step until a condition accepts it |
+| `gate(thunk, validator, opts)` | Rerun a step with validator feedback |
+| `loopUntilDry(opts)` | Repeat a round until it stops adding items |
 | `workflow(name, args)` | Run a saved workflow inline |
-| `checkpoint(prompt, opts)` | Add a journaled human-approval gate |
+| `checkpoint(prompt, opts)` | Journaled pause; background runs use the headless default |
 | `budget` | Inspect tokens spent and remaining (raw numbers; UI surfaces mark heuristic estimates with `~`) |
 
 | Agent option | Description |
@@ -219,8 +215,6 @@ Omitted `tokenBudget` and `agentTimeoutMs` values use configured `defaultTokenBu
 
 Child sessions intentionally disable host extensions to avoid per-child factory churn and recursive orchestration. Some providers require extension request/auth hooks in addition to a shared model registry. To opt in, set `"providerMiddlewareExtensions": ["example-provider-adapter"]` in `~/.pi/workflows/settings.json` (also available on `WorkflowAgent`, `runWorkflow`, and `WorkflowManager` SDK options). Omitted or `[]` keeps all host extensions disabled. Names match an extension filename without its JS/TS suffix, an exact npm package identity, or a resolved local/Git package source name, case-insensitively; ancestor directory names do not authorize descendants; only enabled resources are considered, and project resources still require Pi project trust. `pi-dynamic-workflows`, `workflow`, and `pi-subagents` are always excluded, even if allowlisted. Only allow trusted, child-safe middleware: the allowlist enables whole extensions, not a hook-only sandbox, and opted-in factories and runtimes are isolated per child session and receive session_shutdown before disposal. Extension-free resource loaders remain shared. Explicit SDK resource-loader injection remains authoritative and bypasses this discovery filter.
 
-Set `"defaultEffort": "high"` or `"ultra"` in that settings file to opt a fresh session into the corresponding orchestration effort (`"off"` is the default). Project settings overlay the global value. This is an initial in-memory value only: `/effort` and `/ultracode` change the current session without writing settings, and reload/new/fork/session switches retain their existing in-process effort.
-
 A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `agentRetries: 1-2` rather than treating an isolated empty output as a failed run. Because an exhausted recoverable failure resolves to `null` rather than throwing, a run whose **every** agent came back empty still reports `completed`; when that happens the runtime logs a prominent `⚠ Workflow produced no usable results` warning (naming the empty agents and pointing at `agentRetries` and output-token limits) so an all-null fleet can't be mistaken for success.
 
 Pausing and resuming a run keeps the limits it started with — `maxAgents`, `agentTimeoutMs`, `concurrency`, and `agentRetries` carry over instead of falling back to defaults, and `tokenBudget` tracking is cumulative across the pause, so a run can't reset its spend by pausing and resuming.
@@ -247,7 +241,7 @@ Run storage uses a small versioned `<runId>.json` index head plus an append-only
 
 Completed background runs retain their full result in run storage. Conversation delivery also creates an immutable JSON result artifact (`<runId>.json.result-<content-hash>`) and links to it, so a shortened summary still has a directly readable full result. These artifacts are removed with the run. Other Pi extensions can subscribe to the exported `WORKFLOW_LIFECYCLE_EVENT` through `pi.events`. Background workflows emit `{ status, runId, name }` and include `sessionId` when the originating Pi session is known, where `status` is `started`, `resumed`, `paused`, `completed`, `failed`, or `stopped`.
 
-In-process session replacements (`/reload`, `/new`, resume, fork) keep the live workflow manager when the installed extension version has not changed. Active background runs therefore continue streaming progress, remain controllable, and deliver their result into the replacement session; session-local `/effort` also survives. If the package version changes, or the process is exiting, active runs are paused onto the journal recovery path instead of mixing extension versions or burning tokens after teardown. A process restart uses the same durable journal path, recovering an interrupted running workflow as paused so it can be resumed safely.
+In-process session replacements (`/reload`, `/new`, resume, fork) keep the live workflow manager when the installed extension version has not changed. Active background runs therefore continue streaming progress, remain controllable, and deliver their result into the replacement session. If the package version changes, or the process is exiting, active runs are paused onto the journal recovery path instead of mixing extension versions or burning tokens after teardown. A process restart uses the same durable journal path, recovering an interrupted running workflow as paused so it can be resumed safely.
 
 Finished runs (completed, failed, or aborted) are retained in full on disk, capped at the 300 most recent per project — older ones are evicted first; running, paused, leased and undelivered runs are protected. Only a smaller number (20 by default) also stay fully loaded in the live manager. History listings and startup recovery read small index heads; details hydrate on demand through a cache capped at eight records and a 16 MiB serialized-weight budget. The navigator retains only its most recently selected historical snapshot. Library embedders can tune `maxTerminalRunsInMemory` on `WorkflowManager` and `maxTerminalRunsOnDisk` on the run-persistence layer.
 
@@ -279,8 +273,7 @@ The default `workflow` also matches `workflows`; a custom word matches exactly. 
 | Background runs | Non-blocking run, live panel, and automatic result delivery |
 | Resume | Journaled replay of the unchanged completed prefix, including edit-and-resume with a revised script (`resumeFromRunId`) |
 | Model selection | Per-agent and per-phase routing across authenticated providers |
-| Ultracode | `/ultracode` or `/effort ultra` |
-| Additional Pi features | Worktree isolation, real cost accounting, deep research, and quality-pattern helpers |
+| Additional Pi features | Worktree isolation, real cost accounting, and deep research |
 
 </details>
 

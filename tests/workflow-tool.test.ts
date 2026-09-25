@@ -118,13 +118,13 @@ test("createWorkflowTool keeps script syntax in the parameter schema", () => {
   assert.match(description, /multiple phases.*phase\('Exact Title'\).*agent options/i);
   assert.match(description, /await workflow\(savedName, childArgs\).*saved workflow inline/i);
   assert.match(description, /nesting.*one level.*parent run's concurrency, agent, and token limits/i);
-  assert.match(
-    description,
-    /Optional quality helpers include verify\(\), judgePanel\(\), loopUntilDry\(\), and completenessCheck\(\)/i,
-  );
-  assert.match(description, /Optional control helpers include retry\(\) and gate\(\)/i);
-  assert.match(description, /budget exposes total, spent\(\), and remaining\(\)/i);
-  assert.match(description, /phase\('Name', \{ budget: N \}\).*phase token limit/i);
+  assert.match(description, /retry\(thunk, \{ attempts, until \}\)/);
+  assert.match(description, /gate\(thunk, validator, \{ attempts \}\)/);
+  assert.match(description, /loopUntilDry\(\{ round, key, consecutiveEmpty, maxRounds \}\)/);
+  assert.match(description, /checkpoint\(prompt\)/);
+  assert.match(description, /tier: 'small'\|'medium'\|'big'/);
+  assert.match(description, /budget\.total, budget\.spent\(\), and budget\.remaining\(\)/);
+  assert.match(description, /phase\('Name', \{ budget: N \}\)/);
   assert.match(description, /optional `agentType` option.*named user or project definition/i);
   assert.match(description, /bind tools, a model, and role instructions/i);
   assert.match(description, /name and purpose.*provided in context/i);

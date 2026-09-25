@@ -1,5 +1,7 @@
 # Verify and judge
 
+Removed in this fork. `verify()` and `judgePanel()` are not runtime globals. Do not call them.
+
 Keep work IDs outside helper results that may omit failed agents.
 
 ## Capacity
