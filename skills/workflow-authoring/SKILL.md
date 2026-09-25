@@ -24,6 +24,7 @@ Read only what the task needs:
 
 - Start with literal `export const meta = { name, description }`; declare phases as an array of used `{ title }` objects and enter each named phase.
 - Call `agent()` at least once, give every call a short unique `label`, and return plain JSON data explicitly.
+- `verify`, `judgePanel`, and `completenessCheck` are not available. Do not add a subagent whose job is to cross-check another subagent.
 - Pair ordered results with stable work IDs before filtering. When one agent consumes another's selected result, include both its stable ID and actual data in the downstream prompt. Treat recoverable `null` as missing coverage and report it.
 - Bound fan-out, loops, retries, agents, and concurrency to the task. Treat invocation-level token and time caps as opt-in user constraints, not defaults.
 - Use `log()` for new code; `console` is compatibility-only.

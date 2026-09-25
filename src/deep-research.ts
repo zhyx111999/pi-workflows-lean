@@ -20,12 +20,10 @@ export interface DeepResearchConfig {
 export function generateDeepResearchWorkflow(): string {
   return `export const meta = {
   name: 'deep_research',
-  description: 'Deep research with real web search and cross-checked claims',
+  description: 'Deep research: plan queries, gather sourced claims, return them to the parent',
   phases: [
     { title: 'Queries' },
     { title: 'Gather' },
-    { title: 'Verify' },
-    { title: 'Report' },
   ],
 }
 
@@ -58,23 +56,7 @@ const gathered = await parallel(queries.map((q, i) => () =>
 ))
 const allSources = gathered.filter(Boolean).flatMap((g) => (g && g.sources) || [])
 
-phase('Verify')
-const verdict = await agent(
-  'Cross-check these research sources. Group claims that assert the same fact across different source URLs. ' +
-  'Keep a claim only if it is supported by at least ' + minSupport + ' distinct source URLs OR by one clearly authoritative source. ' +
-  'Discard claims found in a single weak source or that conflict with others.\\n\\nSOURCES JSON:\\n' + JSON.stringify(allSources),
-  { label: 'cross-check', schema: { type: 'object', properties: { supported: { type: 'array', items: { type: 'object', properties: { claim: { type: 'string' }, sources: { type: 'array', items: { type: 'string' } } }, required: ['claim', 'sources'] } }, discarded: { type: 'array', items: { type: 'string' } } }, required: ['supported'] } }
-)
-
-phase('Report')
-const report = await agent(
-  'Write a concise, well-structured research report that answers the question using ONLY the supported claims below. ' +
-  'Cite source URLs inline next to each claim. If the evidence is thin, say so explicitly.\\n\\n' +
-  'QUESTION: ' + question + '\\n\\nSUPPORTED CLAIMS JSON:\\n' + JSON.stringify((verdict && verdict.supported) || []),
-  { label: 'write report' }
-)
-
-return { question, queries, supported: (verdict && verdict.supported) || [], report }`;
+return { question, queries, minSupport, sources: allSources }`;
 }
 
 /**
@@ -107,8 +89,6 @@ export function generateCodebaseAuditWorkflow(scope: string, checks: string[]): 
   description: ${JSON.stringify(`Codebase audit: ${displayScope}`)},
   phases: [
     { title: 'Individual Checks' },
-    { title: 'Cross-Validation' },
-    { title: 'Report' },
   ],
 };
 
@@ -118,18 +98,5 @@ const findings = await parallel([
 ${checkAgents}
 ]);
 
-phase('Cross-Validation');
-const validated = await agent(
-  'Cross-validate these audit findings. Remove false positives and confirm real issues:\\n' +
-  JSON.stringify(findings),
-  { label: 'validator' }
-);
-
-phase('Report');
-const report = await agent(
-  'Generate a prioritized audit report with actionable recommendations:\\n' + validated,
-  { label: 'report-writer' }
-);
-
-return { findings, validated, report };`;
+return { findings };`;
 }

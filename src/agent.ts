@@ -1497,12 +1497,7 @@ export class WorkflowAgent {
   }
 
   private buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string {
-    const parts = [
-      this.instructions,
-      options.instructions,
-      options.label ? `Task label: ${options.label}` : undefined,
-      prompt,
-    ].filter(Boolean);
+    const parts = [this.instructions, options.instructions, prompt].filter(Boolean);
 
     if (structured) {
       parts.push(

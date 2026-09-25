@@ -98,7 +98,6 @@ export function generateMultiPerspectiveWorkflow(topic: string, perspectives: st
   description: ${JSON.stringify(`Analyze from ${perspectives.length} different perspectives`)},
   phases: [
     { title: 'Perspective Analysis' },
-    { title: 'Synthesis' },
   ],
 };
 
@@ -108,13 +107,5 @@ const analyses = await parallel([
 ${perspectiveAgents}
 ]);
 
-phase('Synthesis');
-const synthesis = await agent(
-  'Synthesize these different perspectives into a balanced analysis:\\n' +
-  'Analyses: ' + JSON.stringify(analyses) + '\\n' +
-  'Topic: ' + topic,
-  { label: 'synthesizer' }
-);
-
-return { analyses, synthesis };`;
+return { topic, analyses };`;
 }

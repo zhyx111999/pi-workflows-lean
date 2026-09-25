@@ -1776,10 +1776,7 @@ export async function runWorkflow<T = unknown>(
     parallel,
     pipeline,
     workflow: workflowFn,
-    verify,
-    judgePanel,
     loopUntilDry,
-    completenessCheck,
     retry,
     gate,
     checkpoint,
@@ -2333,13 +2330,11 @@ function buildAgentInstructions(
   const lines: string[] = [];
   // A resolved agentType binds a real role prompt (the definition body). Only
   // fall back to the prose hint when the agentType named no known definition.
+  // Plugin-authored phase, isolation, and role filler are not injected.
+  // A user-authored agent definition body is part of the system layer they wrote.
+  void phase;
+  void resolvedIsolation;
   if (def?.prompt) lines.push(def.prompt);
-  else if (options.agentType) lines.push(`Act as workflow subagent type: ${options.agentType}`);
-  if (phase) lines.push(`Workflow phase: ${phase}`);
-  // Use resolvedIsolation so the annotation fires whether isolation came from
-  // the call site or from the agentDef's isolation field.
-  if (resolvedIsolation) lines.push(`Requested isolation: ${resolvedIsolation}`);
-  // Note: options.model is applied for real via the session, not injected as prose.
   return lines.length ? lines.join("\n\n") : undefined;
 }
 

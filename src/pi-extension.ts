@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createCodingTools, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerBuiltinWorkflows } from "./builtin-commands.js";
-import { createEffortState, type EffortState, registerEffortCommand } from "./effort-command.js";
+import { createEffortState, type EffortState } from "./effort-command.js";
 import {
   claimWorkflowRuntime,
   discardWorkflowRuntime,
@@ -25,6 +25,7 @@ import { UsageLimitScheduler } from "./usage-limit-scheduler.js";
 import { createWebTools } from "./web-tools.js";
 import { registerWorkflowCommands } from "./workflow-commands.js";
 import { createWorkflowControlTool } from "./workflow-control-tool.js";
+import { createWorkflowTailTool, WORKFLOW_TAIL_TOOL_NAME } from "./workflow-tail-tool.js";
 import { installWorkflowKeywordArming } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
@@ -174,8 +175,10 @@ export default function extension(pi: ExtensionAPI) {
     },
   });
   const workflowControlTool = createWorkflowControlTool({ getManager });
+  const workflowTailTool = createWorkflowTailTool({ getManager });
   pi.registerTool(workflowTool);
   pi.registerTool(workflowControlTool);
+  pi.registerTool(workflowTailTool);
 
   let usageLimitScheduler = new UsageLimitScheduler(manager);
 
@@ -249,7 +252,6 @@ export default function extension(pi: ExtensionAPI) {
   // them in the factory would stamp source-project descriptions onto slash
   // commands before a resume into another project could correct the cwd —
   // and Pi cannot unregister/replace a command's metadata once registered.
-  registerEffortCommand(pi, effort);
 
   let armingInstalled = false;
 
@@ -291,7 +293,7 @@ export default function extension(pi: ExtensionAPI) {
     // the project overlay is applied without overwriting /effort changes on a
     // later session_start or a compatible runtime handoff.
     if (!effortInitialized) {
-      effort.level = loadWorkflowSettings({ cwd: sessionCwd }).defaultEffort ?? "off";
+      effort.level = "off";
       effortInitialized = true;
     }
 
@@ -313,7 +315,7 @@ export default function extension(pi: ExtensionAPI) {
     manager.setModelRegistry(ctx.modelRegistry);
 
     const active = pi.getActiveTools();
-    const workflowTools = [workflowTool.name, workflowControlTool.name];
+    const workflowTools = [workflowTool.name, workflowControlTool.name, WORKFLOW_TAIL_TOOL_NAME];
     const missing = workflowTools.filter((name) => !active.includes(name));
     if (missing.length) pi.setActiveTools([...active, ...missing]);
 

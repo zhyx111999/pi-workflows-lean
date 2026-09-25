@@ -411,7 +411,7 @@ export function registerBuiltinWorkflows(
 
   if (!alreadyRegistered(pi, "deep-research")) {
     pi.registerCommand("deep-research", {
-      description: "Research a question across the web with cross-checked sources",
+      description: "Research a question across the web and return sourced claims",
       async handler(args: string, ctx: ExtensionCommandContext) {
         if (runSavedShadowIfPresent("deep-research", args, ctx)) return;
         const question = args.trim();
@@ -437,25 +437,10 @@ export function registerBuiltinWorkflows(
     claimCommand(pi, "deep-research", "builtin");
   }
 
-  if (!alreadyRegistered(pi, "adversarial-review")) {
-    pi.registerCommand("adversarial-review", {
-      description: "Investigate a task, then cross-check each finding with skeptical reviewers",
-      async handler(args: string, ctx: ExtensionCommandContext) {
-        if (runSavedShadowIfPresent("adversarial-review", args, ctx)) return;
-        const task = args.trim();
-        if (!task) return ctx.ui.notify("Usage: /adversarial-review <task or question>", "warning");
-        const resolved = resolveBuiltinOrNotify("adversarial-review", getCwd(), { task }, ctx);
-        if (!resolved) return;
-        startBackground(getManager(), ctx, "adversarial-review", resolved.script, { task });
-      },
-    });
-    claimCommand(pi, "adversarial-review", "builtin");
-  }
-
   if (!alreadyRegistered(pi, "code-review")) {
     pi.registerCommand("code-review", {
       description:
-        "Multi-angle parallel code review: 7 specialized finders (correctness, reuse, simplification, efficiency, altitude) + verify pass → ranked findings",
+        "Multi-angle parallel code review. Finders return raw findings",
       async handler(args: string, ctx: ExtensionCommandContext) {
         if (runSavedShadowIfPresent("code-review", args, ctx)) return;
         const input = args.trim();
@@ -574,7 +559,7 @@ export function registerBuiltinWorkflows(
 
   if (!alreadyRegistered(pi, "multi-perspective")) {
     pi.registerCommand("multi-perspective", {
-      description: "Analyze a topic from several independent perspectives in parallel, then synthesize",
+      description: "Analyze a topic from several independent perspectives in parallel and return the analyses",
       async handler(args: string, ctx: ExtensionCommandContext) {
         if (runSavedShadowIfPresent("multi-perspective", args, ctx)) return;
         const [topic, ...rest] = tokenizeArgs(args);
@@ -593,7 +578,7 @@ export function registerBuiltinWorkflows(
 
   if (!alreadyRegistered(pi, "codebase-audit")) {
     pi.registerCommand("codebase-audit", {
-      description: "Run parallel checks against a codebase scope, then cross-validate and report",
+      description: "Run parallel checks against a codebase scope and return the findings",
       async handler(args: string, ctx: ExtensionCommandContext) {
         if (runSavedShadowIfPresent("codebase-audit", args, ctx)) return;
         const [scope, ...checks] = tokenizeArgs(args);

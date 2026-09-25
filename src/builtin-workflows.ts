@@ -1,7 +1,7 @@
 /**
- * Shared registry of the 5 curated built-in workflow patterns
- * (`deep-research`, `adversarial-review`, `code-review`, `multi-perspective`,
- * `codebase-audit`).
+ * Shared registry of the built-in workflow patterns
+ * (`deep-research`, `code-review`, `multi-perspective`, `codebase-audit`).
+ * Cross-check passes are not included; the parent model reviews raw results.
  *
  * This is the single place that turns a pattern's name + caller-supplied args
  * into a runnable script (and, where a pattern needs it, an exec context such
@@ -13,7 +13,7 @@
  */
 
 import { createCodingTools, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { generateAdversarialReviewWorkflow, generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
+import { generateMultiPerspectiveWorkflow } from "./adversarial-review.js";
 import { generateCodeReviewWorkflow } from "./code-review.js";
 import { generateCodebaseAuditWorkflow, generateDeepResearchWorkflow } from "./deep-research.js";
 import { createWebTools } from "./web-tools.js";
@@ -67,7 +67,7 @@ function requireStringArray(value: unknown, argName: string, patternName: string
 export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
   {
     name: "deep-research",
-    description: "Research a question across the web with cross-checked sources. args: { question: string }.",
+    description: "Research a question across the web and return sourced claims. args: { question: string }.",
     resolve(cwd, args) {
       requireNonEmptyString(asRecord(args).question, "question", "deep-research");
       return {
@@ -81,18 +81,9 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
     },
   },
   {
-    name: "adversarial-review",
-    description:
-      "Investigate a task, then cross-check each finding with skeptical reviewers. args: { task: string, reviewers?: number, threshold?: number }.",
-    resolve(_cwd, args) {
-      requireNonEmptyString(asRecord(args).task, "task", "adversarial-review");
-      return { script: generateAdversarialReviewWorkflow() };
-    },
-  },
-  {
     name: "code-review",
     description:
-      "Multi-angle parallel code review: 7 specialized finders (correctness, reuse, simplification, efficiency, altitude) + verify pass → ranked findings. args: { diff: string, diffSource?: string }.",
+      "Multi-angle parallel code review. Finders return raw findings. args: { diff: string, diffSource?: string }.",
     resolve(_cwd, args) {
       // Truncation past MAX_DIFF_CHARS already happens inside the generated
       // script at runtime (see code-review.ts); a caller invoking by name is
@@ -105,7 +96,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
   {
     name: "multi-perspective",
     description:
-      "Analyze a topic from several independent perspectives in parallel, then synthesize. args: { topic: string, perspectives?: string[] }.",
+      "Analyze a topic from several independent perspectives in parallel and return the analyses. args: { topic: string, perspectives?: string[] }.",
     resolve(_cwd, args) {
       const record = asRecord(args);
       const topic = requireNonEmptyString(record.topic, "topic", "multi-perspective");
@@ -119,7 +110,7 @@ export const BUILTIN_WORKFLOWS: readonly BuiltinWorkflowDescriptor[] = [
   {
     name: "codebase-audit",
     description:
-      "Run parallel checks against a codebase scope, then cross-validate and report. args: { scope: string, checks: string[] }.",
+      "Run parallel checks against a codebase scope and return the findings. args: { scope: string, checks: string[] }.",
     resolve(_cwd, args) {
       const record = asRecord(args);
       const scope = requireNonEmptyString(record.scope, "scope", "codebase-audit");

@@ -22,7 +22,7 @@ import { loadWorkflowSettings } from "./workflow-settings.js";
 
 /** The single always-on gate that authorizes workflow use without forcing it. */
 export const WORKFLOW_GATE_GUIDELINE =
-  "The `workflow` tool runs multi-agent orchestration — it fans decomposable work out across subagents, and fits tasks shaped like: repo-wide inspection, independent parallel research/checks, multi-perspective review, or fan-out/fan-in synthesis. ONLY call it when the user explicitly opts in — via the workflow trigger word, `/workflows run`, or their own words (e.g. 'run a workflow', 'fan this out', '并行审一遍'). For any other task — even one that would clearly benefit — do not call it; you may briefly offer it (with a rough cost) as an option instead.";
+  "workflow runs a script's agent(), parallel(), and pipeline() calls as background subagents. Whether to call it is decided by the note appended to the user message.";
 
 const workflowToolSchema = Type.Object({
   script: Type.Optional(
@@ -31,7 +31,7 @@ const workflowToolSchema = Type.Object({
         "Raw JavaScript workflow script, with no Markdown fences. Required unless `name` is given.",
         "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Add phases: [{ title: 'Phase' }] only when the workflow has named phases, and declare only phases it will use. With multiple phases, call phase('Exact Title') before each phase's work or set `phase` in the agent options.",
         "Use `await workflow(savedName, childArgs)` to run a saved workflow inline; nesting is limited to one level and shares the parent run's concurrency, agent, and token limits.",
-        "Optional quality helpers include verify(), judgePanel(), loopUntilDry(), and completenessCheck().",
+        "Subagents only do the task in the agent() prompt. Do not add a follow-up subagent to cross-check results.",
         "Optional control helpers include retry() and gate(); budget exposes total, spent(), and remaining(), and phase('Name', { budget: N }) sets a phase token limit.",
         "The optional `agentType` option selects a named user or project definition that can bind tools, a model, and role instructions; use it only when its name and purpose are provided in context. Its bound model overrides `tier`; an explicit `model` overrides both.",
         "Use plain JavaScript only; imports, require(), filesystem modules, Date.now(), Math.random(), and new Date() are unavailable.",
@@ -71,13 +71,13 @@ const workflowToolSchema = Type.Object({
   background: Type.Optional(
     Type.Boolean({
       description:
-        "Run the workflow in the background. Default: true — the tool returns immediately with a run ID, the turn ends so the user isn't blocked, and the result is delivered back into the conversation when it finishes. Set to false only when you need the result inline in this same turn (the call will block until the workflow completes).",
+        "Ignored. Workflows always run in the background: the tool returns a run ID, this turn ends, and the result is delivered back when the run finishes.",
     }),
   ),
   maxAgents: Type.Optional(
     Type.Number({
       description:
-        "Agent cap (1000 default; safety). Count: verify=reviewers, judgePanel=entries×judges, completenessCheck=1. Retries add no slots. Lower for dynamic fan-out; large fan-outs need explicit user intent.",
+        "Agent cap (1000 default; safety). Count each planned agent() call. Retries add no slots. Large fan-outs need explicit user intent.",
     }),
   ),
   concurrency: Type.Optional(
@@ -264,11 +264,10 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText)
         : undefined;
 
-      // Background execution is the default: return immediately so the turn ends
-      // and the user isn't blocked. The result is delivered back into the
-      // conversation when the run finishes (see installResultDelivery). Only an
-      // explicit `background: false` blocks for the result inline.
-      if (params.background ?? true) {
+      // Foreground blocking is removed. A run always returns immediately and
+      // delivers its result later (see installResultDelivery).
+      params.background = true;
+      if (params.background) {
         const { runId } = manager.startInBackground(script, params.args, {
           maxAgents: params.maxAgents,
           concurrency: params.concurrency,

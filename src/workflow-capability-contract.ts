@@ -115,10 +115,7 @@ export interface WorkflowRuntimeImplementations {
   parallel: unknown;
   pipeline: unknown;
   workflow: unknown;
-  verify: unknown;
-  judgePanel: unknown;
   loopUntilDry: unknown;
-  completenessCheck: unknown;
   retry: unknown;
   gate: unknown;
   checkpoint: unknown;
@@ -364,37 +361,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
     ],
     evidence: ["tests/workflow-saved.test.ts", "tests/shared-store.test.ts"],
   }),
-  runtimeGlobal("verify", {
-    signature:
-      "verify(item: unknown, options?: { reviewers?: number; threshold?: number; lens?: string | string[] }) => Promise<{ real: boolean; realCount: number; total: number; votes: Array<{ real: boolean; reason?: string }> }>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
-    optionShape: "verify-options",
-    constraints: [
-      "external abort takes precedence over capacity preflight and option validation; no reviewer starts",
-      "consumes one logical agent slot per reviewer (default 2); runtime preflights the whole reviewer fan-out before starting any reviewer",
-      "agent execution retries do not consume extra logical slots",
-      "reviewer failures are omitted; successful votes form the denominator in realCount / total",
-      "threshold comparison is inclusive and real is false when no reviewer succeeds",
-      "multiple lenses cycle across reviewers",
-    ],
-    evidence: ["tests/quality-stdlib.test.ts"],
-  }),
-  runtimeGlobal("judgePanel", {
-    signature:
-      "judgePanel(attempts: unknown[], options?: { judges?: number; rubric?: string }) => Promise<{ index: number; attempt: unknown; score: number; judgments: Array<{ score: number; reason?: string }> } | undefined>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
-    optionShape: "judge-panel-options",
-    constraints: [
-      "external abort takes precedence over capacity preflight and option validation; no judge starts",
-      "consumes populated attempts × judges logical agent slots (dense input: attempts.length × judges; default judges 3); runtime preflights the full normalized fan-out before starting any judge",
-      "sparse attempt holes are absent candidates and consume no slots; populated candidates retain their original input index",
-      "agent execution retries do not consume extra logical slots",
-      "failed judgments are omitted and each candidate score averages successful judgments only",
-      "a candidate with no successful judgments scores 0",
-      "highest mean score wins with stable input index as the tie-break; empty input returns undefined",
-    ],
-    evidence: ["tests/quality-stdlib.test.ts"],
-  }),
   runtimeGlobal("loopUntilDry", {
     signature:
       "loopUntilDry(options: { round: (roundIndex: number) => unknown[] | Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>",
@@ -405,20 +371,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "token-budget or agent-limit capacity exhaustion returns the accumulated partial array instead of throwing",
       "the returned array does not report whether termination came from dryness, maxRounds, or capacity exhaustion",
       "authors must retain failed-round identity and truthful termination state outside the helper",
-    ],
-    evidence: ["tests/quality-stdlib.test.ts"],
-  }),
-  runtimeGlobal("completenessCheck", {
-    signature:
-      "completenessCheck(taskArgs: unknown, results: unknown) => Promise<{ complete: boolean; missing?: string[] } | null>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
-    constraints: [
-      "external abort takes precedence over capacity preflight; no critic starts",
-      "consumes one logical agent slot; runtime preflights capacity before starting the critic",
-      "agent execution retries do not consume extra logical slots",
-      "only the first 4,000 characters of serialized result evidence are sent to the critic",
-      "missing is optional and recoverable critic failure returns null",
-      "large evidence sets must be chunked or summarized before relying on the advisory verdict",
     ],
     evidence: ["tests/quality-stdlib.test.ts"],
   }),
@@ -490,7 +442,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
   }),
   toolInput("script", "script?: string", ["required raw JavaScript workflow source unless `name` is given"]),
   toolInput("name", "name?: string", [
-    "resolves a project/user saved workflow first, then one of the 5 built-in patterns",
+    "resolves a project/user saved workflow first, then a built-in pattern",
     "mutually exclusive with resumeFromRunId",
   ]),
   toolInput("args", "args?: unknown"),
@@ -499,7 +451,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
   ]),
   toolInput("maxAgents", "maxAgents?: number = 1000", [
     "default, not a hard product maximum",
-    "counts logical agent calls across the shared nested run tree, including quality-helper expansion: verify = reviewers, judgePanel = populated attempts × judges (dense input: attempts.length × judges), completenessCheck = 1",
+    "counts logical agent calls across the shared nested run tree",
     "agent execution retries do not consume extra logical slots; retry(), gate(), and loopUntilDry callbacks must be budgeted from their bounded planned calls",
   ]),
   toolInput("concurrency", "concurrency?: number", ["runtime clamps to 1..16"]),

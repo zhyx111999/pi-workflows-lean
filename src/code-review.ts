@@ -1,6 +1,6 @@
 /**
  * Multi-angle parallel code review workflow.
- * 7 specialized finder agents → verify pass → ranked report.
+ * 7 specialized finder agents return raw findings to the parent.
  */
 
 /**
@@ -23,16 +23,13 @@ export const MAX_DIFF_CHARS = 200_000;
  *   Finders A/B/C → medium (correctness)
  *   Finders D/E/F → small  (cleanup)
  *   Finder  G     → big    (altitude / abstraction)
- *   Synthesis     → big
  */
 export function generateCodeReviewWorkflow(): string {
   return `export const meta = {
   name: 'code_review',
-  description: 'Multi-angle parallel code review: 7 finder angles + verify pass → ranked findings',
+  description: 'Multi-angle parallel code review: 7 finder angles return raw findings',
   phases: [
     { title: 'Find' },
-    { title: 'Verify' },
-    { title: 'Report' },
   ],
 }
 
@@ -132,52 +129,5 @@ const allCandidates = allRaw.filter((c) => {
   return true
 })
 
-phase('Verify')
-// NOTE: deliberately NOT using the verify() stdlib helper here. verify() only
-// returns a boolean real/not-real vote; this phase needs the 3-way
-// CONFIRMED/PLAUSIBLE/REFUTED verdict so the synthesis report can hedge
-// ("worth a second look" vs "will break"). Since only REFUTED is filtered out
-// below, verify()'s boolean would collapse CONFIRMED and PLAUSIBLE into one
-// bucket and lose that signal for no behavioral gain — verify({reviewers: 1})
-// is already a single agent() call under the hood, same as this.
-const verdicts = allCandidates.length > 0
-  ? await parallel(allCandidates.map((c, i) => () =>
-      agent(
-        'You are a verifier. Determine whether this code review finding is CONFIRMED, PLAUSIBLE, or REFUTED. ' +
-        'CONFIRMED = you can trace the exact failure in the diff. PLAUSIBLE = concern is valid but not certain. ' +
-        'REFUTED = finding is wrong or already handled.\\n\\n' +
-        'FINDING:\\nFile: ' + c.file + '\\nLine: ' + c.line + '\\nSummary: ' + c.summary + '\\n' +
-        'Failure scenario: ' + c.failure_scenario + diffBlock,
-        {
-          label: 'verify-' + (i + 1),
-          schema: {
-            type: 'object',
-            properties: { verdict: { type: 'string', enum: ['CONFIRMED', 'PLAUSIBLE', 'REFUTED'] }, reason: { type: 'string' } },
-            required: ['verdict'],
-          },
-        }
-      )
-    ))
-  : []
-
-const surviving = allCandidates
-  .map((c, i) => ({ ...c, verdict: (verdicts[i] && verdicts[i].verdict) || 'PLAUSIBLE', verifyReason: (verdicts[i] && verdicts[i].reason) || '' }))
-  .filter((c) => c.verdict !== 'REFUTED')
-
-// Rank: correctness (A/B/C) before cleanup (D/E/F) before altitude (G), cap at 10
-const rankAngle = (a) => ['A','B','C'].includes(a) ? 0 : ['D','E','F'].includes(a) ? 1 : 2
-surviving.sort((a, b) => rankAngle(a.angle) - rankAngle(b.angle))
-const top = surviving.slice(0, 10)
-
-phase('Report')
-const synthesis = await agent(
-  'You are a senior code reviewer writing the final report. Below are the verified findings from a ' +
-  'multi-angle code review (already ranked by severity). Write a concise markdown report: ' +
-  '1 sentence per finding with file, line, and the failure scenario. Note the total found vs shown. ' +
-  'Correctness issues (A/B/C) come first, then cleanup (D/E/F), then altitude (G).\\n\\n' +
-  'FINDINGS JSON:\\n' + JSON.stringify(top, null, 2),
-  { label: 'synthesis', tier: 'big' }
-)
-
-return { total: allCandidates.length, surviving: surviving.length, findings: top, report: synthesis, diffTruncated }`;
+return { total: allCandidates.length, findings: allCandidates, diffTruncated }`;
 }

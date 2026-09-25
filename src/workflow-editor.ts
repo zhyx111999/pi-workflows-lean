@@ -8,7 +8,8 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_KEYWORD_TRIGGER_WORD, normalizeKeywordTriggerWord } from "./config.js";
-import { type EffortState, effortDirective, isSubstantive } from "./effort-command.js";
+import type { EffortState } from "./effort-command.js";
+import { appendParentWorkflowPrompt } from "./parent-prompt.js";
 import {
   loadWorkflowSettings,
   saveWorkflowSettings,
@@ -316,68 +317,14 @@ export function installWorkflowKeywordArming(
   registerWorkflowTriggerCommand(pi, state, settingsStore);
   registerWorkflowProgressCommands(pi, settingsStore);
 
-  // Active tools saved while a turn is restricted to `workflow`; restored on turn_end.
-  let savedTools: string[] | undefined;
-
-  // When armed at submit time, rewrite the user's message to force a workflow AND
-  // ensure the `workflow` tool is in the active tool set, so the model can call it.
-  // We keep all existing tools (bash, read, edit, write, web_search, etc.) because
-  // the model often needs them BEFORE writing the workflow script (e.g. exploring
-  // the codebase, reading files, searching for context). This only ADDS the
-  // workflow tool to the active set; no tools are removed (the original set is
-  // saved in `savedTools` and restored elsewhere).
-  //
-  // NOTE: we check event.text directly (hasTrigger) rather than state.active from
-  // the editor, because the editor's state is reset synchronously by submitValue()
-  // BEFORE the input event fires (the actual prompt processing is async).
+  // One tail prompt for the main model. Slash commands are left unchanged.
+  // The effort argument is retained so existing callers keep compiling; tiers are gone.
+  void effort;
   pi.on("input", (event: { source?: string; text?: string }) => {
     if (event.source !== "interactive" || !event.text) return { action: "continue" } as const;
-    // Arm either when the user typed the "workflow(s)" trigger, or when standing
-    // effort mode is on and the message is a substantive request.
-    const normalizedText = event.text.trim();
-    const suppressed = state.suppressedKeywordText === normalizedText;
-    if (suppressed) state.suppressedKeywordText = undefined;
-    const triggered = state.keywordTriggerEnabled && !suppressed && hasTrigger(event.text, state.keywordTriggerWord);
-    const byEffort = !triggered && !!effort && effort.level !== "off" && isSubstantive(event.text);
-    if (!triggered && !byEffort) return { action: "continue" } as const;
-    try {
-      if (savedTools === undefined) {
-        savedTools = pi.getActiveTools?.() ?? [];
-        const current = [...savedTools];
-        if (!current.includes(WORKFLOW_TOOL_NAME)) {
-          current.push(WORKFLOW_TOOL_NAME);
-        }
-        pi.setActiveTools?.(current);
-      }
-    } catch {
-      // Tool restriction is best-effort; the armed directive still authorizes the workflow.
-    }
-    // Effort path: the trigger word was NOT typed — this arms on ANY substantive
-    // message while standing effort is on. So the directive must (a) state the
-    // truthful "effort" reason (not "the word you typed"), and (b) let the model
-    // skip the workflow entirely on conversational/trivial turns, not just on
-    // questions about workflows.
-    const extra =
-      byEffort && effort
-        ? [effortDirective(effort.level), EFFORT_CONVERSATIONAL_ESCAPE].filter(Boolean).join(" ")
-        : undefined;
-    const reason: ArmReason = byEffort ? "effort" : "keyword";
-    return {
-      action: "transform",
-      text: buildArmedWorkflowPrompt(event.text, { reason, extraDirective: extra }),
-    } as const;
-  });
-
-  // Restore the user's full tool set once the forced turn completes.
-  pi.on("turn_end", () => {
-    if (savedTools === undefined) return;
-    const restore = savedTools;
-    savedTools = undefined;
-    try {
-      pi.setActiveTools?.(restore);
-    } catch {
-      // ignore — nothing we can do if the host rejects the restore
-    }
+    const text = appendParentWorkflowPrompt(event.text);
+    if (text === event.text) return { action: "continue" } as const;
+    return { action: "transform", text } as const;
   });
 
   return state;
