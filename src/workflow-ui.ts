@@ -25,7 +25,7 @@ import {
   getMarkdownTheme,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable, MarkdownTheme, OverlayAnchor, TUI } from "@earendil-works/pi-tui";
+import type { Component, Focusable, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import { parseKey } from "@earendil-works/pi-tui";
 import type { ThemeLike, WorkflowAgentSnapshot } from "./display.js";
 import { asText } from "./navigator/as-text.js";
@@ -234,9 +234,6 @@ export class NavigatorState {
   get savedName(): string | undefined {
     return this.top().savedName;
   }
-  get depth(): number {
-    return this.stack.length;
-  }
   get confirmationAction(): ConfirmKind | undefined {
     return this.pending?.action;
   }
@@ -259,8 +256,6 @@ export class NavigatorState {
     top.cursor = snapshot.items.length ? Math.max(0, Math.min(top.cursor, snapshot.items.length - 1)) : 0;
     if (snapshot.items.length) top.selected = snapshot.items[top.cursor]?.identity;
   }
-  /** @deprecated No-op: manager events no longer cancel confirmations, and the render frame reconciles. */
-  noteManagerEvent(_snapshot: NavigatorSnapshot): void {}
   currentItem(snapshot: NavigatorSnapshot): VisibleNavigatorItem | undefined {
     this.reconcile(snapshot);
     return snapshot.items.find((item) => sameIdentity(this.top().selected, item.identity));
@@ -653,8 +648,6 @@ export interface NavigatorOptions {
    * through the current session's manager (background path), not a stale snapshot.
    */
   getManager?: () => WorkflowManager;
-  /** Overlay anchor position: "center" (default) or "right-center" for sidebar. */
-  anchor?: OverlayAnchor;
 }
 
 /**
@@ -719,6 +712,6 @@ export function openWorkflowNavigator(
       };
       return component;
     },
-    { overlay: true, overlayOptions: overlayOptions(opts.anchor) },
+    { overlay: true, overlayOptions: overlayOptions() },
   );
 }

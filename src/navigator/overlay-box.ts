@@ -1,17 +1,16 @@
 /** The navigator overlay's size and its rounded, background-filled border. */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { OverlayAnchor, OverlayOptions } from "@earendil-works/pi-tui";
+import type { OverlayOptions } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const BORDER_LEFT = "│ ";
 const BORDER_RIGHT = " │";
 
-/** A roomy overlay with a margin, so its border stands out from the terminal edge;
- * "right-center" makes it a sidebar. */
-export function overlayOptions(anchor?: OverlayAnchor): OverlayOptions {
+/** A roomy overlay with a margin, so its border stands out from the terminal edge. */
+export function overlayOptions(): OverlayOptions {
   // Keep maxHeight equal to the share used by overlayContentRows.
-  return { width: anchor === "right-center" ? "60%" : "94%", maxHeight: "92%", anchor: anchor ?? "center", margin: 1 };
+  return { width: "94%", maxHeight: "92%", anchor: "center", margin: 1 };
 }
 
 /** Columns left for navigator content inside the side borders. */
