@@ -218,6 +218,7 @@ type TaskPanelModule = {
     sessionId: string,
   ) => { suspended: boolean; generation: number; hasSend: boolean; hasAppend: boolean } | undefined;
   installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown) => void;
+  installHostSessionCapture: (sessionClass: typeof AgentSession) => void;
 };
 
 // Loaded once before all tests
@@ -444,6 +445,22 @@ describe("installResultDelivery", () => {
   }
 
   /**
+   * Arm the AgentSession capture patches the way the extension entry does at
+   * load, so a test that drives them never depends on an earlier test having
+   * called installResultDelivery or bindSessionDelivery. Arming is idempotent.
+   */
+  function armedSessionPatch(method: "sendCustomMessage" | "_bindExtensionCore", wrapperName: string): unknown {
+    mod.installHostSessionCapture(AgentSession);
+    const patched = (AgentSession.prototype as unknown as Record<string, unknown>)[method];
+    assert.equal(
+      (patched as { name?: unknown } | undefined)?.name,
+      wrapperName,
+      `${method} capture patch must be armed`,
+    );
+    return patched;
+  }
+
+  /**
    * Drive the armed AgentSession.sendCustomMessage capture patch with a fake
    * `this` to exercise the steal filter. The patched forward runs the REAL
    * sendCustomMessage, so an untriggered call is used: the non-trigger branch
@@ -454,8 +471,7 @@ describe("installResultDelivery", () => {
     session: object,
     message?: { customType: string; content: string; display: boolean },
   ): void {
-    const patched = (AgentSession.prototype as unknown as { sendCustomMessage?: unknown }).sendCustomMessage;
-    assert.equal(typeof patched, "function", "sendCustomMessage patch must be armed");
+    const patched = armedSessionPatch("sendCustomMessage", "patchedSendCustomMessage");
     // Pi 0.85.1 moved custom-message persistence behind private prototype
     // helpers. Use the real prototype while retaining explicit own fake state.
     Object.setPrototypeOf(session, AgentSession.prototype);
@@ -538,9 +554,7 @@ describe("installResultDelivery", () => {
    * forward's throw is irrelevant (capture already happened) and is swallowed.
    */
   function invokePatchedBindExtensionCore(session: object): void {
-    const proto = AgentSession.prototype as unknown as { _bindExtensionCore?: unknown };
-    const patched = proto._bindExtensionCore;
-    assert.equal(typeof patched, "function", "_bindExtensionCore patch must be armed");
+    const patched = armedSessionPatch("_bindExtensionCore", "patchedBindExtensionCore");
     try {
       (patched as (runner: unknown) => unknown).call(session, {
         bindCore: () => {},
