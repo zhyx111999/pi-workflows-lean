@@ -1,7 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import vm from "node:vm";
 import type { TSchema } from "typebox";
@@ -9,19 +6,25 @@ import { type AgentRunOptions, WorkflowAgent, type WorkflowAgentOptions } from "
 import type { AgentHistoryEntry } from "./agent-history.js";
 import { type AgentRegistry, agentDefinitionKey, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 import { type AgentUsage, createAgentCallUsageTracker, sumAgentUsage } from "./agent-usage.js";
-import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_MAX_AGENTS, MAX_AGENT_RETRIES, MAX_CONCURRENCY } from "./config.js";
+import { DEFAULT_MAX_AGENTS } from "./config.js";
 import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 import { validateThinkingLevel } from "./model-spec.js";
+import { normalizeThread, resolveAgentCwd, validateAgentOptions } from "./runtime/agent-options.js";
+import { hashAgentCall, hashCheckpointCall } from "./runtime/call-identity.js";
 import { assertDeterministicSource, DETERMINISM_PRELUDE } from "./runtime/determinism.js";
+import {
+  createLimiter,
+  normalizeAgentRetries,
+  resolveAgentTimeoutMs,
+  resolveConcurrency,
+  resolveDrainAbortGraceMs,
+  retryBackoffMs,
+} from "./runtime/run-limits.js";
 import { readMetaExport } from "./runtime/script-meta.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
-import {
-  AGENT_OPTIONS,
-  WORKFLOW_CAPABILITY_CONTRACT,
-  type WorkflowRuntimeImplementations,
-} from "./workflow-capability-contract.js";
+import { WORKFLOW_CAPABILITY_CONTRACT, type WorkflowRuntimeImplementations } from "./workflow-capability-contract.js";
 import { createWorktree, removeWorktree, type Worktree } from "./worktree.js";
 
 /**
@@ -387,21 +390,7 @@ export async function runWorkflow<T = unknown>(
   // Per-phase model routing from meta.phases[].model, with meta.model as the default.
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
   const maxAgents = options.maxAgents ?? DEFAULT_MAX_AGENTS;
-  // An embedding host's invalid timeout must not fail the run (or spawn and
-  // instantly abort sessions); coerce to the default and log instead.
-  let agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
-  if (
-    agentTimeoutMs !== null &&
-    (typeof agentTimeoutMs !== "number" ||
-      !Number.isFinite(agentTimeoutMs) ||
-      agentTimeoutMs < 1 ||
-      agentTimeoutMs > 2_147_483_647)
-  ) {
-    options.onLog?.(
-      `ignoring invalid agentTimeoutMs (${String(options.agentTimeoutMs)}); using the configured default instead`,
-    );
-    agentTimeoutMs = DEFAULT_AGENT_TIMEOUT_MS;
-  }
+  const agentTimeoutMs = resolveAgentTimeoutMs(options);
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
   // Snapshot the agentType registry ONCE per run so two agent() calls can't
@@ -416,9 +405,7 @@ export async function runWorkflow<T = unknown>(
     onLog: options.onLog,
   });
 
-  const concurrency = normalizeConcurrency(
-    options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
-  );
+  const concurrency = resolveConcurrency(options.concurrency);
   // options.initialTokenUsage (resume() only) seeds tokenUsage so the run's
   // reported totals stay cumulative across a pause/resume cycle.
   //
@@ -500,14 +487,8 @@ export async function runWorkflow<T = unknown>(
   /** Validate the call synchronously, then start it; a validation failure throws. */
   const startAgentCall = (prompt: string, agentOptions: unknown): Promise<unknown> => {
     validateAgentOptions(agentOptions);
-    const rawThread = agentOptions.thread;
-    const thread = rawThread === undefined ? undefined : typeof rawThread === "string" ? rawThread.trim() : "";
-    if (rawThread !== undefined && !thread) {
-      throw new WorkflowError("agent() thread must be a non-empty string", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
-        recoverable: false,
-      });
-    }
-    if (!thread) return agentImpl(prompt, agentOptions);
+    const thread = normalizeThread(agentOptions.thread);
+    if (thread === undefined) return agentImpl(prompt, agentOptions);
     if (state.activeThreads.has(thread)) {
       throw new WorkflowError(
         `agent thread "${thread}" is already running; same-thread calls must be sequential`,
@@ -516,7 +497,7 @@ export async function runWorkflow<T = unknown>(
       );
     }
     state.activeThreads.add(thread);
-    return agentImpl(prompt, thread === rawThread ? agentOptions : { ...agentOptions, thread }).finally(() =>
+    return agentImpl(prompt, thread === agentOptions.thread ? agentOptions : { ...agentOptions, thread }).finally(() =>
       state.activeThreads.delete(thread),
     );
   };
@@ -609,15 +590,15 @@ export async function runWorkflow<T = unknown>(
     // Deterministic resume key: assigned at lexical call time, before the limiter,
     // so parallel()/pipeline() fan-out is reproducible for a fixed script.
     const callIndex = state.callSeq++;
-    const callHash = hashAgentCall(
+    const callHash = hashAgentCall({
       prompt,
-      modelSpec,
-      assignedPhase,
-      agentOptions,
-      agentDefinitionKey(agentDef),
-      requestedCwd,
-      resolvedIsolation,
-    );
+      model: modelSpec,
+      phase: assignedPhase,
+      options: agentOptions,
+      agentDefinitionKey: agentDefinitionKey(agentDef),
+      cwd: requestedCwd,
+      isolation: resolvedIsolation,
+    });
     const deltaKey = agentCallId(runId, callIndex);
 
     // Reserve the agent slot synchronously (no await between this and the
@@ -904,29 +885,7 @@ export async function runWorkflow<T = unknown>(
               log(
                 `agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`,
               );
-              // Small capped backoff between attempts (audit2 #7) — an
-              // immediate retry storms the provider when a parallel() batch
-              // fails together. The abort check after the wait keeps pause/stop
-              // responsive (bounded by the 2s cap).
-              const defaultBackoffMs = Math.min(250 * 2 ** (attempt - 1), 2_000);
-              let backoffMs = defaultBackoffMs;
-              if (options.agentRetryBackoffMs) {
-                try {
-                  const injected = options.agentRetryBackoffMs(attempt);
-                  // 0 disables (documented); negative/NaN/Infinity fall back to
-                  // the default — a non-finite value clamped to 2^31-1 would
-                  // otherwise park the retry for ~24.8 days.
-                  backoffMs =
-                    injected === 0
-                      ? 0
-                      : typeof injected === "number" && Number.isFinite(injected) && injected > 0
-                        ? Math.min(injected, 2_000) // capped: setTimeout overflows >2^31-1, and a
-                        : // multi-day park would ignore aborts for its whole duration
-                          defaultBackoffMs;
-                } catch {
-                  backoffMs = defaultBackoffMs; // a throwing callback must not abandon the retry
-                }
-              }
+              const backoffMs = retryBackoffMs(attempt, options);
               if (backoffMs > 0) await new Promise((resolve) => setTimeout(resolve, backoffMs));
               throwIfAborted();
               continue;
@@ -1074,7 +1033,7 @@ export async function runWorkflow<T = unknown>(
     }
     state.seenCheckpointIds.add(durableInput.checkpointId);
     const activeResumeCheckpoint = state.activeCheckpointResponse;
-    const callHash = hashWorkflowCheckpoint(durableInput);
+    const callHash = hashCheckpointCall(durableInput);
     const cached = options.resumeJournal?.get(callIndex);
     const replayingActiveCheckpoint = activeResumeCheckpoint?.checkpointId === durableInput.checkpointId;
     if (
@@ -1273,15 +1232,7 @@ export async function runWorkflow<T = unknown>(
     if (state.inFlight.size > 0) {
       log(`waiting for ${state.inFlight.size} outstanding agent() call(s) to settle before this run completes`);
     }
-    const graceOption = options.drainAbortGraceMs;
-    const drainAbortGraceMs =
-      graceOption === undefined
-        ? 10_000
-        : graceOption === Number.POSITIVE_INFINITY
-          ? Number.POSITIVE_INFINITY
-          : typeof graceOption === "number" && graceOption >= 1 && graceOption <= 2_147_483_647
-            ? Math.floor(graceOption)
-            : 10_000; // NaN/0/negative/overflow → default
+    const drainAbortGraceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
     // Wakes the drain loop the moment the run aborts (either source), so a
     // drain that started un-aborted re-enters promptly and the grace clock
     // starts instead of blocking on allSettled forever.
@@ -1385,24 +1336,6 @@ export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body:
   return { meta, body: script.slice(0, start) + script.slice(end) };
 }
 
-function createLimiter(limit: number) {
-  let active = 0;
-  const queue: Array<() => void> = [];
-  const next = () => {
-    active--;
-    queue.shift()?.();
-  };
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
-    active++;
-    try {
-      return await fn();
-    } finally {
-      next();
-    }
-  };
-}
-
 function defaultAgentLabel(phase: string | undefined, index: number): string {
   return phase ? `${phase} agent ${index}` : `agent ${index}`;
 }
@@ -1480,114 +1413,12 @@ export function cloneDurableJsonValue(value: unknown, label: string): unknown {
   return clone(value, 0);
 }
 
-function hashWorkflowCheckpoint(input: WorkflowCheckpointInput): string {
-  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
-}
-
-function hashAgentCall(
-  prompt: string,
-  model: string | undefined,
-  phase: string | undefined,
-  options: AgentOptions,
-  agentDefKey: string | null,
-  cwd: string | undefined,
-  resolvedIsolation?: "worktree",
-): string {
-  const identity = JSON.stringify({
-    prompt,
-    model: model ?? null,
-    tier: options.tier ?? null,
-    ...(options.thinking ? { thinking: options.thinking } : {}),
-    phase: phase ?? null,
-    agentType: options.agentType ?? null,
-    ...(options.thread ? { thread: options.thread } : {}),
-    // Resolved definition (tools/model/prompt) so editing an agent .md invalidates
-    // this call's cached result on a later resume.
-    agentDef: agentDefKey,
-    schema: options.schema ?? null,
-    // Omit the field entirely when cwd was not supplied so journals generated by
-    // older releases retain their exact hash and resume behavior.
-    ...(cwd === undefined ? {} : { cwd }),
-    ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
-    ...(resolvedIsolation === "worktree" ? { keepWorktree: options.keepWorktree !== false } : {}),
-  });
-  return createHash("sha256").update(identity).digest("hex");
-}
-
-const AGENT_OPTION_NAMES: readonly string[] = AGENT_OPTIONS.options.map((option) => option.name);
-
-/**
- * Reject agent() options the runtime would otherwise drop, so a misspelled or
- * unsupported key fails before dispatch instead of seeming to take effect.
- */
-function validateAgentOptions(options: unknown): asserts options is AgentOptions {
-  const accepted = `accepted options: ${AGENT_OPTION_NAMES.join(", ")}`;
-  if (options === null || typeof options !== "object" || Array.isArray(options)) {
-    throw new WorkflowError(
-      `agent() options must be an object; ${accepted}`,
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      { recoverable: false },
-    );
-  }
-  const unknown = Object.keys(options).filter((key) => !AGENT_OPTION_NAMES.includes(key));
-  if (unknown.length > 0) {
-    throw new WorkflowError(
-      `agent() does not accept ${unknown.map((key) => `"${key}"`).join(", ")}; ${accepted}`,
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      { recoverable: false },
-    );
-  }
-}
-
-/** Validate a script-supplied agent cwd without allocating an agent slot. */
-function resolveAgentCwd(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || !value.trim()) {
-    throw new WorkflowError(
-      "agent cwd must be a non-empty absolute directory",
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      {
-        recoverable: false,
-      },
-    );
-  }
-  const cwd = value;
-  if (!isAbsolute(cwd)) {
-    throw new WorkflowError("agent cwd must be an absolute directory", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
-      recoverable: false,
-    });
-  }
-  try {
-    const resolved = realpathSync(cwd);
-    if (!statSync(resolved).isDirectory()) {
-      throw new Error("not a directory");
-    }
-    return resolved;
-  } catch {
-    throw new WorkflowError(
-      `agent cwd must be an existing directory: ${cwd}`,
-      WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      { recoverable: false },
-    );
-  }
-}
-
 function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): boolean {
   return schema === undefined && typeof result === "string" && result.trim().length === 0;
 }
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? "").length / 4);
-}
-
-function normalizeConcurrency(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) return 1;
-  return Math.min(MAX_CONCURRENCY, Math.floor(value));
-}
-
-function normalizeAgentRetries(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return 0;
-  return Math.min(MAX_AGENT_RETRIES, Math.floor(value));
 }
 
 /**
