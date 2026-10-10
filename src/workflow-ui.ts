@@ -23,18 +23,45 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import { Markdown, parseKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { AgentUsage } from "./agent.js";
-import type { ThemeLike, WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
-import { aggregateAgentUsage, fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
+import type { ThemeLike, WorkflowAgentSnapshot } from "./display.js";
+import { fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
+import { asText } from "./navigator/as-text.js";
+import {
+  type ConfirmationContext,
+  type ConfirmKind,
+  type PendingConfirmation,
+  sameConfirmationContext,
+} from "./navigator/confirmation.js";
+import { FrameMemo } from "./navigator/frame-memo.js";
+import { dropLastGrapheme, safeInputText } from "./navigator/input-text.js";
+import {
+  type ItemIdentity,
+  type ItemKind,
+  type NavigatorSnapshot,
+  type SavedItemIdentity,
+  sameIdentity,
+  savedIdentity,
+  type VisibleNavigatorItem,
+  visibleItems,
+} from "./navigator/items.js";
+import { persistedToSnapshot } from "./navigator/persisted-snapshot.js";
+import {
+  type AgentRow,
+  agentRowsByPhase,
+  agentRowsInPhase,
+  type PhaseRow,
+  phaseRows,
+  type RunRow,
+  type RunSnapshot,
+  runRow,
+} from "./navigator/rows.js";
 import type { PersistedRunState } from "./run-persistence.js";
-import { runSummary } from "./run-record-store.js";
 import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import {
   isSafeSavedWorkflowName,
   type SavedWorkflow,
   type SavedWorkflowMutationResult,
-  savedWorkflowRevision,
   type WorkflowStorage,
 } from "./workflow-saved.js";
 
@@ -106,101 +133,9 @@ const BOX_BORDER_RIGHT = " │";
 const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
 
 export type ViewKind = "runs" | "phases" | "agents" | "detail" | "savedDetail";
-
-export type ItemKind = "run" | "saved";
 export type NavigatorInputMode = "browse" | "filter" | "rename" | "confirm";
 
-export type ItemIdentity =
-  | { kind: "run"; runId: string }
-  | { kind: "saved"; path: string; source: SavedWorkflow["source"]; name: string; revision: string };
-
-export interface VisibleRunItem {
-  kind: "run";
-  identity: Extract<ItemIdentity, { kind: "run" }>;
-  row: RunRow;
-}
-
-export interface VisibleSavedItem {
-  kind: "saved";
-  identity: Extract<ItemIdentity, { kind: "saved" }>;
-  workflow: SavedWorkflow;
-}
-
-export type VisibleNavigatorItem = VisibleRunItem | VisibleSavedItem;
-
-/** One coherent, filtered source of truth for every runs-pane operation. */
-export interface NavigatorSnapshot {
-  filter: string;
-  items: VisibleNavigatorItem[];
-}
-
-interface RunRow {
-  runId: string;
-  name: string;
-  status: string;
-  done: number;
-  total: number;
-  /** Fresh tokens for the whole run (see tokenFigures for the fallback rule). */
-  fresh: number;
-  /** Cache-read tokens for the whole run. */
-  cacheRead: number;
-  /** True when the displayed figures include character-heuristic estimates (#209). */
-  estimated: boolean;
-  cost: number;
-}
-interface PhaseRow {
-  title: string;
-  done: number;
-  total: number;
-  /** Fresh tokens summed across the phase's agents. */
-  fresh: number;
-  /** Cache-read tokens summed across the phase's agents. */
-  cacheRead: number;
-  /** True when any of the phase's agents reported heuristic-estimated figures (#209). */
-  estimated: boolean;
-}
-interface AgentRow {
-  id: number;
-  label: string;
-  status: string;
-  phase?: string;
-  tokens?: number;
-  tokenUsage?: AgentUsage;
-  model?: string;
-}
-
 /** Short, human-friendly model label: drop the provider prefix for display. */
-/**
- * Coerce a possibly-non-string value from a (corrupt) persisted run to a string,
- * so it can never reach a downstream truncateToWidth()/visibleWidth() as a
- * non-string and crash the whole /workflows overlay via text.slice() (#110).
- * Applied at every Model read boundary that feeds the renderer: phase titles,
- * agent labels/phases, and run names.
- */
-function asText(v: unknown): string {
-  return typeof v === "string" ? v : String(v ?? "");
-}
-
-/** The (coerced) phase an agent belongs to; "(no phase)" when unset. Shared by
- *  agents()/agentsByPhase() so grouping and the drilled-in filter always agree. */
-function agentPhaseKey(a: WorkflowAgentSnapshot): string {
-  return a.phase != null ? asText(a.phase) : "(no phase)";
-}
-
-/** Build a render-safe AgentRow: coerce label/phase so a non-string value from a
- *  corrupt run can't crash the agent row's truncateToWidth() (#110). */
-function toAgentRow(a: WorkflowAgentSnapshot): AgentRow {
-  return {
-    id: a.id,
-    label: asText(a.label),
-    status: a.status,
-    phase: a.phase != null ? asText(a.phase) : a.phase,
-    tokens: a.tokens,
-    tokenUsage: a.tokenUsage,
-    model: a.model,
-  };
-}
-
 export function shortModel(model: string | undefined): string | undefined {
   if (!model) return undefined;
   const m = asText(model);
@@ -208,133 +143,60 @@ export function shortModel(model: string | undefined): string | undefined {
   return slash > 0 ? m.slice(slash + 1) : m;
 }
 
+type NavigatorStorage = Pick<WorkflowStorage, "list" | "delete" | "rename">;
+
 /** Reads run/phase/agent data from the manager, preferring live snapshots. */
 export class NavigatorModel {
-  private frameDepth = 0;
-  private frameRuns: PersistedRunState[] | undefined;
-  private frameSaved: SavedWorkflow[] | undefined;
-  private readonly frameSnapshots = new Map<string, { snapshot: WorkflowSnapshot; status: string } | undefined>();
-
-  private readonly getStorage: () => Pick<WorkflowStorage, "list" | "delete" | "rename"> | undefined;
+  private readonly frame = new FrameMemo();
+  private readonly getStorage: () => NavigatorStorage | undefined;
+  // Rehydrating a persisted run stringifies every agent's result, so keep the
+  // last one keyed by the parsed record object: browsing an unchanged record
+  // reuses it, and a fresh disk read (a new object) invalidates it.
+  private rehydrated?: { record: PersistedRunState; value: RunSnapshot };
 
   constructor(
     private readonly manager: Pick<WorkflowManager, "listRuns" | "getRun">,
-    storage?:
-      | Pick<WorkflowStorage, "list" | "delete" | "rename">
-      | (() => Pick<WorkflowStorage, "list" | "delete" | "rename"> | undefined),
+    storage?: NavigatorStorage | (() => NavigatorStorage | undefined),
   ) {
     this.getStorage = typeof storage === "function" ? storage : () => storage;
   }
 
   /** Share persisted data across all model lookups performed by one render. */
   withRenderFrame<T>(render: () => T): T {
-    const outermost = this.frameDepth === 0;
-    this.frameDepth++;
-    try {
-      return render();
-    } finally {
-      this.frameDepth--;
-      if (outermost) {
-        this.frameRuns = undefined;
-        this.frameSaved = undefined;
-        this.frameSnapshots.clear();
-      }
-    }
+    return this.frame.run(render);
   }
 
   private persistedRuns(): PersistedRunState[] {
-    if (this.frameDepth === 0) return this.manager.listRuns();
-    if (!this.frameRuns) this.frameRuns = this.manager.listRuns();
-    return this.frameRuns;
+    return this.frame.get("runs", () => this.manager.listRuns());
   }
 
-  // Rehydrated persisted snapshots, keyed by the parsed record OBJECT
-  // (audit2 #25): avoid re-stringifying every agent's full result when
-  // browsing the same unchanged persisted record in subsequent frames.
-  // A fresh disk parse yields a new object, so invalidation is automatic.
-  private rehydratedSnapshot?: { record: PersistedRunState; value: { snapshot: WorkflowSnapshot; status: string } };
-
-  private snapshot(runId: string): { snapshot: WorkflowSnapshot; status: string } | undefined {
-    if (this.frameDepth > 0 && this.frameSnapshots.has(runId)) return this.frameSnapshots.get(runId);
-    const live = this.manager.getRun(runId);
-    const value = live
-      ? { snapshot: live.snapshot, status: live.status }
-      : (() => {
-          const p = this.persistedRuns().find((r) => r.runId === runId);
-          if (!p) return undefined;
-          let cached = this.rehydratedSnapshot?.record === p ? this.rehydratedSnapshot.value : undefined;
-          if (!cached) {
-            cached = { snapshot: persistedToSnapshot(p), status: p.status };
-            this.rehydratedSnapshot = { record: p, value: cached };
-          }
-          return cached;
-        })();
-    if (this.frameDepth > 0) this.frameSnapshots.set(runId, value);
-    return value;
+  private snapshot(runId: string): RunSnapshot | undefined {
+    return this.frame.get(`snapshot:${runId}`, () => {
+      const live = this.manager.getRun(runId);
+      if (live) return { snapshot: live.snapshot, status: live.status };
+      const record = this.persistedRuns().find((r) => r.runId === runId);
+      if (!record) return undefined;
+      if (this.rehydrated?.record !== record) {
+        this.rehydrated = { record, value: { snapshot: persistedToSnapshot(record), status: record.status } };
+      }
+      return this.rehydrated.value;
+    });
   }
 
   runs(): RunRow[] {
-    return this.persistedRuns().map((p) => {
-      const live = this.manager.getRun(p.runId);
-      // Array guard (#110): a structurally corrupt persisted run (agents not an
-      // array) would otherwise throw "agents is not iterable" here and crash the
-      // runs list itself — i.e. /workflows would fail to open at all.
-      const summary = runSummary(p);
-      const rawAgents = live?.snapshot.agents ?? [];
-      const agents = (Array.isArray(rawAgents) ? rawAgents : []) as WorkflowAgentSnapshot[];
-      const usage = live?.snapshot.tokenUsage ?? p.tokenUsage;
-      // The run-level aggregate is authoritative but only lands when the run
-      // ends; per-agent figures update live. Use whichever accounts for more
-      // tokens, so live runs show a count in the list (agreeing with the phase
-      // view) and finished/legacy runs keep the final aggregate.
-      const fromUsage = tokenFigures(usage);
-      const fromAgents = live ? aggregateAgentUsage(agents) : summary.usage;
-      const figures =
-        fromAgents.fresh + fromAgents.cacheRead > fromUsage.fresh + fromUsage.cacheRead ? fromAgents : fromUsage;
-      return {
-        runId: p.runId,
-        name: asText(live?.snapshot.name ?? p.workflowName),
-        status: live?.status ?? p.status,
-        done: live ? agents.filter((a) => a.status === "done").length : summary.done,
-        total: live ? agents.length : summary.total,
-        fresh: figures.fresh,
-        cacheRead: figures.cacheRead,
-        estimated: figures.estimated,
-        cost: usage?.cost ?? 0,
-      };
-    });
+    return this.persistedRuns().map((record) => runRow(record, this.manager.getRun(record.runId)));
   }
 
   /** Return saved workflows sorted by name, or [] when no storage configured. */
   saved(): SavedWorkflow[] {
     const storage = this.getStorage();
     if (!storage) return [];
-    if (this.frameDepth === 0) return storage.list().sort((a, b) => a.name.localeCompare(b.name));
-    if (!this.frameSaved) this.frameSaved = storage.list().sort((a, b) => a.name.localeCompare(b.name));
-    return this.frameSaved;
+    return this.frame.get("saved", () => storage.list().sort((a, b) => a.name.localeCompare(b.name)));
   }
 
   /** Build the sole filtered item list used by list rendering, footer, drill, and actions. */
   visible(filter: string): NavigatorSnapshot {
-    const needle = filter.toLocaleLowerCase();
-    const contains = (...values: unknown[]) =>
-      !needle || values.some((value) => asText(value).toLocaleLowerCase().includes(needle));
-    const items: VisibleNavigatorItem[] = [];
-    for (const row of this.runs()) {
-      if (contains(row.name, row.runId, row.status)) {
-        items.push({ kind: "run", identity: { kind: "run", runId: row.runId }, row });
-      }
-    }
-    for (const workflow of this.saved()) {
-      if (contains(workflow.name, workflow.description)) {
-        items.push({
-          kind: "saved",
-          identity: savedIdentity(workflow),
-          workflow,
-        });
-      }
-    }
-    return { filter, items };
+    return visibleItems(filter, this.runs(), this.saved());
   }
 
   /** Delete exactly the currently visible saved source. */
@@ -361,73 +223,23 @@ export class NavigatorModel {
   }
 
   runStatus(runId: string): string {
-    // Coerce (#110): a corrupt persisted run can carry a non-string status, which
-    // would otherwise crash twoPaneHeader's truncateToWidth() with text.slice().
     return asText(this.snapshot(runId)?.status ?? "unknown");
   }
 
   phases(runId: string): PhaseRow[] {
     const snap = this.snapshot(runId)?.snapshot;
-    if (!snap) return [];
-    // Coerce phase keys up front (#110): a non-string phase — from a corrupt
-    // persisted run or a script that passed a non-string to phase() — would
-    // otherwise reach truncateToWidth() and crash the overlay. Grouping through
-    // the shared agentPhaseKey() (not an inline copy) locks the invariant that
-    // agents land under the same string the drilled-in agents() filter compares
-    // against; the Array.isArray guards mirror agents()/agentsByPhase().
-    const order = Array.isArray(snap.phases) ? snap.phases.map(asText) : [];
-    const byPhase = new Map<string, AgentRow[]>();
-    const agents = Array.isArray(snap.agents) ? snap.agents : [];
-    const seenPhases = new Set<string>(order); // seeded: order starts from snap.phases
-    for (const a of agents) {
-      const key = agentPhaseKey(a);
-      if (!byPhase.has(key)) byPhase.set(key, []);
-      byPhase.get(key)?.push(a);
-      if (!seenPhases.has(key)) {
-        seenPhases.add(key);
-        order.push(key);
-      }
-    }
-    return order.map((title) => {
-      const agents = byPhase.get(title) ?? [];
-      const usage = aggregateAgentUsage(agents);
-      return {
-        title, // already coerced to a string above
-        done: agents.filter((a) => a.status === "done").length,
-        total: agents.length,
-        fresh: usage.fresh,
-        cacheRead: usage.cacheRead,
-        estimated: usage.estimated,
-      };
-    });
+    return snap ? phaseRows(snap) : [];
   }
 
   agents(runId: string, phase: string): AgentRow[] {
     const snap = this.snapshot(runId)?.snapshot;
-    if (!snap || !Array.isArray(snap.agents)) return [];
-    return snap.agents.filter((a) => agentPhaseKey(a) === phase).map((a) => toAgentRow(a));
+    return snap ? agentRowsInPhase(snap, phase) : [];
   }
 
-  /**
-   * All agents grouped by their (coerced) phase in a SINGLE pass — O(agents).
-   * The navigator's phase pane needs each phase's agents (status colour + the
-   * selected phase's rows); calling agents() once per phase row was O(phases ×
-   * agents) per frame. Callers that render every phase use this instead.
-   */
+  /** All agents grouped by phase in one pass, for views that render every phase. */
   agentsByPhase(runId: string): Map<string, AgentRow[]> {
-    const out = new Map<string, AgentRow[]>();
     const snap = this.snapshot(runId)?.snapshot;
-    if (!snap || !Array.isArray(snap.agents)) return out;
-    for (const a of snap.agents) {
-      const key = agentPhaseKey(a);
-      let arr = out.get(key);
-      if (!arr) {
-        arr = [];
-        out.set(key, arr);
-      }
-      arr.push(toAgentRow(a));
-    }
-    return out;
+    return snap ? agentRowsByPhase(snap) : new Map();
   }
 
   agentDetail(runId: string, agentId: number): WorkflowAgentSnapshot | undefined {
@@ -435,67 +247,8 @@ export class NavigatorModel {
   }
 }
 
-function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
-  // Array guards (#110): structurally corrupt persisted arrays must not crash
-  // the overlay. Resumable runs also avoid duplicating full results in agents[]
-  // and the journal, so rehydrate done agents by call identity. The
-  // positional index remains a fallback for files written before callId existed.
-  const agents = (Array.isArray(p.agents) ? p.agents : []).filter((agent) => agent && typeof agent === "object");
-  const journalByIndex = new Map<number, unknown>();
-  const journalByCallId = new Map<string, unknown>();
-  for (const entry of Array.isArray(p.journal) ? p.journal : []) {
-    if (entry && typeof entry === "object" && typeof entry.index === "number") {
-      journalByIndex.set(entry.index, entry.result);
-      // Records from releases that could nest saved workflows tag child-frame
-      // entries with the child's runId; honour it so those rows still rehydrate.
-      const frameRunId = (entry as { runId?: unknown }).runId;
-      journalByCallId.set(`${typeof frameRunId === "string" ? frameRunId : p.runId}:${entry.index}`, entry.result);
-    }
-  }
-  const snapshotAgents = agents.map((a, callIndex) => {
-    const journalResult = a.callId ? journalByCallId.get(a.callId) : journalByIndex.get(callIndex);
-    const result = a.result === undefined && a.status === "done" ? journalResult : a.result;
-    // resultPreview for string results is the result itself — no extra
-    // stringify. Non-string results stringify ONCE here; callers browsing the
-    // same run hit the cache below instead of re-stringifying per frame.
-    return {
-      id: a.id,
-      callId: a.callId,
-      label: a.label,
-      phase: a.phase,
-      prompt: a.prompt,
-      status: a.status,
-      result,
-      resultPreview:
-        result === undefined ? a.resultPreview : String(typeof result === "string" ? result : JSON.stringify(result)),
-      error: a.error,
-      errorCode: a.errorCode,
-      recoverable: a.recoverable,
-      history: a.history,
-      tokens: a.tokens,
-      tokenUsage: a.tokenUsage,
-      model: a.model,
-      sessionId: a.sessionId,
-      sessionFile: a.sessionFile,
-    };
-  });
-  return {
-    name: asText(p.workflowName),
-    phases: Array.isArray(p.phases) ? p.phases : [],
-    currentPhase: p.currentPhase,
-    logs: Array.isArray(p.logs) ? p.logs : [],
-    agents: snapshotAgents,
-    agentCount: snapshotAgents.length,
-    runningCount: snapshotAgents.filter((a) => a.status === "running").length,
-    doneCount: snapshotAgents.filter((a) => a.status === "done").length,
-    errorCount: snapshotAgents.filter((a) => a.status === "error").length,
-    tokenUsage: p.tokenUsage ? { ...p.tokenUsage } : undefined,
-    runId: p.runId,
-  };
-}
-
-/** Navigation state machine. Runs-pane selection is an item identity; cursor is
- * only the location where that identity is rendered. */
+/** One level of the view stack. In the runs pane the selection is an item
+ * identity; the cursor only records where that identity is drawn. */
 type StackFrame = {
   kind: ViewKind;
   cursor: number;
@@ -503,112 +256,15 @@ type StackFrame = {
   phase?: string;
   agentId?: number;
   savedName?: string;
-  savedIdentity?: Extract<ItemIdentity, { kind: "saved" }>;
+  savedIdentity?: SavedItemIdentity;
   selected?: ItemIdentity;
 };
 
-type ConfirmKind = "pause" | "stop" | "deleteSaved";
-type ConfirmationContext = {
-  kind: ViewKind;
-  runId?: string;
-  phase?: string;
-  agentId?: number;
-  savedIdentity?: Extract<ItemIdentity, { kind: "saved" }>;
-};
-type PendingConfirmation = {
-  action: ConfirmKind;
-  target: ItemIdentity;
-  cursor: number;
-  filter: string;
-  context: ConfirmationContext;
-};
-
-function savedIdentity(workflow: SavedWorkflow): Extract<ItemIdentity, { kind: "saved" }> {
-  return {
-    kind: "saved",
-    path: workflow.path,
-    source: workflow.source,
-    name: workflow.name,
-    revision: savedWorkflowRevision(workflow),
-  };
-}
-
-function sameIdentity(a: ItemIdentity | undefined, b: ItemIdentity | undefined): boolean {
-  if (!a || !b || a.kind !== b.kind) return false;
-  if (a.kind === "run" && b.kind === "run") return a.runId === b.runId;
-  const left = a as Extract<ItemIdentity, { kind: "saved" }>;
-  const right = b as Extract<ItemIdentity, { kind: "saved" }>;
-  return (
-    left.path === right.path &&
-    left.source === right.source &&
-    left.name === right.name &&
-    left.revision === right.revision
-  );
-}
-function graphemes(text: string): string[] {
-  const Segmenter = Intl.Segmenter;
-  return Segmenter ? [...new Segmenter().segment(text)].map((entry) => entry.segment) : Array.from(text);
-}
-
-/** Remove terminal control sequences while preserving ordinary pasted text. */
-export function safeInputText(data: string): string {
-  let out = "";
-  let index = 0;
-  while (index < data.length) {
-    if (data.charCodeAt(index) === 0x1b) {
-      const next = data[index + 1];
-      if (next === "[") {
-        // CSI: consume through its final byte (0x40–0x7e).
-        index += 2;
-        while (index < data.length) {
-          const code = data.charCodeAt(index++);
-          if (code >= 0x40 && code <= 0x7e) break;
-        }
-        continue;
-      }
-      if (next === "]") {
-        // OSC: consume the command, payload, and either BEL or ST terminator.
-        // An unterminated OSC is discarded through the end rather than leaking
-        // its title/parameters into the user's filter or rename.
-        index += 2;
-        while (index < data.length) {
-          if (data.charCodeAt(index) === 0x07) {
-            index++;
-            break;
-          }
-          if (data.charCodeAt(index) === 0x1b && data[index + 1] === "\\") {
-            index += 2;
-            break;
-          }
-          index++;
-        }
-        continue;
-      }
-      // Drop a bare ESC and an ST terminator; neither is user text.
-      index += next === "\\" ? 2 : 1;
-      continue;
-    }
-
-    const codePoint = data.codePointAt(index) ?? 0;
-    const char = String.fromCodePoint(codePoint);
-    if (codePoint === 0x7f || codePoint < 0x20 || (codePoint >= 0x80 && codePoint <= 0x9f)) {
-      index += char.length;
-      continue;
-    }
-    if (/\p{Cf}/u.test(char)) {
-      index += char.length;
-      continue;
-    }
-    out += char;
-    index += char.length;
-  }
-  return out;
-}
-
+/** Navigation state machine: view stack, selection, text input, and pending confirmation. */
 export class NavigatorState {
   private stack: StackFrame[] = [{ kind: "runs", cursor: 0 }];
   private pending?: PendingConfirmation;
-  private renameTarget?: Extract<ItemIdentity, { kind: "saved" }>;
+  private renameTarget?: SavedItemIdentity;
   private filterSelection?: ItemIdentity;
   mode: NavigatorInputMode = "browse";
   filter = "";
@@ -652,11 +308,9 @@ export class NavigatorState {
   /** Reconcile selection after any list/filter/manager change without drifting. */
   reconcile(snapshot: NavigatorSnapshot): void {
     if (this.kind !== "runs") return;
-    // NOTE: a pending confirmation is deliberately NOT cancelled by manager
-    // events (audit2 #22) — tokenUsage alone fires ~4/s per streaming agent,
-    // so the double-tap window never survived. confirm() re-validates
-    // cursor/filter/context and the TARGET identity against the current item,
-    // so a stale confirmation cannot act on the wrong row.
+    // A pending confirmation survives refreshes on purpose: token updates fire
+    // several times per second per streaming agent, so cancelling here would
+    // make the second keypress impossible. confirm() re-checks the target.
     const top = this.top();
     const index = snapshot.items.findIndex((item) => sameIdentity(top.selected, item.identity));
     if (index >= 0) {
@@ -669,10 +323,7 @@ export class NavigatorState {
     top.cursor = snapshot.items.length ? Math.max(0, Math.min(top.cursor, snapshot.items.length - 1)) : 0;
     if (snapshot.items.length) top.selected = snapshot.items[top.cursor]?.identity;
   }
-  /**
-   * @deprecated No-op kept for source compatibility: manager events no longer
-   * cancel confirmations (audit2 #22) and the render frame reconciles.
-   */
+  /** @deprecated No-op: manager events no longer cancel confirmations, and the render frame reconciles. */
   noteManagerEvent(_snapshot: NavigatorSnapshot): void {}
   currentItem(snapshot: NavigatorSnapshot): VisibleNavigatorItem | undefined {
     this.reconcile(snapshot);
@@ -697,11 +348,15 @@ export class NavigatorState {
     this.top().cursor = next;
     this.top().selected = snapshot.items[next]?.identity;
   }
+  /** Detail pages scroll their body; moving in the agent detail opens its pager, and scrolling up stops tailing. */
+  private scrollBody(delta: number): void {
+    if (this.kind === "detail") this.pagerOpen = true;
+    if (delta < 0) this.tailing = false;
+    this.scroll = Math.max(0, this.scroll + delta);
+  }
   move(delta: number, count: number, snapshot?: NavigatorSnapshot) {
     if (this.kind === "detail" || this.kind === "savedDetail") {
-      if (this.kind === "detail") this.pagerOpen = true;
-      if (delta < 0) this.tailing = false;
-      this.scroll = Math.max(0, this.scroll + delta);
+      this.scrollBody(delta);
       return;
     }
     if (count <= 0) return;
@@ -716,9 +371,7 @@ export class NavigatorState {
   movePage(direction: -1 | 1, count: number, snapshot?: NavigatorSnapshot) {
     const delta = direction * Math.max(1, this.pageSize - 1);
     if (this.kind === "detail" || this.kind === "savedDetail") {
-      if (this.kind === "detail") this.pagerOpen = true;
-      if (direction < 0) this.tailing = false;
-      this.scroll = Math.max(0, this.scroll + delta);
+      this.scrollBody(delta);
       return;
     }
     if (count <= 0) return;
@@ -865,7 +518,7 @@ export class NavigatorState {
     if (this.mode === "filter" || this.mode === "rename") this.draft += safeInputText(data);
   }
   backspaceInput(): void {
-    if (this.mode === "filter" || this.mode === "rename") this.draft = graphemes(this.draft).slice(0, -1).join("");
+    if (this.mode === "filter" || this.mode === "rename") this.draft = dropLastGrapheme(this.draft);
   }
   applyFilter(model: NavigatorModel): NavigatorSnapshot {
     this.filter = this.draft;
@@ -876,7 +529,7 @@ export class NavigatorState {
     this.filterSelection = undefined;
     return snapshot;
   }
-  takeRename(): { target: Extract<ItemIdentity, { kind: "saved" }>; name: string } | undefined {
+  takeRename(): { target: SavedItemIdentity; name: string } | undefined {
     if (this.mode !== "rename" || !this.renameTarget) return undefined;
     const result = { target: this.renameTarget, name: this.draft };
     this.mode = "browse";
@@ -884,7 +537,7 @@ export class NavigatorState {
     this.renameTarget = undefined;
     return result;
   }
-  replaceSavedIdentity(previous: Extract<ItemIdentity, { kind: "saved" }>, workflow: SavedWorkflow): void {
+  replaceSavedIdentity(previous: SavedItemIdentity, workflow: SavedWorkflow): void {
     const next = savedIdentity(workflow);
     for (const frame of this.stack) {
       if (frame.selected && sameIdentity(frame.selected, previous)) frame.selected = next;
@@ -915,16 +568,6 @@ export class NavigatorState {
       savedIdentity: frame.savedIdentity,
     };
   }
-  private sameConfirmationContext(context: ConfirmationContext): boolean {
-    const current = this.confirmationContext();
-    return (
-      current.kind === context.kind &&
-      current.runId === context.runId &&
-      current.phase === context.phase &&
-      current.agentId === context.agentId &&
-      ((!current.savedIdentity && !context.savedIdentity) || sameIdentity(current.savedIdentity, context.savedIdentity))
-    );
-  }
   beginConfirmation(action: ConfirmKind, target: ItemIdentity, snapshot: NavigatorSnapshot): boolean {
     if (this.mode !== "browse") return false;
     this.pending = {
@@ -946,7 +589,7 @@ export class NavigatorState {
       pending.action !== action ||
       pending.cursor !== this.cursor ||
       pending.filter !== snapshot.filter ||
-      !this.sameConfirmationContext(pending.context)
+      !sameConfirmationContext(this.confirmationContext(), pending.context)
     )
       return undefined;
     if (this.kind === "savedDetail") {
