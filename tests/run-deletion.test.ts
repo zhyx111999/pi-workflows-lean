@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -114,6 +114,49 @@ test(
     assert.throws(() => owner.save(record("new-run", "completed")), RunRecordDeletedError);
   }),
 );
+
+test(
+  "deleting a run that only its backup still holds reports the deletion",
+  withTempProject(async (cwd) => {
+    const owner = createRunPersistence(cwd);
+    owner.save(record("lone-backup", "paused"));
+    owner.save(record("manager-backup", "paused"));
+    for (const runId of ["lone-backup", "manager-backup"]) {
+      unlinkSync(join(owner.getRunsDir(), `${runId}.json`));
+      assert.ok(createRunPersistence(cwd).load(runId), "the backup still recovers the record");
+    }
+
+    assert.equal(createRunPersistence(cwd).delete("lone-backup"), true);
+    assert.deepEqual(runFiles(owner, "lone-backup"), []);
+
+    const manager = new WorkflowManager({ cwd });
+    const deleted: string[] = [];
+    manager.on("deleted", (event: { runId: string }) => deleted.push(event.runId));
+    assert.equal(manager.deleteRun("manager-backup"), true);
+    assert.deepEqual(deleted, ["manager-backup"]);
+    assert.deepEqual(runFiles(owner, "manager-backup"), []);
+  }),
+);
+
+for (const write of ["updateMetadata", "recoverInterrupted"] as const) {
+  test(
+    `a run first written by ${write} is not recreated after another process deletes it`,
+    withTempProject(async (cwd) => {
+      const other = createRunPersistence(cwd);
+      other.save(record("metadata-first", "running"));
+      const writer = createRunPersistence(cwd);
+      const written =
+        write === "updateMetadata"
+          ? writer.updateMetadata?.("metadata-first", { sessionId: "writer" })
+          : writer.recoverInterrupted?.("metadata-first");
+      assert.equal(written, true);
+
+      assert.equal(other.delete("metadata-first"), true);
+      assert.throws(() => writer.save(record("metadata-first", "paused")), RunRecordDeletedError);
+      assert.deepEqual(runFiles(writer, "metadata-first"), []);
+    }),
+  );
+}
 
 test(
   "an in-flight delivery acknowledged after another process deletes the run does not recreate it",
