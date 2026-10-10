@@ -38,8 +38,8 @@ export const WORKFLOW_AUTHORING_PROFILES = [
       SKILL_PATH,
       `${SKILL_ROOT}/references/runtime.md`,
       `${SKILL_ROOT}/references/review.md`,
-      `${SKILL_ROOT}/references/quality-helpers.md`,
-      `${SKILL_ROOT}/examples/adversarial-verification.js`,
+      `${SKILL_ROOT}/references/lifecycle.md`,
+      `${SKILL_ROOT}/examples/classify-and-act.js`,
     ],
   },
   {

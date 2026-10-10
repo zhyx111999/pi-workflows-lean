@@ -11,17 +11,16 @@ import {
   WORKFLOW_CAPABILITY_DEFINITION,
   WorkflowCapabilityContractError,
 } from "../src/workflow-capability-contract.js";
+import { createWorkflowTool } from "../src/workflow-tool.js";
 
 const EXPECTED_RUNTIME_GLOBALS = [
   "agent",
   "args",
   "budget",
   "checkpoint",
-  "completenessCheck",
   "console",
   "cwd",
   "gate",
-  "judgePanel",
   "log",
   "loopUntilDry",
   "parallel",
@@ -29,7 +28,6 @@ const EXPECTED_RUNTIME_GLOBALS = [
   "pipeline",
   "process",
   "retry",
-  "verify",
   "workflow",
 ] as const;
 
@@ -66,11 +64,9 @@ test("capability definition inventories the settled runtime and invocation contr
     "agent-options",
     "checkpoint-options",
     "gate-options",
-    "judge-panel-options",
     "loop-until-dry-options",
     "phase-options",
     "retry-options",
-    "verify-options",
   ]);
   assert.ok(
     WORKFLOW_CAPABILITY_DEFINITION.capabilities.some(
@@ -102,6 +98,34 @@ test("tool-input contract records configured omission defaults and soft budget a
   assert.equal(agentTimeoutMs?.signature, "agentTimeoutMs?: number = configured default or unbounded");
   assert.equal(tokenBudget?.signature, "tokenBudget?: number = configured default or unlimited");
   assert.deepEqual(tokenBudget?.constraints, ["soft pre-call gate; in-flight work can overshoot"]);
+});
+
+test("declared tool inputs match the provider-visible workflow tool schema", () => {
+  const { parameters } = createWorkflowTool();
+  const properties = (parameters as { properties: Record<string, { description?: string }> }).properties;
+  assert.deepEqual(Object.keys(properties).sort(), [...EXPECTED_TOOL_INPUTS]);
+
+  // Both the contract and the provider-visible prose describe tokenBudget; they must agree it is a soft gate.
+  const tokenBudget = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
+    ({ id }) => id === "workflow.tool-input.tokenBudget",
+  );
+  assert.match(tokenBudget?.constraints.join(" ") ?? "", /soft/);
+  assert.match(properties.tokenBudget?.description ?? "", /soft/);
+  assert.doesNotMatch(properties.tokenBudget?.description ?? "", /hard/);
+});
+
+test("background is an ignored compatibility input and no fact offers a foreground run", () => {
+  const background = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
+    ({ id }) => id === "workflow.tool-input.background",
+  );
+  assert.equal(background?.support, CapabilitySupport.COMPATIBILITY);
+  assert.match(background?.constraints.join(" ") ?? "", /ignored.*every run starts in the background/);
+
+  const checkpoint = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(({ id }) => id === "workflow.runtime.checkpoint");
+  assert.match(checkpoint?.constraints.join(" ") ?? "", /returns options\.default.*aborts the run when headless/);
+
+  const allFacts = JSON.stringify(WORKFLOW_CAPABILITY_DEFINITION);
+  assert.doesNotMatch(allFacts, /background:? false|foreground/i);
 });
 
 test("contract data is immutable after validation", () => {
@@ -168,6 +192,19 @@ test("contract rejects malformed runtime and registry definitions", () => {
           diagnostic.subject === "agent" &&
           diagnostic.message === 'Duplicate runtime implementation identity "agent".',
       ),
+  );
+
+  const duplicateAnchor = {
+    ...WORKFLOW_CAPABILITY_DEFINITION,
+    capabilities: WORKFLOW_CAPABILITY_DEFINITION.capabilities.map((capability, index) =>
+      index === 1 ? { ...capability, detailsAnchor: "agent" } : capability,
+    ),
+  };
+  assert.throws(
+    () => defineWorkflowCapabilityContract(duplicateAnchor),
+    (error: unknown) =>
+      error instanceof WorkflowCapabilityContractError &&
+      error.diagnostics.some((diagnostic) => diagnostic.message === 'Duplicate details anchor "agent".'),
   );
 });
 
@@ -332,6 +369,7 @@ return {
   );
 
   assert.deepEqual(observedProjectGlobals, [...EXPECTED_RUNTIME_GLOBALS]);
+  assert.deepEqual(WORKFLOW_CAPABILITY_CONTRACT.diagnoseAlignment({ observedProjectGlobals }), []);
   assert.equal(result.result.substratePresent, true);
   assert.equal(result.result.agentResult, "ok");
   assert.equal(result.result.processMatchesCwd, true);

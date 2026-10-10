@@ -12,53 +12,20 @@ import {
 import { createWorkflowTool } from "../src/workflow-tool.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
-// Exact post-change measurements: ratchet only after reviewing a new accepted form.
-// The prompt baseline intentionally uses an empty agentType registry so user configuration cannot alter it.
-// The upstream authorization gate is the only always-on guideline. Authoring
-// mechanics stay in the compact static tool definition and discoverable skill.
-const RENDERED_PROMPT_BUDGET_BYTES = 800;
-// #105 corrected omitted timeout/budget semantics to name configured defaults,
-// increasing the compact definition from 3,802 to 3,918 bytes.
-// Made the 5 built-in workflow patterns (deep-research, adversarial-review,
-// code-review, multi-perspective, codebase-audit) reachable from the tool
-// itself, not only slash commands: added an optional `name` input (with a
-// deliberately terse description that defers argument-shape details to a new
-// workflow-patterns skill) and a one-clause addition to `script`'s
-// description noting it's optional when `name` is given, increasing this
-// compact definition from 3,918 to 4,267 bytes (+349).
+// Each budget is the measured size of the currently accepted wording, so any growth
+// fails here and must be reviewed before the budget is raised. The prompt is measured
+// with an empty agentType registry so user configuration cannot alter it.
+// docs/workflow-context-surfaces.json records the same two sizes.
 //
-// That is not the full always-on cost of this change, stated honestly: the
-// new workflow-patterns skill itself also contributes an always-on
-// discovery entry (its `name` + `description`, shown to the model regardless
-// of whether the skill is ever loaded) of ~593 bytes — see
-// docs/workflow-context-surfaces.json's `registeredSkillsDiscovery`, which is
-// generic over every skill package.json's `pi.skills` registers (not
-// hardcoded to workflow-authoring), so this and any future skill's always-on
-// cost stays tracked. Total always-on growth from this change is
-// approximately 349 (this tool definition) + 593 (skill discovery) ≈ 942
-// bytes — well short of loading the skill's full body, which only happens
-// on demand.
-//
-// `args` was `Type.Any()`, which TypeBox compiles to a schema with no
-// "type" keyword at all (just `{ description }`). At least one MCP/tool-
-// calling bridge does not treat a typeless property as "accept any JSON
-// value" — it coerces/flattens the value before the handler sees it, so
-// every named built-in pattern's required `args` field (e.g. `args.scope`
-// for codebase-audit) silently arrives as `undefined` regardless of what
-// the caller sent, making `name`-based invocation of all 5 built-in
-// patterns unusable end-to-end on that bridge. Every built-in pattern's
-// `args` is a JSON object at the top level, so `args` is now declared
-// `Type.Unsafe<Record<string, unknown>>({ type: "object", description })`
-// — an explicit, minimal, JSON-Schema-valid object type (additional
-// properties are allowed by default without needing to spell that out) —
-// increasing this compact definition from 4,267 to 4,283 bytes (+16).
-//
-// #127 compressed the reviewed tokenBudget contract to stay under the
-// previous ceiling; this follow-up restores the agreed text verbatim
-// instead. The exact wording increases the measured definition from 4,276
-// to 4,392 bytes (+116), and the accepted ceiling moves with it, from
-// 4,283 to 4,392.
-const TOOL_DEFINITION_BUDGET_BYTES = 4_392;
+// Always-on prompt (336 bytes): the workflow promptSnippet plus the single gate
+// guideline that defers the call decision to the note appended to user messages.
+const RENDERED_PROMPT_BUDGET_BYTES = 336;
+// Provider-visible tool definition (4,935 bytes at 3.13.0-lean.1, up from 4,392 in
+// upstream 3.13.0): the `script` description now spells out the remaining control
+// helpers (retry, gate, loopUntilDry, checkpoint, budget, phase budgets) and agent()
+// routing options inline and forbids cross-check subagents, so authors need not load
+// the skill for routine scripts; `background` is documented as ignored.
+const TOOL_DEFINITION_BUDGET_BYTES = 4_935;
 
 test("rendered workflow prompt contribution stays within its accepted size", async () => {
   await withRenderedWorkflow(async ({ systemPrompt, promptLines }) => {

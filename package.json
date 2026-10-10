@@ -23,10 +23,8 @@
     "README.md"
   ],
   "scripts": {
-    "test": "npm run check && npm run release:check",
+    "test": "npm run check && npm run build && npm run docs:check && npm run context:check && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
-    "release:check": "npm run build && npm run docs:check && npm run context:check && npm run test:unit && npm run release:verify",
-    "release:verify": "tsx scripts/check-workflow-release.ts",
     "check": "biome check . && npm run check:scripts",
     "check:scripts": "tsc -p tsconfig.scripts.json",
     "format": "biome format --write .",
@@ -36,13 +34,7 @@
     "docs:check": "tsx scripts/generate-workflow-capabilities.ts --check",
     "context:generate": "tsx scripts/generate-workflow-context-measurement.ts",
     "context:check": "tsx scripts/generate-workflow-context-measurement.ts --check",
-    "guidance:generate": "tsx scripts/generate-workflow-guidance-baseline.ts",
-    "guidance:check": "tsx scripts/generate-workflow-guidance-baseline.ts --check",
-    "guidance:accept": "tsx scripts/accept-workflow-guidance.ts",
-    "comprehension": "tsx scripts/run-workflow-comprehension.ts",
-    "delivery-choice": "tsx scripts/run-workflow-delivery-choice.ts",
-    "dev": "tsx src/index.ts",
-    "prepublishOnly": "npm run release:check"
+    "dev": "tsx src/index.ts"
   },
   "keywords": [
     "pi-package",

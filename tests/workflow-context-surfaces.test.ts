@@ -22,6 +22,7 @@ import { createWorkflowTool } from "../src/workflow-tool.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 const ROOT = join(import.meta.dirname, "..");
+const CONTEXT_SCRIPT = "scripts/generate-workflow-context-measurement.ts";
 
 test("workflow context measurement reports Pi-rendered prompt and provider tool definition separately", async () => {
   const artifact = measureWorkflowContextSurfaces(ROOT);
@@ -52,7 +53,7 @@ test("workflow context measurement reports Pi-rendered prompt and provider tool 
   for (const skill of artifact.surfaces.registeredSkillsDiscovery.skills) {
     assert.ok(skill.bytes > 0, `${skill.root} should report a positive discovery byte count`);
   }
-  assert.equal(artifact.surfaces.workflowAuthoringSkillCorpus.files, 28);
+  assert.equal(artifact.surfaces.workflowAuthoringSkillCorpus.files, 24);
   assert.ok(artifact.surfaces.workflowAuthoringSkillCorpus.bytes > 0);
   assert.equal(artifact.surfaces.representativeAuthoringProfiles.profiles.length, 6);
   assert.deepEqual(
@@ -94,13 +95,17 @@ test("workflow context measurement generation is deterministic and committed art
   assert.equal(readFileSync(join(ROOT, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8"), first);
   assert.equal(checkWorkflowContextMeasurement(ROOT), true);
   assert.equal(checkWorkflowContextMeasurement(ROOT, `${first}stale`), false);
-  assert.equal(packageJson.scripts["context:check"], "tsx scripts/generate-workflow-context-measurement.ts --check");
-  assert.match(packageJson.scripts.test, /release:check/);
-  assert.match(packageJson.scripts["release:check"], /context:check/);
+  assert.equal(packageJson.scripts["context:check"], `tsx ${CONTEXT_SCRIPT} --check`);
+  assert.match(packageJson.scripts.test, /npm run context:check/);
 });
 
 test("context freshness command prints both current byte counts", () => {
-  const output = execFileSync("npm", ["run", "context:check"], { cwd: ROOT, encoding: "utf8" });
+  // Run the script that `npm run context:check` runs through Node itself: spawning
+  // `npm` directly fails on Windows, where it is a .cmd shim that needs a shell.
+  const output = execFileSync(process.execPath, ["--import", "tsx", CONTEXT_SCRIPT, "--check"], {
+    cwd: ROOT,
+    encoding: "utf8",
+  });
 
   assert.match(output, /Permanent workflow prompt: \d+ bytes/);
   assert.match(output, /Provider-visible workflow tool definition: \d+ bytes/);

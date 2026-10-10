@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, join, normalize, relative } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, posix, relative } from "node:path";
 import test from "node:test";
 import packageJson from "../package.json" with { type: "json" };
 import { runWorkflow } from "../src/workflow.js";
@@ -12,99 +11,123 @@ import {
   renderWorkflowCapabilityDetails,
   renderWorkflowCapabilityReference,
 } from "../src/workflow-authoring-reference.js";
-import { WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
-import { parseNpmPackFilePaths } from "../src/workflow-release-gate.js";
+import { CapabilityClassification, WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
 import { createWorkflowTool } from "../src/workflow-tool.js";
 
 const ROOT = join(import.meta.dirname, "..");
 const SKILL_ROOT = "skills/workflow-authoring";
-const REQUIRED_RESOURCES = [
-  `${SKILL_ROOT}/SKILL.md`,
-  `${SKILL_ROOT}/references/capabilities.md`,
-  `${SKILL_ROOT}/references/capability-details.md`,
-  `${SKILL_ROOT}/references/runtime.md`,
-  `${SKILL_ROOT}/references/helpers.md`,
-  `${SKILL_ROOT}/references/common-helpers.md`,
-  `${SKILL_ROOT}/references/quality-helpers.md`,
-  `${SKILL_ROOT}/references/retry-helper.md`,
-  `${SKILL_ROOT}/references/specialized-helpers.md`,
-  `${SKILL_ROOT}/references/lifecycle.md`,
-  `${SKILL_ROOT}/references/versions.md`,
-  `${SKILL_ROOT}/references/pattern-selection.md`,
-  `${SKILL_ROOT}/references/focused-recipes.md`,
-  `${SKILL_ROOT}/references/registry-ownership.md`,
-  `${SKILL_ROOT}/references/review.md`,
-  `${SKILL_ROOT}/references/debugging.md`,
-  `${SKILL_ROOT}/examples/classify-and-act.js`,
-  `${SKILL_ROOT}/examples/fan-out-and-synthesize.js`,
-  `${SKILL_ROOT}/examples/adversarial-verification.js`,
-  `${SKILL_ROOT}/examples/generate-and-filter.js`,
-  `${SKILL_ROOT}/examples/tournament.js`,
-  `${SKILL_ROOT}/examples/loop-until-done.js`,
-  `${SKILL_ROOT}/examples/phased-budgets.js`,
-  `${SKILL_ROOT}/examples/saved-nested-workflows.js`,
-  `${SKILL_ROOT}/examples/bounded-semantic-retry.js`,
-  `${SKILL_ROOT}/examples/validated-gate.js`,
-  `${SKILL_ROOT}/examples/structured-output.js`,
-  `${SKILL_ROOT}/examples/defensive-json-parsing.js`,
-] as const;
+const SKILL_PATH = `${SKILL_ROOT}/SKILL.md`;
+// Markdown links, including same-file `(#anchor)` links: group 1 is the path, group 2 the anchor.
+const MARKDOWN_LINK = /\[[^\]]+\]\(([^)#]*)(?:#([^)]+))?\)/g;
+
+/** Every file in the skill as a package-relative POSIX path. */
+function skillFiles(): string[] {
+  return readdirSync(join(ROOT, SKILL_ROOT), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => relative(ROOT, join(entry.parentPath, entry.name)).replaceAll("\\", "/"))
+    .sort();
+}
+
+function skillMarkdown(): Array<{ path: string; source: string }> {
+  return skillFiles()
+    .filter((path) => path.endsWith(".md"))
+    .map((path) => ({ path, source: readFileSync(join(ROOT, path), "utf8") }));
+}
+
+function hasAnchor(markdown: string, anchor: string): boolean {
+  if (markdown.includes(`<a id="${anchor}"></a>`)) return true;
+  return markdown
+    .split("\n")
+    .filter((line) => /^#{1,6} /.test(line))
+    .map((line) =>
+      line
+        .replace(/^#{1,6} /, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9 -]/g, "")
+        .trim()
+        .replace(/ +/g, "-"),
+    )
+    .includes(anchor);
+}
 
 function requiredSchemaFields(schema?: Record<string, unknown>): unknown[] {
   return Array.isArray(schema?.required) ? Array.from(schema.required) : [];
 }
 
-function publishableFiles(): Set<string> {
-  const output = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: ROOT, encoding: "utf8" });
-  return new Set(parseNpmPackFilePaths(output));
-}
-
-test("publishable Pi package discovers the workflow-authoring skill and all linked resources", () => {
-  // workflow-patterns (discoverability for the 5 built-in patterns via the
-  // `workflow` tool's `name` input) is a separate, smaller skill — see
-  // skills/workflow-patterns/SKILL.md — and is not part of this skill's
-  // required-resource list below.
+test("workflow-authoring skill links resolve and every skill file is reachable from SKILL.md", () => {
+  // workflow-patterns (argument shapes for the built-in workflows reachable by
+  // the `workflow` tool's `name` input) is a separate, smaller skill.
   assert.deepEqual(packageJson.pi.skills, [SKILL_ROOT, "skills/workflow-patterns"]);
-  const files = publishableFiles();
-  for (const resource of REQUIRED_RESOURCES) assert.ok(files.has(resource), `publishable package omitted ${resource}`);
+  const versionLine = new RegExp(`^  version: ["']?${packageJson.version.replaceAll(".", "\\.")}["']?$`, "m");
+  for (const root of packageJson.pi.skills) {
+    const source = readFileSync(join(ROOT, root, "SKILL.md"), "utf8");
+    assert.match(source, versionLine, `${root}/SKILL.md metadata version must match package.json`);
+  }
 
-  const skill = readFileSync(join(ROOT, SKILL_ROOT, "SKILL.md"), "utf8");
+  const skill = readFileSync(join(ROOT, SKILL_PATH), "utf8");
   const description = /^description:\s*(.+)$/m.exec(skill)?.[1] ?? "";
   for (const trigger of ["writing", "editing", "reviewing", "debugging"]) {
     assert.match(description, new RegExp(`\\b${trigger}\\b`, "i"));
   }
   assert.match(description, /not (?:for )?(?:merely )?running an existing workflow/i);
-  assert.match(skill, new RegExp(`^  version: ["']?${packageJson.version.replaceAll(".", "\\.")}["']?$`, "m"));
   assert.ok(skill.split("\n").length <= 80, "SKILL.md should remain a short progressive-disclosure router");
 
-  for (const sourcePath of REQUIRED_RESOURCES.filter((path) => path.endsWith(".md"))) {
+  // Walk links from SKILL.md: every link must resolve inside the skill, and no
+  // skill file may be orphaned, because a model can only find what is linked.
+  const files = new Set(skillFiles());
+  const reachable = new Set([SKILL_PATH]);
+  const pending = [SKILL_PATH];
+  for (let sourcePath = pending.pop(); sourcePath !== undefined; sourcePath = pending.pop()) {
+    if (!sourcePath.endsWith(".md")) continue;
     const source = readFileSync(join(ROOT, sourcePath), "utf8");
-    for (const match of source.matchAll(/\[[^\]]+\]\(([^)#]+)(?:#([^)]+))?\)/g)) {
-      const target = normalize(join(dirname(sourcePath), match[1]));
-      assert.equal(
-        relative(".", target).startsWith(".."),
-        false,
-        `${sourcePath} links outside the package: ${match[1]}`,
-      );
-      assert.ok(files.has(target), `${sourcePath} has a broken packaged link to ${target}`);
-      if (match[2]) {
-        const targetSource = readFileSync(join(ROOT, target), "utf8");
-        const headingAnchors = targetSource
-          .split("\n")
-          .filter((line) => /^#{1,6} /.test(line))
-          .map((line) =>
-            line
-              .replace(/^#{1,6} /, "")
-              .toLowerCase()
-              .replace(/[^a-z0-9 -]/g, "")
-              .trim()
-              .replace(/ +/g, "-"),
-          );
+    for (const [, linkPath, anchor] of source.matchAll(MARKDOWN_LINK)) {
+      const target = linkPath ? posix.normalize(posix.join(posix.dirname(sourcePath), linkPath)) : sourcePath;
+      assert.ok(files.has(target), `${sourcePath} links to ${target}, which is not a file in the skill`);
+      if (anchor) {
         assert.ok(
-          targetSource.includes(`<a id="${match[2]}"></a>`) || headingAnchors.includes(match[2]),
-          `${sourcePath} links to missing anchor ${target}#${match[2]}`,
+          hasAnchor(readFileSync(join(ROOT, target), "utf8"), anchor),
+          `${sourcePath} links to missing anchor ${target}#${anchor}`,
         );
       }
+      if (!reachable.has(target)) {
+        reachable.add(target);
+        pending.push(target);
+      }
     }
+  }
+  assert.deepEqual([...reachable].sort(), [...files], "every skill file must be reachable from SKILL.md");
+});
+
+test("skill guidance calls only functions the workflow runtime injects", () => {
+  const runtimeGlobals = new Set(
+    WORKFLOW_CAPABILITY_CONTRACT.definition.capabilities.flatMap(({ classification, runtimeBinding }) =>
+      classification === CapabilityClassification.RUNTIME_GLOBAL && runtimeBinding ? [runtimeBinding.global] : [],
+    ),
+  );
+  // Call-shaped names in the guidance that are not runtime globals, and why each is legitimate.
+  const notGlobals = new Set([
+    "thunk", // retry/gate callback parameter
+    "validator", // gate callback parameter
+    "until", // retry predicate option
+    "round", // loopUntilDry callback option
+    "spent", // budget.spent()
+    "remaining", // budget.remaining()
+    "cwd", // process.cwd()
+    "resume", // host WorkflowManager.resume() in the durable checkpoint handoff
+    "attempt", // prose "attempt(s)"
+    "require", // named as unavailable
+    "Date", // `new Date()`, named as unavailable
+  ]);
+  for (const { path, source } of skillMarkdown()) {
+    for (const [, name] of source.matchAll(/(?<![\w.$])([A-Za-z_$][\w$]*)\(/g)) {
+      assert.ok(
+        runtimeGlobals.has(name) || notGlobals.has(name),
+        `${path} teaches ${name}(), which the workflow runtime does not provide`,
+      );
+    }
+  }
+  for (const removed of ["verify", "judgePanel", "completenessCheck"]) {
+    assert.equal(runtimeGlobals.has(removed), false, `${removed} must stay removed from the runtime contract`);
   }
 });
 
@@ -132,7 +155,7 @@ test("one generated supported-capability table is fresh across skill, README, an
   }
   assert.match(generatedTable, /agent\(prompt, options\?\)/);
   assert.match(generatedTable, /label.*string.*optional.*derived from phase and call count/i);
-  assert.match(generatedTable, /background\?: boolean = true/);
+  assert.doesNotMatch(generatedTable, /\| background \|/, "ignored compatibility inputs stay out of the table");
   assert.match(
     readFileSync(join(ROOT, "README.md"), "utf8"),
     /\[workflow authoring guide\]\(docs\/workflow-authoring\.md\)/,
@@ -145,9 +168,9 @@ test("one generated supported-capability table is fresh across skill, README, an
   for (const expectedMetadata of [
     "Dynamic reference owner: `model-tier-config`",
     "Item shape: `{ name: string; description?: string }`",
-    "Future lookup connection: `loadModelTierConfig`",
+    "Live lookup: `loadModelTierConfig`",
     "Dynamic reference owner: `agent-registry`",
-    "Future lookup connection: `loadAgentRegistry`",
+    "Live lookup: `loadAgentRegistry`",
   ]) {
     assert.match(installedReference, new RegExp(expectedMetadata.replace(/[{}?]/g, "\\$&")));
   }
@@ -191,7 +214,7 @@ test("authoring guidance makes invocation token budgets explicit opt-in gates", 
 
   assert.match(skill, /invocation-level token and time caps as opt-in user constraints, not defaults/i);
   assert.match(lifecycle, /omit `tokenBudget` unless the user.*explicitly/is);
-  assert.match(lifecycle, /asked to choose.*every planned agent call.*retr.*synthesis.*verification.*headroom/is);
+  assert.match(lifecycle, /asked to choose.*every planned agent call.*retr.*synthesis.*headroom/is);
   assert.match(lifecycle, /tight gate can terminate coverage.*does not reduce work already in flight/is);
   assert.match(lifecycle, /omitted `agentTimeoutMs`.*configured `defaultAgentTimeoutMs`.*otherwise.*unbounded/is);
   assert.match(lifecycle, /omitted `tokenBudget`.*configured `defaultTokenBudget`.*otherwise.*unlimited/is);
@@ -267,56 +290,13 @@ test("generated gate facts expose exact callback, option, and result contracts",
 
 test("generated helper facts expose exact callback, option, result, and failure contracts", () => {
   const facts = new Map(WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts().map((fact) => [fact.id, fact]));
-  const verify = facts.get("workflow.runtime.verify");
-  const judgePanel = facts.get("workflow.runtime.judgePanel");
   const loopUntilDry = facts.get("workflow.runtime.loopUntilDry");
-  const completenessCheck = facts.get("workflow.runtime.completenessCheck");
   const retry = facts.get("workflow.runtime.retry");
   const pipeline = facts.get("workflow.runtime.pipeline");
   const agent = facts.get("workflow.runtime.agent");
+  const checkpoint = facts.get("workflow.runtime.checkpoint");
   const background = facts.get("workflow.tool-input.background");
   const metadata = facts.get("workflow.script.metadata");
-
-  assert.match(verify?.signature ?? "", /reviewers.*threshold.*lens.*realCount.*votes/i);
-  assert.deepEqual(
-    verify?.options?.options.map(({ name, default: value }) => [name, value]),
-    [
-      ["reviewers", "2"],
-      ["threshold", "0.5"],
-      ["lens", null],
-    ],
-  );
-  assert.match(
-    verify?.options?.options[0]?.constraints.join(" ") ?? "",
-    /undefined.*null.*finite integers.*TypeError/i,
-  );
-  assert.match(
-    verify?.constraints.join(" ") ?? "",
-    /external abort.*capacity preflight.*option validation.*no reviewer starts/i,
-  );
-  assert.match(verify?.constraints.join(" ") ?? "", /logical agent slot per reviewer.*preflights/i);
-  assert.match(verify?.constraints.join(" ") ?? "", /execution retries.*not consume extra logical slots/i);
-  assert.match(verify?.constraints.join(" ") ?? "", /successful votes.*denominator/i);
-
-  assert.match(judgePanel?.signature ?? "", /judges.*rubric.*index.*attempt.*score.*judgments.*undefined/i);
-  assert.deepEqual(
-    judgePanel?.options?.options.map(({ name, default: value }) => [name, value]),
-    [
-      ["judges", "3"],
-      ["rubric", '"overall quality and correctness"'],
-    ],
-  );
-  assert.match(
-    judgePanel?.options?.options[0]?.constraints.join(" ") ?? "",
-    /undefined.*null.*finite integers.*TypeError/i,
-  );
-  assert.match(
-    judgePanel?.constraints.join(" ") ?? "",
-    /external abort.*capacity preflight.*option validation.*no judge starts/i,
-  );
-  assert.match(judgePanel?.constraints.join(" ") ?? "", /populated attempts.*judges.*logical agent slots.*preflights/i);
-  assert.match(judgePanel?.constraints.join(" ") ?? "", /sparse.*absent candidates.*original input index/i);
-  assert.match(judgePanel?.constraints.join(" ") ?? "", /stable.*input index.*tie/i);
 
   assert.match(loopUntilDry?.signature ?? "", /round.*roundIndex.*key.*consecutiveEmpty.*maxRounds/i);
   assert.deepEqual(
@@ -330,11 +310,6 @@ test("generated helper facts expose exact callback, option, result, and failure 
   );
   assert.match(loopUntilDry?.constraints.join(" ") ?? "", /capacity exhaustion.*partial array/i);
   assert.match(loopUntilDry?.constraints.join(" ") ?? "", /does not report whether termination/i);
-
-  assert.match(completenessCheck?.signature ?? "", /complete: boolean.*missing\?: string\[\].*null/i);
-  assert.match(completenessCheck?.constraints.join(" ") ?? "", /external abort.*capacity preflight.*no critic starts/i);
-  assert.match(completenessCheck?.constraints.join(" ") ?? "", /one logical agent slot.*preflights/i);
-  assert.match(completenessCheck?.constraints.join(" ") ?? "", /4,000.*serialized result/i);
 
   assert.match(retry?.signature ?? "", /attempt: number.*until.*boolean.*Promise<unknown>/i);
   assert.deepEqual(
@@ -352,26 +327,15 @@ test("generated helper facts expose exact callback, option, result, and failure 
   assert.match(agent?.constraints.join(" ") ?? "", /explicit model.*unavailable.*throws MODEL_NOT_FOUND/i);
   assert.match(agent?.constraints.join(" ") ?? "", /implicit default medium tier.*session default when unavailable/i);
   assert.match(agent?.constraints.join(" ") ?? "", /worktree isolation fails closed.*never falls back/i);
-  assert.match(background?.constraints.join(" ") ?? "", /background workflows are headless/i);
-  assert.match(background?.constraints.join(" ") ?? "", /checkpoint.*foreground confirmation/i);
+  assert.match(checkpoint?.constraints.join(" ") ?? "", /background.*returns options\.default/i);
+  assert.match(background?.constraints.join(" ") ?? "", /ignored/i);
   assert.match(metadata?.signature ?? "", /phases\?: Array<\{ title: string; detail\?: string; model\?: string \}>/);
   assert.match(metadata?.constraints.join(" ") ?? "", /only legal export/i);
   assert.match(metadata?.constraints.join(" ") ?? "", /literal.*string concatenation.*template interpolation/i);
 
-  const qualityHelpers = readFileSync(join(ROOT, SKILL_ROOT, "references/quality-helpers.md"), "utf8");
   const retryHelper = readFileSync(join(ROOT, SKILL_ROOT, "references/retry-helper.md"), "utf8");
   const specializedHelpers = readFileSync(join(ROOT, SKILL_ROOT, "references/specialized-helpers.md"), "utf8");
-  assert.match(qualityHelpers, /verify.*reviewers: number.*threshold: number.*lens: string/i);
-  assert.match(qualityHelpers, /judgePanel.*judges: number.*rubric: string/i);
-  assert.match(qualityHelpers, /successful votes.*denominator/i);
-  assert.match(qualityHelpers, /verify.*reviewers.*logical slots/i);
-  assert.match(qualityHelpers, /judgePanel.*populated.*attempts.*judges/i);
-  assert.match(qualityHelpers, /finite integer.*TypeError/i);
-  assert.match(qualityHelpers, /preflight.*known expansion.*not infer arbitrary callback/i);
-  assert.match(qualityHelpers, /external pause\/stop abort.*capacity preflight.*no helper agent starts/i);
-  assert.match(specializedHelpers, /completenessCheck.*one logical agent slot.*preflights/i);
-  assert.match(specializedHelpers, /completenessCheck.*external pause\/stop abort.*before the critic starts/i);
-  assert.match(specializedHelpers, /agent-limit exhaustion.*partial/i);
+  assert.match(specializedHelpers, /loopUntilDry.*agent-limit exhaustion.*partial/i);
   assert.match(retryHelper, /retry.*zero-based.*synchronous/i);
   assert.match(retryHelper, /await retry/i);
   assert.match(specializedHelpers, /await gate/i);
@@ -385,10 +349,9 @@ test("generated helper facts expose exact callback, option, result, and failure 
   assert.match(runtime, /export default.*other exports.*invalid/i);
   assert.match(runtime, /agent\(prompt.*label.*schema/i);
   const lifecycle = readFileSync(join(ROOT, SKILL_ROOT, "references/lifecycle.md"), "utf8");
-  assert.match(lifecycle, /background workflows are headless/i);
-  assert.match(lifecycle, /checkpoint.*foreground/i);
-  assert.match(lifecycle, /judgePanel.*populated candidate.*attempts\.length.*judges/i);
-  assert.match(lifecycle, /agent execution retries.*do not add slots/i);
+  assert.match(lifecycle, /every workflow run starts in the background.*ignores `background`/i);
+  assert.match(lifecycle, /checkpoint\(prompt, options\?\)` never reaches a human/i);
+  assert.match(lifecycle, /agent execution retries do not add slots/i);
 });
 
 test("fan-out-and-synthesize example waits for the complete result set and preserves failures", async () => {
@@ -473,41 +436,6 @@ test("classify-and-act classifies the complete set before routed action", async 
     result.result.handled.map(({ id, category }) => ({ id, category })),
     [{ id: "alpha", category: "direct" }],
   );
-  assert.doesNotThrow(() => JSON.stringify(result.result));
-});
-
-test("adversarial verification uses separate producer and skeptic calls and retains failures", async () => {
-  const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/adversarial-verification.js"), "utf8");
-  const labels: string[] = [];
-  const finishedProducers = new Set<string>();
-  let skepticsStartedAfterProduction = true;
-
-  const result = await runWorkflow<{
-    failed: { producers: string[]; skeptics: string[] };
-  }>(script, {
-    args: { topics: [{ id: "alpha" }, { id: "beta" }] },
-    persistLogs: false,
-    onAgentStart: ({ label }) => labels.push(label),
-    agent: {
-      async run(prompt: string, options: { label?: string }) {
-        const label = options.label ?? "";
-        if (label.startsWith("produce:")) {
-          const id = label.split(":").at(-1) ?? "";
-          finishedProducers.add(id);
-          return id === "beta" ? null : { claim: "claim-alpha", evidence: ["source"] };
-        }
-        skepticsStartedAfterProduction &&= finishedProducers.size === 2;
-        assert.match(prompt, /claim-alpha/);
-        return null;
-      },
-    },
-  });
-
-  assert.equal(skepticsStartedAfterProduction, true);
-  assert.deepEqual(labels, ["produce:0:alpha", "produce:1:beta", "skeptic:0:alpha"]);
-  assert.equal(new Set(labels).size, labels.length);
-  assert.deepEqual([...result.result.failed.producers], ["beta"]);
-  assert.deepEqual([...result.result.failed.skeptics], ["alpha"]);
   assert.doesNotThrow(() => JSON.stringify(result.result));
 });
 

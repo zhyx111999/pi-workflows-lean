@@ -1,23 +1,11 @@
 import packageJson from "../package.json" with { type: "json" };
-import {
-  CapabilityClassification,
-  CapabilityOrigin,
-  CapabilitySupport,
-  DiagnosticSeverity,
-  DiscoveryPlacement,
-} from "./enums.js";
+import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 import { WorkflowCapabilityContractError } from "./errors.js";
 
-/** Re-exported capability domains used by contract consumers. */
-export {
-  CapabilityClassification,
-  CapabilityOrigin,
-  CapabilitySupport,
-  DiagnosticSeverity,
-  DiscoveryPlacement,
-} from "./enums.js";
+/** Re-exported so contract consumers need only this module. */
+export { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 
-/** Version marker for behavior present at or after a release. */
+/** Version marker: the contract was confirmed against this release, not that it was introduced there. */
 export interface PresentAtVersion {
   kind: "present-at";
   version: string;
@@ -39,30 +27,26 @@ export interface OptionShape {
     | "agent-options"
     | "checkpoint-options"
     | "phase-options"
-    | "verify-options"
-    | "judge-panel-options"
     | "loop-until-dry-options"
     | "retry-options"
     | "gate-options";
   options: readonly OptionDescriptor[];
 }
 
-/** Authoritative declaration of one workflow capability and its evidence. */
+/** Authoritative declaration of one workflow capability. */
 export interface CapabilityDescriptor {
   id: `workflow.${string}`;
   label: string;
   classification: CapabilityClassification;
   support: CapabilitySupport;
-  discovery: DiscoveryPlacement;
   origin: CapabilityOrigin;
-  lifecycle: PresentAtVersion;
   signature: string | null;
   optionShape: OptionShape["id"] | null;
   constraints: readonly string[];
-  enforcementOwner: string;
+  /** Present only for globals injected into the workflow VM; drives runtime assembly. */
   runtimeBinding: { global: string; implementation: string; allowsUndefined?: true } | null;
-  behaviorEvidence: readonly string[];
-  staticReference: { path: string; anchor: string } | null;
+  /** Anchor of this capability's section in the generated capability details. */
+  detailsAnchor: string;
   dynamicReference: "model-routes" | "agent-types" | null;
 }
 
@@ -78,8 +62,9 @@ export interface DynamicReferenceDescriptor {
 /** Versioned plain-data source for runtime assembly and generated documentation. */
 export interface WorkflowCapabilityDefinition {
   versions: {
-    extension: string;
+    /** Shape of this definition; bump when descriptor fields change. */
     format: PresentAtVersion;
+    /** Release whose runtime these facts describe; always the package version. */
     content: PresentAtVersion;
   };
   optionShapes: readonly OptionShape[];
@@ -100,7 +85,6 @@ export interface CapabilityDiagnostic {
   message: string;
 }
 
-/** Re-exported contract failure type retained for existing consumers. */
 export { WorkflowCapabilityContractError } from "./errors.js";
 
 /** Runtime globals assembled from declared implementations plus non-fatal diagnostics. */
@@ -137,7 +121,8 @@ export interface StaticCapabilityFact {
   signature: string | null;
   options: OptionShape | null;
   constraints: readonly string[];
-  reference: string | null;
+  /** Package-relative link to the generated details section. */
+  reference: string;
   dynamicReference: DynamicReferenceDescriptor | null;
 }
 
@@ -147,7 +132,7 @@ export interface AlignmentEvidence {
   observedProjectGlobals?: readonly string[];
 }
 
-/** Validated capability contract with runtime, publication, and alignment projections. */
+/** Validated capability contract with runtime-assembly, documentation, and alignment projections. */
 export interface WorkflowCapabilityContract {
   readonly definition: WorkflowCapabilityDefinition;
   assembleRuntimeBindings(implementations: Readonly<Record<string, unknown>>): RuntimeBindingAssembly;
@@ -155,16 +140,15 @@ export interface WorkflowCapabilityContract {
   diagnoseAlignment(evidence: AlignmentEvidence): readonly CapabilityDiagnostic[];
 }
 
-const REFERENCE_PATH = "skills/workflow-authoring/references/capability-details.md";
-const PRESENT_AT: PresentAtVersion = { kind: "present-at", version: packageJson.version };
-const noOptions = [] as const;
+const DETAILS_PATH = "skills/workflow-authoring/references/capability-details.md";
+const NONE = [] as const;
 
 const option = (
   name: string,
   type: string,
   optional: boolean,
   defaultValue: string | null = null,
-  constraints: readonly string[] = noOptions,
+  constraints: readonly string[] = NONE,
   dynamicReference: OptionDescriptor["dynamicReference"] = null,
 ): OptionDescriptor => ({ name, type, optional, default: defaultValue, constraints, dynamicReference });
 
@@ -195,7 +179,7 @@ const AGENT_OPTIONS: OptionShape = {
 const CHECKPOINT_OPTIONS: OptionShape = {
   id: "checkpoint-options",
   options: [
-    option("default", "unknown", true, "true when no UI and omitted"),
+    option("default", "unknown", true, "true"),
     option("headless", '"default" | "abort"', true, '"default"'),
     option("kind", '"confirm" | "input" | "select"', true, '"confirm"'),
     option("choices", "string[]", true),
@@ -205,25 +189,6 @@ const CHECKPOINT_OPTIONS: OptionShape = {
 const PHASE_OPTIONS: OptionShape = {
   id: "phase-options",
   options: [option("budget", "number", true, null, ["positive soft pre-call token gate"])],
-};
-const VERIFY_OPTIONS: OptionShape = {
-  id: "verify-options",
-  options: [
-    option("reviewers", "number", true, "2", [
-      "only undefined uses the default; all supplied values, including null, must be finite integers >= 1 or throw TypeError",
-    ]),
-    option("threshold", "number", true, "0.5"),
-    option("lens", "string | string[]", true),
-  ],
-};
-const JUDGE_PANEL_OPTIONS: OptionShape = {
-  id: "judge-panel-options",
-  options: [
-    option("judges", "number", true, "3", [
-      "only undefined uses the default; all supplied values, including null, must be finite integers >= 1 or throw TypeError",
-    ]),
-    option("rubric", "string", true, '"overall quality and correctness"'),
-  ],
 };
 const LOOP_UNTIL_DRY_OPTIONS: OptionShape = {
   id: "loop-until-dry-options",
@@ -258,11 +223,9 @@ const GATE_OPTIONS: OptionShape = {
 
 interface RuntimeDescriptorOptions {
   signature?: string;
-  discovery?: DiscoveryPlacement;
   support?: CapabilitySupport;
   optionShape?: OptionShape["id"];
   constraints?: readonly string[];
-  evidence?: readonly string[];
   allowsUndefined?: true;
 }
 
@@ -271,42 +234,35 @@ const runtimeGlobal = (name: string, options: RuntimeDescriptorOptions = {}): Ca
   label: name,
   classification: CapabilityClassification.RUNTIME_GLOBAL,
   support: options.support ?? CapabilitySupport.SUPPORTED,
-  discovery: options.discovery ?? DiscoveryPlacement.COMPACT_GUIDANCE,
   origin: CapabilityOrigin.PROJECT,
-  lifecycle: PRESENT_AT,
   signature: options.signature ?? name,
   optionShape: options.optionShape ?? null,
-  constraints: options.constraints ?? noOptions,
-  enforcementOwner: "runWorkflow context assembly",
+  constraints: options.constraints ?? NONE,
   runtimeBinding: {
     global: name,
     implementation: name,
     ...(options.allowsUndefined ? { allowsUndefined: true as const } : {}),
   },
-  behaviorEvidence: options.evidence ?? ["tests/workflow-runtime.test.ts"],
-  staticReference: { path: REFERENCE_PATH, anchor: name.toLowerCase() },
+  detailsAnchor: name.toLowerCase(),
   dynamicReference: null,
 });
 
 const toolInput = (
   name: string,
   signature: string,
-  constraints: readonly string[] = noOptions,
+  constraints: readonly string[] = NONE,
+  support: CapabilitySupport = CapabilitySupport.SUPPORTED,
 ): CapabilityDescriptor => ({
   id: `workflow.tool-input.${name}`,
   label: name,
   classification: CapabilityClassification.WORKFLOW_TOOL_INPUT,
-  support: CapabilitySupport.SUPPORTED,
-  discovery: DiscoveryPlacement.COMPACT_GUIDANCE,
+  support,
   origin: CapabilityOrigin.TOOL_ADAPTER,
-  lifecycle: PRESENT_AT,
   signature,
   optionShape: null,
   constraints,
-  enforcementOwner: "workflowToolSchema and createWorkflowTool",
   runtimeBinding: null,
-  behaviorEvidence: ["tests/workflow-tool.test.ts"],
-  staticReference: { path: REFERENCE_PATH, anchor: `tool-input-${name.toLowerCase()}` },
+  detailsAnchor: `tool-input-${name.toLowerCase()}`,
   dynamicReference: null,
 });
 
@@ -333,7 +289,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "keepWorktree defaults true (worktree kept for merge); false deletes after the call",
       "each live execution creates a uniquely owned worktree; retries or resume never reuse or overwrite a retained worktree",
     ],
-    evidence: ["tests/workflow-runtime.test.ts", "tests/agent-registry.test.ts", "tests/structured-output.test.ts"],
   }),
   runtimeGlobal("parallel", {
     signature: "parallel(thunks) => Promise<Array<unknown | null>>",
@@ -359,12 +314,10 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "shares limiter, counters, token accounting, and store",
       "nested workflows do not reuse the parent resume journal",
     ],
-    evidence: ["tests/workflow-saved.test.ts", "tests/shared-store.test.ts"],
   }),
   runtimeGlobal("loopUntilDry", {
     signature:
       "loopUntilDry(options: { round: (roundIndex: number) => unknown[] | Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     optionShape: "loop-until-dry-options",
     constraints: [
       "roundIndex is zero-based; null, non-array, or duplicate-only round results count as empty",
@@ -372,12 +325,10 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "the returned array does not report whether termination came from dryness, maxRounds, or capacity exhaustion",
       "authors must retain failed-round identity and truthful termination state outside the helper",
     ],
-    evidence: ["tests/quality-stdlib.test.ts"],
   }),
   runtimeGlobal("retry", {
     signature:
       "retry(thunk: (attempt: number) => unknown | Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     optionShape: "retry-options",
     constraints: [
       "attempt is zero-based and attempts counts total thunk calls",
@@ -386,12 +337,10 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "stops when until(result) is true; exhaustion returns only the last result without attempt metadata",
       "authors must supply a finite attempts bound when overriding the default",
     ],
-    evidence: ["tests/quality-stdlib.test.ts"],
   }),
   runtimeGlobal("gate", {
     signature:
       "gate(thunk: (feedback: string | undefined, attempt: number) => unknown | Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } | Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     optionShape: "gate-options",
     constraints: [
       "feedback is undefined on the first thunk call and then receives the previous validator feedback string",
@@ -400,14 +349,13 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "exhaustion returns ok false with the last value and the bounded attempts count",
       "authors must supply a finite attempts bound when overriding the default",
     ],
-    evidence: ["tests/quality-stdlib.test.ts"],
   }),
   runtimeGlobal("checkpoint", {
     signature: "checkpoint(prompt, options?) | checkpoint({ kind, checkpointId, payload }) => Promise<unknown>",
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     optionShape: "checkpoint-options",
     constraints: [
-      "foreground confirm and headless behavior are implemented; input/select/timeout are declared-only",
+      'every extension entry point starts the run in the background without a human prompt, so a prompt checkpoint returns options.default (true when omitted) or aborts the run when headless is "abort"',
+      "a confirm callback is consulted only when an embedding host passes one to runWorkflow; kind, choices, and timeoutMs are declared-only and affect only resume identity",
       "consumes one agent slot and no tokens",
       "journaled answers replay only within an unchanged resume prefix",
       "object checkpoints accept an open kind identifier, persist their JSON payload, and pause the run",
@@ -415,7 +363,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "status exposes only checkpoint ID, kind, and status; the durable response never enters model-visible output",
       "durable checkpoint responses resume the same run ID, are journaled before continuation, and reject stale or conflicting delivery",
     ],
-    evidence: ["tests/checkpoint.test.ts", "tests/workflow-manager.test.ts", "tests/workflow-control-tool.test.ts"],
   }),
   runtimeGlobal("log", { signature: "log(message) => void" }),
   runtimeGlobal("phase", {
@@ -437,7 +384,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
   runtimeGlobal("console", {
     signature: "console: { log, info, warn, error }",
     support: CapabilitySupport.COMPATIBILITY,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     constraints: ["new workflows should use log()"],
   }),
   toolInput("script", "script?: string", ["required raw JavaScript workflow source unless `name` is given"]),
@@ -446,12 +392,18 @@ const capabilities: readonly CapabilityDescriptor[] = [
     "mutually exclusive with resumeFromRunId",
   ]),
   toolInput("args", "args?: unknown"),
-  toolInput("background", "background?: boolean = true", [
-    "background workflows are headless; use background false when checkpoint must show foreground confirmation",
-  ]),
+  toolInput(
+    "background",
+    "background?: boolean",
+    [
+      "ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes",
+      "kept in the schema so calls that still send it are not rejected",
+    ],
+    CapabilitySupport.COMPATIBILITY,
+  ),
   toolInput("maxAgents", "maxAgents?: number = 1000", [
     "default, not a hard product maximum",
-    "counts logical agent calls across the shared nested run tree",
+    "counts logical agent() and checkpoint() calls across the shared nested run tree",
     "agent execution retries do not consume extra logical slots; retry(), gate(), and loopUntilDry callbacks must be budgeted from their bounded planned calls",
   ]),
   toolInput("concurrency", "concurrency?: number", ["runtime clamps to 1..16"]),
@@ -463,16 +415,13 @@ const capabilities: readonly CapabilityDescriptor[] = [
   toolInput("resumeFromRunId", "resumeFromRunId?: string", [
     "resumes a prior incomplete run with an edited script",
     "unchanged positional agent calls replay from cache until the first changed or inserted call",
-    "always runs in the background",
   ]),
   {
     id: "workflow.script.metadata",
     label: "export const meta",
     classification: CapabilityClassification.SCRIPT_CONTRACT,
     support: CapabilitySupport.SUPPORTED,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     origin: CapabilityOrigin.PROJECT,
-    lifecycle: PRESENT_AT,
     signature:
       "export const meta = { name: string, description: string, phases?: Array<{ title: string; detail?: string; model?: string }>, model?: string }",
     optionShape: null,
@@ -482,10 +431,8 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "metadata must use literal values; expressions such as string concatenation and template interpolation are rejected",
       "the meta declaration is the only legal export because the remaining body executes inside an async function",
     ],
-    enforcementOwner: "parseWorkflowScript",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/workflow-parser.test.ts"],
-    staticReference: { path: REFERENCE_PATH, anchor: "metadata" },
+    detailsAnchor: "metadata",
     dynamicReference: null,
   },
   {
@@ -493,16 +440,12 @@ const capabilities: readonly CapabilityDescriptor[] = [
     label: "workflow return value",
     classification: CapabilityClassification.SCRIPT_CONTRACT,
     support: CapabilitySupport.SUPPORTED,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     origin: CapabilityOrigin.PROJECT,
-    lifecycle: PRESENT_AT,
     signature: "return JSON-serializable data",
     optionShape: null,
     constraints: ["do not return functions, promises, cyclic objects, BigInt, or runtime handles"],
-    enforcementOwner: "workflow tool result boundary",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/workflow-authoring-skill.test.ts", "tests/workflow-tool.test.ts"],
-    staticReference: { path: REFERENCE_PATH, anchor: "return-value" },
+    detailsAnchor: "return-value",
     dynamicReference: null,
   },
   {
@@ -510,19 +453,15 @@ const capabilities: readonly CapabilityDescriptor[] = [
     label: "deterministic script execution",
     classification: CapabilityClassification.SCRIPT_CONTRACT,
     support: CapabilitySupport.SUPPORTED,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     origin: CapabilityOrigin.PROJECT,
-    lifecycle: PRESENT_AT,
     signature: null,
     optionShape: null,
     constraints: [
       "Date.now(), Math.random(), and no-argument new Date() are unavailable",
       "pass timestamps and randomness through args",
     ],
-    enforcementOwner: "parseWorkflowScript and VM determinism prelude",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/workflow-parser.test.ts", "tests/workflow-runtime.test.ts"],
-    staticReference: { path: REFERENCE_PATH, anchor: "determinism" },
+    detailsAnchor: "determinism",
     dynamicReference: null,
   },
   {
@@ -530,16 +469,12 @@ const capabilities: readonly CapabilityDescriptor[] = [
     label: "whole-script Markdown fence stripping",
     classification: CapabilityClassification.COMPATIBILITY_BEHAVIOR,
     support: CapabilitySupport.COMPATIBILITY,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     origin: CapabilityOrigin.TOOL_ADAPTER,
-    lifecycle: PRESENT_AT,
     signature: null,
     optionShape: null,
     constraints: ["accepted for compatibility but not recommended"],
-    enforcementOwner: "normalizeWorkflowScript",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/workflow-tool.test.ts"],
-    staticReference: { path: REFERENCE_PATH, anchor: "compatibility" },
+    detailsAnchor: "compatibility",
     dynamicReference: null,
   },
   {
@@ -547,16 +482,12 @@ const capabilities: readonly CapabilityDescriptor[] = [
     label: "VM realm JavaScript substrate",
     classification: CapabilityClassification.INTERNAL_SUBSTRATE,
     support: CapabilitySupport.INTERNAL,
-    discovery: DiscoveryPlacement.NONE,
     origin: CapabilityOrigin.VM_REALM,
-    lifecycle: PRESENT_AT,
     signature: null,
     optionShape: null,
     constraints: ["Node-version-dependent globals are not project-owned workflow API", "VM is not a security sandbox"],
-    enforcementOwner: "node:vm",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/workflow-runtime.test.ts"],
-    staticReference: null,
+    detailsAnchor: "vm-realm",
     dynamicReference: null,
   },
   {
@@ -564,16 +495,12 @@ const capabilities: readonly CapabilityDescriptor[] = [
     label: "model routes",
     classification: CapabilityClassification.DYNAMIC_REFERENCE,
     support: CapabilitySupport.SUPPORTED,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     origin: CapabilityOrigin.LIVE_CONFIGURATION,
-    lifecycle: PRESENT_AT,
     signature: null,
     optionShape: null,
     constraints: ["live values must not be copied into static contract data"],
-    enforcementOwner: "model-tier-config",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/workflows-models-command.test.ts"],
-    staticReference: { path: REFERENCE_PATH, anchor: "model-routes" },
+    detailsAnchor: "model-routes",
     dynamicReference: "model-routes",
   },
   {
@@ -581,16 +508,12 @@ const capabilities: readonly CapabilityDescriptor[] = [
     label: "agent types",
     classification: CapabilityClassification.DYNAMIC_REFERENCE,
     support: CapabilitySupport.SUPPORTED,
-    discovery: DiscoveryPlacement.WORKFLOW_AUTHORING_SKILL,
     origin: CapabilityOrigin.LIVE_CONFIGURATION,
-    lifecycle: PRESENT_AT,
     signature: null,
     optionShape: null,
     constraints: ["live values must not be copied into static contract data"],
-    enforcementOwner: "agent-registry",
     runtimeBinding: null,
-    behaviorEvidence: ["tests/agent-registry.test.ts"],
-    staticReference: { path: REFERENCE_PATH, anchor: "agent-types" },
+    detailsAnchor: "agent-types",
     dynamicReference: "agent-types",
   },
 ];
@@ -598,20 +521,10 @@ const capabilities: readonly CapabilityDescriptor[] = [
 /** Authoritative versioned inventory used by runtime assembly and every static projection. */
 export const WORKFLOW_CAPABILITY_DEFINITION: WorkflowCapabilityDefinition = {
   versions: {
-    extension: packageJson.version,
-    format: { kind: "present-at", version: "1.0.0" },
-    content: PRESENT_AT,
+    format: { kind: "present-at", version: "2.0.0" },
+    content: { kind: "present-at", version: packageJson.version },
   },
-  optionShapes: [
-    AGENT_OPTIONS,
-    CHECKPOINT_OPTIONS,
-    PHASE_OPTIONS,
-    VERIFY_OPTIONS,
-    JUDGE_PANEL_OPTIONS,
-    LOOP_UNTIL_DRY_OPTIONS,
-    RETRY_OPTIONS,
-    GATE_OPTIONS,
-  ],
+  optionShapes: [AGENT_OPTIONS, CHECKPOINT_OPTIONS, PHASE_OPTIONS, LOOP_UNTIL_DRY_OPTIONS, RETRY_OPTIONS, GATE_OPTIONS],
   capabilities,
   dynamicReferences: [
     {
@@ -714,23 +627,19 @@ export function defineWorkflowCapabilityContract(definition: WorkflowCapabilityD
       return { globals: assembled, diagnostics };
     },
     projectStaticReferenceFacts() {
-      return definition.capabilities
-        .filter((capability) => capability.staticReference !== null)
-        .map((capability) => ({
-          id: capability.id,
-          label: capability.label,
-          classification: capability.classification,
-          support: capability.support,
-          signature: capability.signature,
-          options: capability.optionShape ? (optionShapes.get(capability.optionShape) ?? null) : null,
-          constraints: capability.constraints,
-          reference: capability.staticReference
-            ? `${capability.staticReference.path}#${capability.staticReference.anchor}`
-            : null,
-          dynamicReference: capability.dynamicReference
-            ? (dynamicReferences.get(capability.dynamicReference) ?? null)
-            : null,
-        }));
+      return definition.capabilities.map((capability) => ({
+        id: capability.id,
+        label: capability.label,
+        classification: capability.classification,
+        support: capability.support,
+        signature: capability.signature,
+        options: capability.optionShape ? (optionShapes.get(capability.optionShape) ?? null) : null,
+        constraints: capability.constraints,
+        reference: `${DETAILS_PATH}#${capability.detailsAnchor}`,
+        dynamicReference: capability.dynamicReference
+          ? (dynamicReferences.get(capability.dynamicReference) ?? null)
+          : null,
+      }));
     },
     diagnoseAlignment,
   };
@@ -739,6 +648,7 @@ export function defineWorkflowCapabilityContract(definition: WorkflowCapabilityD
 function validateDefinition(definition: WorkflowCapabilityDefinition): CapabilityDiagnostic[] {
   const diagnostics: CapabilityDiagnostic[] = [];
   const ids = new Set<string>();
+  const anchors = new Set<string>();
   const globals = new Set<string>();
   const runtimeImplementations = new Set<string>();
   const optionShapes = new Set<string>();
@@ -756,6 +666,11 @@ function validateDefinition(definition: WorkflowCapabilityDefinition): Capabilit
   for (const capability of definition.capabilities) {
     if (ids.has(capability.id)) invalid(capability.id, `Duplicate capability id "${capability.id}".`);
     ids.add(capability.id);
+    // Generated docs link to these anchors, so each must name exactly one section.
+    if (anchors.has(capability.detailsAnchor)) {
+      invalid(capability.id, `Duplicate details anchor "${capability.detailsAnchor}".`);
+    }
+    anchors.add(capability.detailsAnchor);
     if (capability.classification === CapabilityClassification.RUNTIME_GLOBAL && !capability.runtimeBinding) {
       invalid(capability.id, "Runtime-global capabilities require a runtime binding.");
     }

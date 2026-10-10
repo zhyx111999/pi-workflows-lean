@@ -160,7 +160,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
   const defaults = resolveWorkflowToolDefaults(options, fallbackCwd);
   // Lazy (audit2 #38): WorkflowManager's constructor scans — and on stale-run
   // recovery, REWRITES — the cwd's run store. Callers that only need the
-  // tool's schema/description (context measurement, release gate) must not
+  // tool's schema/description (context measurement, contract tests) must not
   // touch the developer's real global store as a side effect.
   let fallbackManager: WorkflowManager | undefined;
   const getManager = () => {

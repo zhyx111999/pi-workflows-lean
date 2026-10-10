@@ -1,11 +1,16 @@
 # Repository guidance
 
-## Workflow documentation
+pi-workflows-lean is an independent fork of pi-dynamic-workflows 3.13.0. It does not follow upstream: do not merge, cherry-pick, or keep compatibility code for upstream changes.
 
-Before changing the workflow runtime, tool API, capability contract, or `workflow-authoring` skill, read [Protected workflow-authoring guidance](CONTRIBUTING.md#protected-workflow-authoring-guidance).
+## Before finishing a change
 
-- Keep stable capability facts in the executable capability contract and generated documentation.
-- Keep detailed authoring guidance in the on-demand skill, not the always-on prompt.
-- Do not copy live model or agent-type catalogues into static guidance.
-- Run `npm run context:check` with the other checks listed in the contributor guide.
-- If a protected file changes, review it before running `npm run guidance:accept -- <path>`.
+- Run `npm test`; [CONTRIBUTING.md](CONTRIBUTING.md) lists what it checks.
+- Write code, comments, and docs in English. Comments explain why, not history.
+- Remove a feature completely: its callers, tests, docs, and skill guidance go in the same change.
+
+## Capability contract and generated docs
+
+- `src/workflow-capability-contract.ts` declares every workflow runtime global and `workflow` tool input; `runWorkflow` assembles the script globals from it. Change it together with the runtime or tool schema.
+- Never hand-edit generated content. Run `npm run docs:generate` after a contract change and `npm run context:generate` after changing the tool prompt, tool schema text, or skill files.
+- Keep detailed authoring guidance in the on-demand `workflow-authoring` skill, not in the always-on prompt or tool description. `tests/workflow-prompt-budget.test.ts` fails when either always-on surface grows; raise its budget only after reviewing the new wording.
+- Do not copy live model routes or agent-type names into static guidance.

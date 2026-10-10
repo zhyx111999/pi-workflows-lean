@@ -1,8 +1,8 @@
 <!-- GENERATED from WORKFLOW_CAPABILITY_CONTRACT; do not edit by hand. -->
 # Workflow capability index
 
-Contract format: `1.0.0`<br>
-Contract content / skill / extension: `3.13.0`
+Contract format: `2.0.0`<br>
+Contract content / skill / extension: `3.13.0-lean.1`
 
 This compact generated index covers supported runtime globals and workflow-tool inputs. For constraints, compatibility behavior, internal boundaries, and dynamic-reference ownership, follow the [exhaustive generated facts](capability-details.md).
 
@@ -15,13 +15,10 @@ This compact generated index covers supported runtime globals and workflow-tool 
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
 | workflow | runtime-global | `workflow(savedName, childArgs?) => Promise<unknown>` | — |
-| verify | runtime-global | `verify(item: unknown, options?: { reviewers?: number; threshold?: number; lens?: string \| string[] }) => Promise<{ real: boolean; realCount: number; total: number; votes: Array<{ real: boolean; reason?: string }> }>` | `reviewers`: number (optional; default: 2)<br>`threshold`: number (optional; default: 0.5)<br>`lens`: string \| string[] (optional) |
-| judgePanel | runtime-global | `judgePanel(attempts: unknown[], options?: { judges?: number; rubric?: string }) => Promise<{ index: number; attempt: unknown; score: number; judgments: Array<{ score: number; reason?: string }> } \| undefined>` | `judges`: number (optional; default: 3)<br>`rubric`: string (optional; default: "overall quality and correctness") |
 | loopUntilDry | runtime-global | `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>` | `round`: (roundIndex: number) => unknown[] \| Promise<unknown[]> (required)<br>`key`: (item: unknown) => string (optional; default: JSON.stringify)<br>`consecutiveEmpty`: number (optional; default: 2)<br>`maxRounds`: number (optional; default: 50) |
-| completenessCheck | runtime-global | `completenessCheck(taskArgs: unknown, results: unknown) => Promise<{ complete: boolean; missing?: string[] } \| null>` | — |
 | retry | runtime-global | `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>` | `attempts`: number (optional; default: 3)<br>`until`: (result: unknown) => boolean (optional; default: accept first result when omitted) |
 | gate | runtime-global | `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>` | `attempts`: number (optional; default: 3) |
-| checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true when no UI and omitted)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
+| checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
 | log | runtime-global | `log(message) => void` | — |
 | phase | runtime-global | `phase(title, options?) => void` | `budget`: number (optional) |
 | args | runtime-global | `args: unknown` | — |
@@ -31,7 +28,6 @@ This compact generated index covers supported runtime globals and workflow-tool 
 | script | workflow-tool-input | `script?: string` | — |
 | name | workflow-tool-input | `name?: string` | — |
 | args | workflow-tool-input | `args?: unknown` | — |
-| background | workflow-tool-input | `background?: boolean = true` | — |
 | maxAgents | workflow-tool-input | `maxAgents?: number = 1000` | — |
 | concurrency | workflow-tool-input | `concurrency?: number` | — |
 | agentRetries | workflow-tool-input | `agentRetries?: number = configured value or 0` | — |

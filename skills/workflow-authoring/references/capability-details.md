@@ -1,8 +1,8 @@
 <!-- GENERATED from WORKFLOW_CAPABILITY_CONTRACT; do not edit by hand. -->
 # Exhaustive workflow capability facts
 
-Contract format: `1.0.0`<br>
-Contract content / skill / extension: `3.13.0`
+Contract format: `2.0.0`<br>
+Contract content / skill / extension: `3.13.0-lean.1`
 
 Every exact fact below is projected from the installed extension's capability contract. Explanatory judgment belongs in the hand-written references next to this file.
 
@@ -75,40 +75,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: shares limiter, counters, token accounting, and store
 - Constraint: nested workflows do not reuse the parent resume journal
 
-<a id="verify"></a>
-## verify
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `verify(item: unknown, options?: { reviewers?: number; threshold?: number; lens?: string \| string[] }) => Promise<{ real: boolean; realCount: number; total: number; votes: Array<{ real: boolean; reason?: string }> }>`
-- Option shape: `verify-options`
-- `reviewers`: number (optional; default: 2; only undefined uses the default; all supplied values, including null, must be finite integers >= 1 or throw TypeError)
-- `threshold`: number (optional; default: 0.5)
-- `lens`: string | string[] (optional)
-- Constraint: external abort takes precedence over capacity preflight and option validation; no reviewer starts
-- Constraint: consumes one logical agent slot per reviewer (default 2); runtime preflights the whole reviewer fan-out before starting any reviewer
-- Constraint: agent execution retries do not consume extra logical slots
-- Constraint: reviewer failures are omitted; successful votes form the denominator in realCount / total
-- Constraint: threshold comparison is inclusive and real is false when no reviewer succeeds
-- Constraint: multiple lenses cycle across reviewers
-
-<a id="judgepanel"></a>
-## judgePanel
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `judgePanel(attempts: unknown[], options?: { judges?: number; rubric?: string }) => Promise<{ index: number; attempt: unknown; score: number; judgments: Array<{ score: number; reason?: string }> } \| undefined>`
-- Option shape: `judge-panel-options`
-- `judges`: number (optional; default: 3; only undefined uses the default; all supplied values, including null, must be finite integers >= 1 or throw TypeError)
-- `rubric`: string (optional; default: "overall quality and correctness")
-- Constraint: external abort takes precedence over capacity preflight and option validation; no judge starts
-- Constraint: consumes populated attempts × judges logical agent slots (dense input: attempts.length × judges; default judges 3); runtime preflights the full normalized fan-out before starting any judge
-- Constraint: sparse attempt holes are absent candidates and consume no slots; populated candidates retain their original input index
-- Constraint: agent execution retries do not consume extra logical slots
-- Constraint: failed judgments are omitted and each candidate score averages successful judgments only
-- Constraint: a candidate with no successful judgments scores 0
-- Constraint: highest mean score wins with stable input index as the tie-break; empty input returns undefined
-
 <a id="loopuntildry"></a>
 ## loopUntilDry
 
@@ -124,19 +90,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: token-budget or agent-limit capacity exhaustion returns the accumulated partial array instead of throwing
 - Constraint: the returned array does not report whether termination came from dryness, maxRounds, or capacity exhaustion
 - Constraint: authors must retain failed-round identity and truthful termination state outside the helper
-
-<a id="completenesscheck"></a>
-## completenessCheck
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `completenessCheck(taskArgs: unknown, results: unknown) => Promise<{ complete: boolean; missing?: string[] } \| null>`
-- Constraint: external abort takes precedence over capacity preflight; no critic starts
-- Constraint: consumes one logical agent slot; runtime preflights capacity before starting the critic
-- Constraint: agent execution retries do not consume extra logical slots
-- Constraint: only the first 4,000 characters of serialized result evidence are sent to the critic
-- Constraint: missing is optional and recoverable critic failure returns null
-- Constraint: large evidence sets must be chunked or summarized before relying on the advisory verdict
 
 <a id="retry"></a>
 ## retry
@@ -174,12 +127,13 @@ Every exact fact below is projected from the installed extension's capability co
 - Support: `supported`
 - Signature: `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>`
 - Option shape: `checkpoint-options`
-- `default`: unknown (optional; default: true when no UI and omitted)
+- `default`: unknown (optional; default: true)
 - `headless`: "default" | "abort" (optional; default: "default")
 - `kind`: "confirm" | "input" | "select" (optional; default: "confirm")
 - `choices`: string[] (optional)
 - `timeoutMs`: number (optional)
-- Constraint: foreground confirm and headless behavior are implemented; input/select/timeout are declared-only
+- Constraint: every extension entry point starts the run in the background without a human prompt, so a prompt checkpoint returns options.default (true when omitted) or aborts the run when headless is "abort"
+- Constraint: a confirm callback is consulted only when an embedding host passes one to runWorkflow; kind, choices, and timeoutMs are declared-only and affect only resume identity
 - Constraint: consumes one agent slot and no tokens
 - Constraint: journaled answers replay only within an unchanged resume prefix
 - Constraint: object checkpoints accept an open kind identifier, persist their JSON payload, and pause the run
@@ -257,7 +211,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `workflow-tool-input`
 - Support: `supported`
 - Signature: `name?: string`
-- Constraint: resolves a project/user saved workflow first, then one of the 5 built-in patterns
+- Constraint: resolves a project/user saved workflow first, then a built-in pattern
 - Constraint: mutually exclusive with resumeFromRunId
 
 <a id="tool-input-args"></a>
@@ -271,9 +225,10 @@ Every exact fact below is projected from the installed extension's capability co
 ## background
 
 - Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `background?: boolean = true`
-- Constraint: background workflows are headless; use background false when checkpoint must show foreground confirmation
+- Support: `compatibility`
+- Signature: `background?: boolean`
+- Constraint: ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes
+- Constraint: kept in the schema so calls that still send it are not rejected
 
 <a id="tool-input-maxagents"></a>
 ## maxAgents
@@ -282,7 +237,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Support: `supported`
 - Signature: `maxAgents?: number = 1000`
 - Constraint: default, not a hard product maximum
-- Constraint: counts logical agent calls across the shared nested run tree, including quality-helper expansion: verify = reviewers, judgePanel = populated attempts × judges (dense input: attempts.length × judges), completenessCheck = 1
+- Constraint: counts logical agent() and checkpoint() calls across the shared nested run tree
 - Constraint: agent execution retries do not consume extra logical slots; retry(), gate(), and loopUntilDry callbacks must be budgeted from their bounded planned calls
 
 <a id="tool-input-concurrency"></a>
@@ -324,7 +279,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `resumeFromRunId?: string`
 - Constraint: resumes a prior incomplete run with an edited script
 - Constraint: unchanged positional agent calls replay from cache until the first changed or inserted call
-- Constraint: always runs in the background
 
 <a id="metadata"></a>
 ## export const meta
@@ -362,6 +316,15 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: —
 - Constraint: accepted for compatibility but not recommended
 
+<a id="vm-realm"></a>
+## VM realm JavaScript substrate
+
+- Classification: `internal-substrate`
+- Support: `internal`
+- Signature: —
+- Constraint: Node-version-dependent globals are not project-owned workflow API
+- Constraint: VM is not a security sandbox
+
 <a id="model-routes"></a>
 ## model routes
 
@@ -371,7 +334,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: live values must not be copied into static contract data
 - Dynamic reference owner: `model-tier-config`
 - Item shape: `{ name: string; description?: string }`
-- Future lookup connection: `loadModelTierConfig`
+- Live lookup: `loadModelTierConfig`
 - Live values are intentionally absent from this static reference.
 
 <a id="agent-types"></a>
@@ -383,5 +346,5 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: live values must not be copied into static contract data
 - Dynamic reference owner: `agent-registry`
 - Item shape: `{ name: string; description?: string }`
-- Future lookup connection: `loadAgentRegistry`
+- Live lookup: `loadAgentRegistry`
 - Live values are intentionally absent from this static reference.

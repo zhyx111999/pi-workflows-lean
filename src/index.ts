@@ -145,7 +145,6 @@ export {
   CapabilityOrigin,
   CapabilitySupport,
   DiagnosticSeverity,
-  DiscoveryPlacement,
   defineWorkflowCapabilityContract,
   WORKFLOW_CAPABILITY_CONTRACT,
   WORKFLOW_CAPABILITY_DEFINITION,

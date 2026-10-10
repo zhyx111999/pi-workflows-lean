@@ -7,7 +7,6 @@ Choose from data dependencies, then read only the matching example. JavaScript o
 | --- | --- | --- | --- |
 | Heterogeneous items need different handling | Classify and act | Finish all classification before routed action; ledger classification and action failures by item ID | [Adapt](../examples/classify-and-act.js) |
 | Independent work needs whole-set judgment | Fan out and synthesize | Pass thunks; await the full set; give synthesis every intended ID, including `null` | [Adapt](../examples/fan-out-and-synthesize.js) |
-| Claims need skeptical checks | Adversarial verification | Use separate producer and skeptic calls; start skepticism after production; ledger both failures | [Adapt](../examples/adversarial-verification.js) |
 | Exploration should diverge before one rubric | Generate and filter | Finish generation; deterministically deduplicate and bound candidates before filter calls | [Adapt](../examples/generate-and-filter.js) |
 | Pairwise comparison beats absolute scoring | Tournament | Let JavaScript run the bounded bracket and byes; agents compare one pair; ledger match failures | [Adapt](../examples/tournament.js) |
 | Work cardinality is unknown | Loop until done | Deduplicate by stable key; count only successful empty rounds as dry; cap rounds; retain failed rounds | [Adapt](../examples/loop-until-done.js) |

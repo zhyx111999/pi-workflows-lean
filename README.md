@@ -98,7 +98,7 @@ The installed extension generates this compact index from its executable capabil
 | loopUntilDry | runtime-global | `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>` | `round`: (roundIndex: number) => unknown[] \| Promise<unknown[]> (required)<br>`key`: (item: unknown) => string (optional; default: JSON.stringify)<br>`consecutiveEmpty`: number (optional; default: 2)<br>`maxRounds`: number (optional; default: 50) |
 | retry | runtime-global | `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>` | `attempts`: number (optional; default: 3)<br>`until`: (result: unknown) => boolean (optional; default: accept first result when omitted) |
 | gate | runtime-global | `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>` | `attempts`: number (optional; default: 3) |
-| checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true when no UI and omitted)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
+| checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
 | log | runtime-global | `log(message) => void` | — |
 | phase | runtime-global | `phase(title, options?) => void` | `budget`: number (optional) |
 | args | runtime-global | `args: unknown` | — |
@@ -108,7 +108,6 @@ The installed extension generates this compact index from its executable capabil
 | script | workflow-tool-input | `script?: string` | — |
 | name | workflow-tool-input | `name?: string` | — |
 | args | workflow-tool-input | `args?: unknown` | — |
-| background | workflow-tool-input | `background?: boolean = true` | — |
 | maxAgents | workflow-tool-input | `maxAgents?: number = 1000` | — |
 | concurrency | workflow-tool-input | `concurrency?: number` | — |
 | agentRetries | workflow-tool-input | `agentRetries?: number = configured value or 0` | — |
@@ -339,23 +338,10 @@ The separate agent `thinking` option is passed to policy as `ctx.requestedThinki
 
 ```bash
 npm install
-npm test     # Biome, TypeScript, unit tests, and release checks
+npm test     # Biome, script type check, build, generated-doc and context-size checks, unit tests
 ```
 
-### Optional model-comprehension evidence
-
-The comprehension harness is manual and never runs in normal CI, `npm test`, or the release gate. Select an available model explicitly; the harness never embeds or chooses from a static model or agent-type catalogue.
-
-```bash
-npm run comprehension -- --model provider/model                    # quick writing scenario
-npm run comprehension -- --model provider/model --suite full       # write, edit, review, and debug
-npm run comprehension -- --model provider/model --output runs/a.json
-npm run delivery-choice -- --model provider/model                  # timing and token-budget choices
-```
-
-By default, evidence is written under ignored `.pi/model-comprehension/`. Each JSON run records the exact prompts and versions, generated workflows, skill reads, provider token usage, deterministic runtime calls/topology/results, assertions, and failure details. The delivery-choice harness also checks that ordinary requests omit `tokenBudget` and explicit user caps are preserved exactly. Scenario failures are retained as non-blocking evidence and do not produce a failing exit status; argument, model-selection, and setup errors do.
-
-Features are also verified end-to-end against real Pi subagent sessions before release. See [CONTRIBUTING.md](./CONTRIBUTING.md) to contribute.
+The capability table above and the skill's capability references are generated from `src/workflow-capability-contract.ts`; regenerate them with `npm run docs:generate`, and the context-size measurement with `npm run context:generate`. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full conventions.
 
 ## Credits
 
