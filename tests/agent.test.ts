@@ -3061,27 +3061,6 @@ test("agent() default timeout is unbounded", async () => {
   assert.equal(result.result.val, "slow");
 });
 
-test("agent() ignores the removed per-call timeoutMs and retries options", async () => {
-  // Run limits come only from the run (settings); a script cannot lift them.
-  let calls = 0;
-  const slow = {
-    async run() {
-      calls++;
-      await new Promise((r) => setTimeout(r, 25));
-      return "slow";
-    },
-  };
-  const result = await runWorkflow<{ val: string | null }>(
-    `export const meta = { name: 'test', description: 't' }
-     const val = await agent('slow', { label: 's', timeoutMs: null, retries: 3 })
-     return { val }`,
-    { agent: slow, agentTimeoutMs: 5, persistLogs: false },
-  );
-
-  assert.equal(result.result.val, null, "the run-level timeout still applies");
-  assert.equal(calls, 1, "the run-level retry count (0) still applies");
-});
-
 test("agent() with parallel invokes all agents", async () => {
   const rec = new CallRecordingAgent();
   await runWorkflow(

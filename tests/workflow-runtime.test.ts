@@ -18,6 +18,7 @@ import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow } from "../src/workflow.js";
+import { WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
 
 /** Agent runner that counts real invocations and echoes a per-call result. */
 function countingAgent() {
@@ -891,6 +892,52 @@ return await agent('work', { thinking: 'ultra' })`,
     /thinking/i,
   );
   assert.equal(calls, 0, "invalid script thinking rejects before agent dispatch");
+});
+
+test("agent() rejects unknown or non-object options before dispatch and lists the accepted options", async () => {
+  const accepted =
+    WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts()
+      .find((fact) => fact.id === "workflow.runtime.agent")
+      ?.options?.options.map((option) => option.name) ?? [];
+  assert.ok(accepted.includes("label") && accepted.includes("thread"), "the contract declares the agent options");
+  let calls = 0;
+  const runner = {
+    async run() {
+      calls++;
+      return "ran";
+    },
+  };
+  const run = (options: string) =>
+    runWorkflow(
+      `export const meta = { name: 'agent_options', description: 'agent option validation' }
+return await agent('work', ${options})`,
+      { agent: runner, persistLogs: false },
+    );
+
+  for (const [options, named] of [
+    ["{ label: 'a', timeoutMs: 1000, retries: 3 }", /"timeoutMs", "retries"/],
+    ["{ lable: 'typo' }", /"lable"/],
+    ["'just a label'", /must be an object/],
+    ["null", /must be an object/],
+    ["['label']", /must be an object/],
+  ] as const) {
+    await assert.rejects(
+      run(options),
+      (error: unknown) =>
+        error instanceof WorkflowError &&
+        error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+        !error.recoverable &&
+        named.test(error.message) &&
+        accepted.every((name) => error.message.includes(name)),
+      `agent('work', ${options}) must fail loudly`,
+    );
+  }
+  assert.equal(calls, 0, "invalid options never dispatch an agent");
+
+  // Every declared option name is accepted; undefined values behave as omitted.
+  const everyOption = `{ ${accepted.map((name) => `${name}: undefined`).join(", ")} }`;
+  assert.equal((await run(everyOption)).result, "ran");
+  assert.equal(calls, 1);
 });
 
 test("requested worktree isolation fails closed before starting a non-git agent", async () => {

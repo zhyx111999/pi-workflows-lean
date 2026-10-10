@@ -141,7 +141,8 @@ const option = (
   dynamicReference: OptionDescriptor["dynamicReference"] = null,
 ): OptionDescriptor => ({ name, type, optional, default: defaultValue, constraints, dynamicReference });
 
-const AGENT_OPTIONS: OptionShape = {
+/** The complete set of agent() options; the runtime rejects any other key. */
+export const AGENT_OPTIONS: OptionShape = {
   id: "agent-options",
   options: [
     option("label", "string", true, "derived from phase and call count"),
@@ -210,6 +211,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
     signature: "agent(prompt, options?) => Promise<string | structured value | null>",
     optionShape: "agent-options",
     constraints: [
+      "options must be an object using only the declared option names; anything else fails before dispatch with an error listing the accepted names",
       "recoverable failures return null after retries; nonrecoverable failures throw",
       "schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries",
       "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)",
