@@ -481,7 +481,7 @@ return {}`;
       assert.ok(isolatedCwd, "isolated agent should receive a cwd");
       assert.notEqual(isolatedCwd, repo, "agent cwd should not be the base repo");
       assert.equal(seen[0].cwdExists, true, "worktree cwd should exist while the agent runs");
-      assert.ok(seen[0].instructions?.includes("Requested isolation: worktree"));
+      assert.equal(seen[0].instructions, "Run isolated.", "only the definition body; no isolation note is injected");
       assert.equal(existsSync(isolatedCwd), true, "worktree kept after the call by default");
     } finally {
       rmSync(repo, { recursive: true, force: true });
@@ -595,7 +595,7 @@ return {}`;
     });
     assert.equal(seen[0].model, undefined, "no model bound");
     assert.equal(seen[0].toolNames, undefined, "no tool allowlist bound");
-    assert.ok(seen[0].instructions?.includes("nope"), "falls back to the prose hint");
+    assert.equal(seen[0].instructions, undefined, "no role prompt is invented for an unknown name");
     assert.ok(
       logs.some((l) => /unknown agentType/i.test(l)),
       "warns about the unknown agentType",
