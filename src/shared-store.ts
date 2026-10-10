@@ -23,15 +23,9 @@
  * AND JSON-serializable for journal persistence (BigInt/cycles fail that) —
  * the two classes overlap but differ; both constraints apply.
  *
- * `deltaKey` must be unique across every run that shares this store instance,
- * not just within one run's callSeq. A nested `workflow()` call restarts its own
- * callSeq at 0 while inheriting the parent's store (so parent and nested-run
- * agents can share state), so a bare callIndex would collide between a parent
- * agent and a concurrently-running nested-run agent that both got index 0 —
- * whichever commits its delta last would clobber the other's entry in
- * `agentDeltas`. Callers compose `deltaKey` as `${runId}:${callIndex}`, and
- * since every run (including each nested run) gets its own distinct `runId`,
- * the composite key is unique across the whole store's lifetime.
+ * `deltaKey` must be unique per agent call for the store's lifetime: two calls
+ * sharing a key would merge or clobber each other's journaled delta. Callers
+ * use the call id `${runId}:${callIndex}`.
  */
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -39,9 +33,7 @@ import { Type } from "typebox";
 
 export class SharedStore {
   private readonly map = new Map<string, unknown>();
-  // Per-agent write deltas for delta-journaling; keyed by a run-unique
-  // `${runId}:${callIndex}` string (see class doc) so nested workflow() runs
-  // sharing this store can't collide on a bare callIndex.
+  // Per-agent write deltas for delta-journaling, keyed by call id (see class doc).
   private readonly agentDeltas = new Map<string, Record<string, unknown>>();
   // Per-key write history implementing event-log undo semantics for
   // discardDelta (#208): each tracked write pushes an entry tagged with its
@@ -276,10 +268,8 @@ export class SharedStore {
 }
 
 /**
- * Create per-agent store tools that attribute writes to `deltaKey`, a
- * run-unique `${runId}:${callIndex}` string (see the `SharedStore` class doc
- * for why the bare callIndex alone is not enough once a nested `workflow()`
- * call shares this store).
+ * Create per-agent store tools that attribute writes to `deltaKey`, the
+ * agent call id `${runId}:${callIndex}` (see the `SharedStore` class doc).
  * Used internally by `runWorkflow` so each agent's puts are tracked in the
  * store's delta journal and can be replayed additively on resume.
  */

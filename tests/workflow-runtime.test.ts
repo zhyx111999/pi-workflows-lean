@@ -185,7 +185,7 @@ test("agent cwd participates in resume identity while omitted cwd preserves cach
   const firstDir = mkdtempSync(join(tmpdir(), "pi-agent-cwd-first-"));
   const secondDir = mkdtempSync(join(tmpdir(), "pi-agent-cwd-second-"));
   const calls: string[] = [];
-  const journal = new Map<string, JournalEntry>();
+  const journal = new Map<number, JournalEntry>();
   const runner = {
     async run(_prompt: string, options: AgentRunOptions) {
       calls.push(options.cwd ?? "default");
@@ -199,7 +199,7 @@ return await agent('inspect', { label: 'inspect'${cwd ? `, cwd: ${JSON.stringify
       agent: runner,
       persistLogs: false,
       runId: "cwd-resume",
-      onAgentJournal: (entry) => journal.set(`${entry.runId}:${entry.index}`, entry),
+      onAgentJournal: (entry) => journal.set(entry.index, entry),
     });
     await runWorkflow(script(), {
       agent: runner,
@@ -372,7 +372,7 @@ return { before, threaded, after }`,
       agent: resumed.runner,
       runId: "thread-run",
       persistLogs: false,
-      resumeJournal: new Map(firstJournal.map((entry) => [`thread-run:${entry.index}`, entry])),
+      resumeJournal: new Map(firstJournal.map((entry) => [entry.index, entry])),
       resumeFromRunId: "thread-run",
     },
   );
@@ -855,7 +855,7 @@ test("resume replays cached results without re-running agents", async () => {
     agent: second.runner,
     persistLogs: false,
     runId: "resume-run",
-    resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e])),
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
   });
   assert.equal(second.state.calls, 0, "no live runs on a full cache hit");
   assert.equal(JSON.stringify(r2.result), JSON.stringify(r1.result));
@@ -880,7 +880,7 @@ return await agent('work', { thinking: '${thinking}' })`;
   await runWorkflow(script("high"), {
     persistLogs: false,
     runId: "thinking-run",
-    resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
+    resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
     agent: {
       async run(_prompt, options) {
         seen.push(options.thinking);
@@ -967,7 +967,7 @@ return await agent('same prompt', { label: 'same', isolation: ${isolation} })`;
         cwd,
         runId: "cache-mode",
         persistLogs: false,
-        resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
+        resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
         agent: {
           async run() {
             runs++;
@@ -1013,7 +1013,7 @@ return await agent('same prompt', { label: 'same', isolation: 'worktree', keepWo
       cwd: repo,
       runId: "cache-retention",
       persistLogs: false,
-      resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
       onAgentJournal: (entry) => journal.push(entry),
       agent: runner,
     });
@@ -1024,7 +1024,7 @@ return await agent('same prompt', { label: 'same', isolation: 'worktree', keepWo
       cwd: repo,
       runId: "cache-retention",
       persistLogs: false,
-      resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
       agent: runner,
     });
     assert.equal(runs, 2, "an unchanged valid keepWorktree: true entry replays without agent.run");
@@ -1206,7 +1206,7 @@ return await agent('${prompt}', { label: 'same-label', isolation: 'worktree' })`
       cwd: repo,
       runId: "same-run-id",
       persistLogs: false,
-      resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
       agent: {
         async run() {
           replayCalls++;
@@ -1221,7 +1221,7 @@ return await agent('${prompt}', { label: 'same-label', isolation: 'worktree' })`
       cwd: repo,
       runId: "same-run-id",
       persistLogs: false,
-      resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
+      resumeJournal: new Map(journal.map((entry) => [entry.index, entry])),
       agent: {
         async run(_prompt, options) {
           missCwd = options.cwd ?? "";
@@ -1279,7 +1279,7 @@ test("resume re-runs only the changed call (hash mismatch)", async () => {
     agent: second.runner,
     persistLogs: false,
     runId: "resume-run-2",
-    resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e])),
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
   });
   assert.equal(second.state.calls, 1, "only the edited call re-runs");
 });
@@ -1310,7 +1310,7 @@ test("resume re-runs the changed call AND everything after it (longest-unchanged
     agent: second.runner,
     persistLogs: false,
     runId: "prefix-run",
-    resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e])),
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
   });
   assert.equal(second.state.calls, 2, "edited call (1) + its suffix (2) re-run; only the prefix (0) is cached");
 });
@@ -1340,7 +1340,7 @@ test("resume in parallel(): editing one thunk re-runs that index and every later
     agent: second.runner,
     persistLogs: false,
     runId: "par-prefix-run",
-    resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e])),
+    resumeJournal: new Map(journal.map((e) => [e.index, e])),
   });
   assert.equal(second.state.calls, 2, "changed thunk (index 1) + later index (2) re-run; index 0 cached");
 });
@@ -1358,216 +1358,6 @@ test("callSeq is deterministic under parallel()", async () => {
   assert.deepEqual(
     journal.map((e) => e.index).sort((a, b) => a - b),
     [0, 1, 2],
-  );
-});
-
-test("workflow() runs a nested saved workflow and shares the global agent counter", async () => {
-  const child = `export const meta = { name: 'child', description: 'c' }
-const r = await agent('child task', { label: 'c' })
-return { child: r }`;
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-const a = await agent('parent task', { label: 'p' })
-const nested = await workflow('child', { foo: 1 })
-return { a, nested }`;
-
-  const result = await runWorkflow<{ a: string; nested: { child: string } }>(parent, {
-    agent: countingAgent().runner,
-    persistLogs: false,
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-  });
-
-  assert.equal(result.agentCount, 2);
-  assert.equal(result.result.nested.child, "ran:child task");
-});
-
-test("nested workflows share named agent threads with their parent", async () => {
-  const turns = new Map<string, string[]>();
-  const runner = {
-    async run(prompt: string, options?: { thread?: string }) {
-      const thread = options?.thread ?? "one-shot";
-      const prior = turns.get(thread) ?? [];
-      prior.push(prompt);
-      turns.set(thread, prior);
-      return prior.join(" -> ");
-    },
-  };
-  const child = `export const meta = { name: 'child_thread', description: 'continue parent thread' }
-return await agent('child', { thread: 'implementer' })`;
-  const parent = `export const meta = { name: 'parent_thread', description: 'share thread with child' }
-const first = await agent('parent-before', { thread: 'implementer' })
-const nested = await workflow('child')
-const last = await agent('parent-after', { thread: 'implementer' })
-return { first, nested, last }`;
-
-  const result = await runWorkflow<{ first: string; nested: string; last: string }>(parent, {
-    agent: runner,
-    persistLogs: false,
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-  });
-
-  assert.deepEqual(turns.get("implementer"), ["parent-before", "child", "parent-after"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(result.result)), {
-    first: "parent-before",
-    nested: "parent-before -> child",
-    last: "parent-before -> child -> parent-after",
-  });
-});
-
-test("a nested threaded call invalidates later parent journal entries", async () => {
-  const script = `export const meta = { name: 'parent_resume_barrier', description: 'propagate child barrier' }
-const before = await agent('before')
-await workflow('child')
-const after = await agent('after')
-const confirmed = await checkpoint('confirm', { default: false })
-return { before, after, confirmed }`;
-  const child = `export const meta = { name: 'child_resume_barrier', description: 'thread barrier' }
-return await agent('threaded child', { thread: 'implementer' })`;
-  const journal: JournalEntry[] = [];
-  await runWorkflow(script, {
-    agent: countingAgent().runner,
-    runId: "nested-thread-barrier",
-    persistLogs: false,
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-    confirm: async () => true,
-    onAgentJournal: (entry) => journal.push(entry),
-  });
-
-  const resumed = countingAgent();
-  let confirmations = 0;
-  const result = await runWorkflow<{ before: string; after: string; confirmed: boolean }>(script, {
-    agent: resumed.runner,
-    runId: "nested-thread-barrier",
-    persistLogs: false,
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-    resumeJournal: new Map(journal.map((entry) => [`${entry.runId}:${entry.index}`, entry])),
-    resumeFromRunId: "nested-thread-barrier",
-    confirm: async () => {
-      confirmations++;
-      return false;
-    },
-  });
-
-  assert.equal(resumed.state.calls, 2, "the child thread and later parent agent both run live");
-  assert.equal(confirmations, 1, "the later parent checkpoint also runs live");
-  assert.equal(result.result.confirmed, false);
-});
-
-test("sequential nested workflows assign distinct opaque agent identities", async () => {
-  const agentIds: string[] = [];
-  const childScript = `export const meta = { name: 'child', description: 'one child agent' }
-return await agent('child work', { label: 'worker' })`;
-  await runWorkflow(
-    `export const meta = { name: 'parent', description: 'two sequential child workflows' }
-const first = await workflow('child')
-const second = await workflow('child')
-return [first, second]`,
-    {
-      agent: fakeAgent(),
-      loadSavedWorkflow: (name) => (name === "child" ? childScript : undefined),
-      onAgentStart: (event) => agentIds.push(event.id),
-      persistLogs: false,
-    },
-  );
-
-  assert.equal(agentIds.length, 2);
-  assert.equal(new Set(agentIds).size, 2);
-});
-
-test("parallel sibling workflows can each use the one allowed nesting level", async () => {
-  const agentIds: string[] = [];
-  const childScript = `export const meta = { name: 'child', description: 'parallel child' }
-return await agent('child work', { label: 'worker' })`;
-  const result = await runWorkflow<string[]>(
-    `export const meta = { name: 'parent', description: 'parallel child workflows' }
-return await parallel([
-  () => workflow('child'),
-  () => workflow('child'),
-])`,
-    {
-      agent: fakeAgent({}, "child-result"),
-      loadSavedWorkflow: (name) => (name === "child" ? childScript : undefined),
-      onAgentStart: (event) => agentIds.push(event.id),
-      persistLogs: false,
-    },
-  );
-
-  assert.deepEqual(result.result, ["child-result", "child-result"]);
-  assert.equal(new Set(agentIds).size, 2);
-});
-
-test("workflow() nesting is one level deep (second level throws)", async () => {
-  const map: Record<string, string> = {
-    gc: `export const meta = { name: 'gc', description: 'g' }
-await agent('gc', { label: 'g' })
-return 1`,
-    child: `export const meta = { name: 'child', description: 'c' }
-await workflow('gc')
-return 2`,
-  };
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-let err = null
-try { await workflow('child') } catch (e) { err = String(e && e.message || e) }
-return { err }`;
-
-  const result = await runWorkflow<{ err: string }>(parent, {
-    agent: countingAgent().runner,
-    persistLogs: false,
-    loadSavedWorkflow: (name) => map[name],
-  });
-  assert.match(result.result.err, /one level deep/);
-});
-
-test("sequential nested workflow() calls at the same depth get distinct child run ids (no cross-child id/deltaKey collision)", async () => {
-  // `shared.depth` alone would give BOTH of these sequential children the
-  // same `${runId}-nested1` suffix (depth returns to 0 between them, since
-  // only one level of nesting is ever live at a time) — and each child's own
-  // callSeq restarts at 0, so their first agent() calls would then compute
-  // the identical deltaKey (also used as the onAgentStart/onAgentEnd event
-  // id — see item 2's identity model), corrupting SharedStore deltas and
-  // misattributing events. child1's agent() call is deliberately left
-  // un-awaited — realistically, that's exactly when the collision bites:
-  // the stray can still be in SharedRuntime.inFlight (only the top-level
-  // frame drains, not each nested frame) when child2 starts and mints an id.
-  const seenIds = new Set<string>();
-  let duplicateId: string | undefined;
-  const runner = {
-    async run(prompt: string) {
-      if (prompt === "child1-stray") {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        return "child1-stray-done";
-      }
-      return `ran:${prompt}`;
-    },
-  };
-  const scripts: Record<string, string> = {
-    child1: `export const meta = { name: 'child1', description: 'c1' }
-// Deliberately NOT awaited.
-agent('child1-stray', { label: 'stray' })
-return 'child1-done'`,
-    child2: `export const meta = { name: 'child2', description: 'c2' }
-const r = await agent('child2-live', { label: 'live' })
-return r`,
-  };
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-const a = await workflow('child1')
-const b = await workflow('child2')
-return { a, b }`;
-
-  const result = await runWorkflow<{ a: string; b: string }>(parent, {
-    agent: runner,
-    persistLogs: false,
-    loadSavedWorkflow: (name) => scripts[name],
-    onAgentStart: (event) => {
-      if (seenIds.has(event.id)) duplicateId = event.id;
-      seenIds.add(event.id);
-    },
-  });
-  assert.equal(result.result.a, "child1-done");
-  assert.equal(result.result.b, "ran:child2-live");
-  assert.equal(
-    duplicateId,
-    undefined,
-    "child1's un-awaited stray and child2's live call must never share an id/deltaKey",
   );
 });
 
@@ -2255,41 +2045,6 @@ return xs`;
   assert.equal(state.completed, 1);
 });
 
-test("a parent script that catches a nested workflow()'s uncaught child error can still run agents afterward (isTopLevelRun gate)", async () => {
-  // Only the TOP-level frame is allowed to seal shared.runFatalController (see
-  // isTopLevelRun in runWorkflow's catch) — a NESTED frame reaching its own
-  // catch must never seal it, because the error hasn't finished propagating
-  // yet: the parent script may still catch workflow()'s rejection and
-  // continue normally. If a nested frame sealed it too (the mutation this
-  // test targets — dropping the isTopLevelRun guard), the shared runtime
-  // (shared between parent and child via sharedRuntime) would already be
-  // aborted by the time control returns to the parent's catch block, so the
-  // parent's own SUBSEQUENT agent() call would be aborted before it could
-  // even start — even though the parent legitimately handled the failure.
-  const { state, runner } = abortAwareAgent(20);
-  const child = `export const meta = { name: 'child', description: 'c' }
-await agent('failer', { label: 'child-failer' })
-return 1`;
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-let caught = false
-try {
-  await workflow('child')
-} catch (e) {
-  caught = true
-}
-const after = await agent('after', { label: 'after' })
-return { caught, after }`;
-
-  const result = await runWorkflow<{ caught: boolean; after: string }>(parent, {
-    agent: runner,
-    persistLogs: false,
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-  });
-  assert.equal(result.result.caught, true, "the parent's own try/catch saw the child workflow's escaping error");
-  assert.equal(result.result.after, "done:after", "a later agent() call must still run normally after the catch");
-  assert.equal(state.aborted, 0, "sealing at the child (nested) level must never abort the parent's own later agent");
-});
-
 // ── Un-awaited agent() calls must not outlive the run: the run drains every
 // spawned agent() call (awaited or not) before it is allowed to complete. ──
 
@@ -2342,12 +2097,12 @@ test("an un-awaited agent() call replays deterministically from the journal on r
 agent('stray', { label: 'stray' })
 const main = await agent('main', { label: 'main' })
 return main`;
-  const journalEntries = new Map<string, JournalEntry>();
+  const journalEntries = new Map<number, JournalEntry>();
   const first = await runWorkflow<string>(script, {
     agent: runner,
     persistLogs: false,
     runId: "prior-run",
-    onAgentJournal: (entry) => journalEntries.set(`${entry.runId}:${entry.index}`, entry),
+    onAgentJournal: (entry) => journalEntries.set(entry.index, entry),
   });
   assert.equal(first.result, "main-done");
   assert.equal(calls.stray, 1);
@@ -2365,50 +2120,6 @@ return main`;
   // the journal — neither runner.run() is invoked again.
   assert.equal(calls.stray, 1, "the un-awaited agent's cached result must replay, not re-run, on resume");
   assert.equal(calls.main, 1, "the awaited agent's cached result must replay, not re-run, on resume");
-});
-
-test("nested workflow() frames use the run's registry snapshot (audit2 #6)", async () => {
-  // REAL scenario: no injected registry — the registry is loaded from
-  // <cwd>/.pi/agents at run start. The fake runner DELETES the .md mid-run
-  // (during the parent's first call); the nested frame must still resolve the
-  // sentinel definition from the forwarded snapshot, not re-load from disk.
-  const cwd = mkdtempSync(join(tmpdir(), "pdw-registry-"));
-  const agentsDir = join(cwd, ".pi", "agents");
-  mkdirSync(agentsDir, { recursive: true });
-  const defPath = join(agentsDir, "sentinel.md");
-  writeFileSync(defPath, "---\nname: sentinel\ndescription: temp\n---\nSENTINEL-INSTRUCTIONS\n");
-  const child = `export const meta = { name: 'child', description: 'c' }
-const r = await agent('child task', { agentType: 'sentinel' })
-return { child: r }`;
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-await agent('parent task')
-const nested = await workflow('child')
-return { nested }`;
-  const seenInstructions: (string | undefined)[] = [];
-  let calls = 0;
-  try {
-    const result = await runWorkflow<{ nested: { child: string } }>(parent, {
-      cwd,
-      agent: {
-        async run(_prompt: string, options: { instructions?: string }) {
-          calls++;
-          seenInstructions.push(options.instructions);
-          if (calls === 1) rmSync(defPath); // mid-run registry edit
-          return "ok";
-        },
-      },
-      loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-      persistLogs: false,
-    });
-    assert.equal(result.result.nested.child, "ok");
-    const childInstructions = seenInstructions[1];
-    assert.ok(
-      childInstructions?.includes("SENTINEL-INSTRUCTIONS"),
-      `nested frame resolved the run-start registry snapshot, got: ${childInstructions?.slice(0, 120)}`,
-    );
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
 });
 
 test("agent() retries back off between attempts (audit2 #7)", async () => {
@@ -2819,78 +2530,4 @@ return { a, blocked }`;
   assert.equal(result.result.blocked, true, "the 999999 re-declaration must NOT re-base the budget away");
   assert.equal(events.length, 1, "exactly one budget notification (the first declaration)");
   assert.equal(events[0]?.["decl-run:p"]?.budget, 60, "emitted keys are frame-namespaced");
-});
-
-test("a nested frame ADOPTS its own persisted phase-budget slice across resume (audit2 r2 MAJOR)", async () => {
-  // The child's phase budget was persisted from the prior execution with
-  // baseline 0 and budget 60; the child already spent 60 (seeded via
-  // initialTokenUsage). On resume the child re-declares its phase — it must
-  // adopt the persisted baseline, so the ceiling is already exhausted.
-  const child = `export const meta = { name: 'child', description: 'c' }
-phase('childphase', { budget: 60 })
-let blocked = false
-try { await agent('child task', { label: 'c' }) } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { blocked }`;
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-const nested = await workflow('child')
-return { nested }`;
-  const result = await runWorkflow<{ nested: { blocked: boolean } }>(parent, {
-    agent: fakeAgent({ input: 60, output: 0, total: 60, cost: 0 }),
-    persistLogs: false,
-    runId: "parent-run",
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-    initialTokenUsage: { input: 60, output: 0, total: 60, cost: 0, cacheRead: 0, cacheWrite: 0 },
-    initialPhaseBudgets: { "parent-run-nested1:childphase": { budget: 60, startSpent: 0 } },
-  });
-  assert.equal(
-    result.result.nested.blocked,
-    true,
-    "the nested frame adopted its persisted baseline: 60 already spent against a 60 ceiling blocks the call",
-  );
-});
-
-test("same-title phases in parent and child frames keep independent baselines (frame-namespaced)", async () => {
-  const child = `export const meta = { name: 'child', description: 'c' }
-phase('shared-title', { budget: 1000 })
-const r = await agent('child task', { label: 'c' })
-return { child: r }`;
-  const parent = `export const meta = { name: 'parent', description: 'p' }
-phase('shared-title', { budget: 60 })
-const a = await agent('parent task', { label: 'p' })
-const nested = await workflow('child')
-let blocked = false
-try { await agent('parent tail', { label: 't' }) } catch (e) { blocked = true }
-return { a, nested, blocked }`;
-  const events: Array<Record<string, { budget: number; startSpent: number }>> = [];
-  const result = await runWorkflow<{ blocked: boolean }>(parent, {
-    agent: fakeAgent({ input: 10, output: 0, total: 10, cost: 0 }),
-    persistLogs: false,
-    runId: "parent-run",
-    loadSavedWorkflow: (name) => (name === "child" ? child : undefined),
-    onPhaseBudgets: (budgets) => events.push(budgets),
-  });
-  // Parent spent 10 in 'shared-title' (budget 60); the child's 1000-budget
-  // same-title phase must not lift the parent's ceiling for the tail call...
-  // parent tail: phaseSpent 10 (parent frame) < 60 → runs. The REAL assertion
-  // is the event table: two independent entries, never merged.
-  const merged = Object.assign({}, ...events);
-  assert.equal(merged["parent-run:shared-title"]?.budget, 60, "parent entry under the parent frame key");
-  assert.equal(merged["parent-run-nested1:shared-title"]?.budget, 1000, "child entry under the child frame key");
-  assert.equal(result.result.blocked, false, "parent tail call proceeds under its own ceiling (10 < 60)");
-});
-
-test("the phase runtime event advertises the EFFECTIVE (first-declared) budget", async () => {
-  const script = `export const meta = { name: 'phase_evt', description: 'phase evt' }
-phase('p', { budget: 60 })
-phase('p', { budget: 999999 })
-return 'done'`;
-  const budgets: Array<number | null> = [];
-  await runWorkflow(script, {
-    agent: fakeAgent(),
-    persistLogs: false,
-    onRuntimeEvent: (event) => {
-      if (event.type === "phase") budgets.push(event.budget);
-    },
-  });
-  assert.deepEqual(budgets, [60, 60], "re-declaration reports the effective budget, not the ignored value");
 });

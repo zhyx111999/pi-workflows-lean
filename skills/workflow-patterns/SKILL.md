@@ -14,11 +14,8 @@ and `args` matching the shape below, instead of writing an equivalent script.
 A project or user saved workflow of the same name always takes precedence
 over a built-in of that name — on the slash command, too.
 
-`deep-research` is reachable only at the `workflow` tool's top-level `name`
-input, not via the in-script `await workflow(savedName, childArgs)` helper —
-that helper resolves saved workflows only. Calling `workflow('deep-research')`
-from inside a script fails as an unknown saved workflow; use the top-level
-`name` input instead.
+A script cannot start another workflow; run `deep-research` (or a saved
+workflow) through the tool's top-level `name` input.
 
 ## Patterns
 

@@ -78,8 +78,8 @@ return await agent(
 - **Git worktree isolation** — parallel agents edit on separate branches with `isolation: "worktree"`. Kept by default for merge; pass `keepWorktree: false` to delete (tests).
 - **Measured usage** — report real tokens and cost from each subagent session; add run, phase, or agent budgets only when you want them. When a provider session ends without reporting usage, the affected totals are heuristic character estimates and UI token surfaces render them with a `~` prefix (e.g. `~640 tok`) — never silently as metered figures. (Script-facing `budget.spent()/remaining()` are raw numbers and cannot carry the marker.)
 - **Visible background runs** — track phases, agents, models, fresh/cache tokens, cost, and live tok/s from the progress panel or `/workflows` navigator.
-- **Control helpers** — `retry()`, `gate()`, `loopUntilDry()`, and `checkpoint()` are optional script helpers. Cross-check helpers are not included.
-- **Reusable workflows** — save any run as a command and call saved workflows from other workflows.
+- **Plain control flow** — loops, semantic retries, and stopping rules are ordinary JavaScript around `agent()`; `checkpoint()` is the only pause helper. Cross-check helpers are not included.
+- **Reusable workflows** — save any run as a command and run saved workflows by name.
 
 ## Supported workflow capabilities
 
@@ -91,10 +91,6 @@ The installed extension generates this compact index from its executable capabil
 | agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional)<br>`timeoutMs`: number \| null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)<br>`retries`: number (optional; default: run retry count) |
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
-| workflow | runtime-global | `workflow(savedName, childArgs?) => Promise<unknown>` | — |
-| loopUntilDry | runtime-global | `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>` | `round`: (roundIndex: number) => unknown[] \| Promise<unknown[]> (required)<br>`key`: (item: unknown) => string (optional; default: JSON.stringify)<br>`consecutiveEmpty`: number (optional; default: 2)<br>`maxRounds`: number (optional; default: 50) |
-| retry | runtime-global | `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>` | `attempts`: number (optional; default: 3)<br>`until`: (result: unknown) => boolean (optional; default: accept first result when omitted) |
-| gate | runtime-global | `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>` | `attempts`: number (optional; default: 3) |
 | checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
 | log | runtime-global | `log(message) => void` | — |
 | phase | runtime-global | `phase(title, options?) => void` | `budget`: number (optional) |
@@ -151,10 +147,6 @@ Agent details use a compact summary by default: completed agents show their fina
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently and preserve input order |
 | `pipeline(items, ...stages)` | Fan items through sequential stages |
 | `phase(title, { budget? })` | Group work in the live view and optionally set a phase budget |
-| `retry(thunk, opts)` | Rerun a step until a condition accepts it |
-| `gate(thunk, validator, opts)` | Rerun a step with validator feedback |
-| `loopUntilDry(opts)` | Repeat a round until it stops adding items |
-| `workflow(name, args)` | Run a saved workflow inline |
 | `checkpoint(prompt, opts)` | Journaled pause; background runs use the headless default |
 | `budget` | Inspect tokens spent and remaining (raw numbers; UI surfaces mark heuristic estimates with `~`) |
 

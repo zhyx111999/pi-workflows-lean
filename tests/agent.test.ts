@@ -2911,7 +2911,7 @@ test("a replayed (cache-hit) agent reports the model it actually ran on, not the
     persistLogs: false,
     runId: "replay-model-run",
     mainModel: "main-prov/main-model",
-    resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e] as const)),
+    resumeJournal: new Map(journal.map((e) => [e.index, e] as const)),
     onAgentStart: (e) => replayed.push(e.model),
     onAgentEnd: (e) => replayed.push(e.model),
   });
@@ -2943,7 +2943,7 @@ test("a legacy journal entry with no model degrades to the pre-resolution guess"
     persistLogs: false,
     runId: "legacy-model-run",
     mainModel: "main-prov/main-model",
-    resumeJournal: new Map(legacy.map((e) => [`${e.runId}:${e.index}`, e] as const)),
+    resumeJournal: new Map(legacy.map((e) => [e.index, e] as const)),
     onAgentStart: (e) => replayed.push(e.model),
   });
   assert.deepEqual(

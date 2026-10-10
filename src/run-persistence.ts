@@ -57,10 +57,9 @@ export interface PersistedAgentState {
   sessionFile?: string;
 }
 
-/** Serialized journal entry; runId is absent on legacy numeric-only journals. */
+/** Serialized journal entry, keyed by the call's lexical index. */
 export interface PersistedJournalEntry {
   index: number;
-  runId?: string;
   hash: string;
   result: unknown;
   storeDelta?: Record<string, unknown>;
@@ -137,11 +136,8 @@ export interface PersistedRunState {
   };
   /**
    * Cached agent/checkpoint results for resume, keyed by deterministic call
-   * index. `runId` namespaces `index` (a nested workflow() call restarts its
-   * own callSeq at 0) — absent on journals persisted before that namespacing
-   * existed; see PersistedJournalEntry.runId in workflow.ts / the manager's
-   * resume() for the resume-time legacy-degradation behavior. `storeDelta` is
-   * this call's SharedStore write delta, replayed additively on resume.
+   * index. `storeDelta` is this call's SharedStore write delta, replayed
+   * additively on resume.
    */
   journal?: PersistedJournalEntry[];
   /**

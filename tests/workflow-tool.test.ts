@@ -116,11 +116,7 @@ test("createWorkflowTool keeps script syntax in the parameter schema", () => {
   );
   assert.match(description, /phases.*only when.*named phases.*declare only phases it will use/i);
   assert.match(description, /multiple phases.*phase\('Exact Title'\).*agent options/i);
-  assert.match(description, /await workflow\(savedName, childArgs\).*saved workflow inline/i);
-  assert.match(description, /nesting.*one level.*parent run's concurrency, agent, and token limits/i);
-  assert.match(description, /retry\(thunk, \{ attempts, until \}\)/);
-  assert.match(description, /gate\(thunk, validator, \{ attempts \}\)/);
-  assert.match(description, /loopUntilDry\(\{ round, key, consecutiveEmpty, maxRounds \}\)/);
+  assert.doesNotMatch(description, /workflow\(|retry\(|gate\(|loopUntilDry\(/);
   assert.match(description, /checkpoint\(prompt\)/);
   assert.match(description, /tier: 'small'\|'medium'\|'big'/);
   assert.match(description, /budget\.total, budget\.spent\(\), and budget\.remaining\(\)/);

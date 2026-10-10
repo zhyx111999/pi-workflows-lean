@@ -26,7 +26,7 @@ import { registerWorkflowCommands } from "./workflow-commands.js";
 import { createWorkflowControlTool } from "./workflow-control-tool.js";
 import { installParentPromptHook, registerWorkflowProgressCommands } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
-import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
+import { createWorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettingsForCwd } from "./workflow-settings.js";
 import { createWorkflowTailTool, WORKFLOW_TAIL_TOOL_NAME } from "./workflow-tail-tool.js";
 import { createWorkflowTool } from "./workflow-tool.js";
@@ -89,10 +89,9 @@ export function sessionFileCwd(sessionFile: string | undefined): string | undefi
   }
 }
 
-function buildManagerOptions(cwd: string, storage: WorkflowStorage) {
+function buildManagerOptions(cwd: string) {
   const settings = loadWorkflowSettings({ cwd });
   return {
-    loadSavedWorkflow: (name: string) => storage.load(name)?.script,
     toolsets: {
       "web-research": () => [...createCodingTools(cwd), ...createWebTools()],
     },
@@ -118,7 +117,7 @@ export default function extension(pi: ExtensionAPI) {
   // any foreign live runs that rode in via handoff.
   let cwd = resolve(process.cwd());
   let storage = createWorkflowStorage(cwd);
-  let managerOptions = buildManagerOptions(cwd, storage);
+  let managerOptions = buildManagerOptions(cwd);
 
   // Process-wide handoff slot (not cwd-keyed): the previous generation may have
   // been bound to ctx.cwd while this factory only sees process.cwd(). Claim
@@ -135,7 +134,7 @@ export default function extension(pi: ExtensionAPI) {
     if (claimedCwd !== cwd) {
       cwd = claimedCwd;
       storage = createWorkflowStorage(cwd);
-      managerOptions = buildManagerOptions(cwd, storage);
+      managerOptions = buildManagerOptions(cwd);
     }
   }
 
@@ -266,7 +265,7 @@ export default function extension(pi: ExtensionAPI) {
 
       cwd = sessionCwd;
       storage = createWorkflowStorage(cwd);
-      managerOptions = buildManagerOptions(cwd, storage);
+      managerOptions = buildManagerOptions(cwd);
       manager = new WorkflowManager({ cwd, ...managerOptions });
       installResultDelivery(pi, manager, { loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }) });
       usageLimitScheduler.dispose();
@@ -275,7 +274,7 @@ export default function extension(pi: ExtensionAPI) {
       // Manager already owns the session project; just align the local cwd/storage.
       cwd = sessionCwd;
       storage = createWorkflowStorage(cwd);
-      managerOptions = buildManagerOptions(cwd, storage);
+      managerOptions = buildManagerOptions(cwd);
       manager.reconfigureAfterReload(managerOptions);
     }
 

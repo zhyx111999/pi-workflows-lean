@@ -20,12 +20,11 @@ import { withFakeHomeAsync } from "./helpers/fake-home.js";
 // Always-on prompt (336 bytes): the workflow promptSnippet plus the single gate
 // guideline that defers the call decision to the note appended to user messages.
 const RENDERED_PROMPT_BUDGET_BYTES = 336;
-// Provider-visible tool definition (4,935 bytes at 3.13.0-lean.1, up from 4,392 in
-// upstream 3.13.0): the `script` description now spells out the remaining control
-// helpers (retry, gate, loopUntilDry, checkpoint, budget, phase budgets) and agent()
-// routing options inline and forbids cross-check subagents, so authors need not load
-// the skill for routine scripts; `background` is documented as ignored.
-const TOOL_DEFINITION_BUDGET_BYTES = 4_935;
+// Provider-visible tool definition (4,273 bytes): the `script` description spells
+// out checkpoint, budget, phase budgets, and agent() routing options inline and
+// forbids cross-check subagents, so authors need not load the skill for routine
+// scripts; `background` is documented as ignored.
+const TOOL_DEFINITION_BUDGET_BYTES = 4_273;
 
 test("rendered workflow prompt contribution stays within its accepted size", async () => {
   await withRenderedWorkflow(async ({ systemPrompt, promptLines }) => {

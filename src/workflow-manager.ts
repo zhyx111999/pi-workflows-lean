@@ -246,22 +246,17 @@ export interface ManagedRun {
   agentRetries?: number;
   /**
    * Per-phase sub-budgets declared so far in this run's lifetime, keyed by
-   * `${frameRunId}:${phaseTitle}` — persisted so resume() can adopt the
-   * original baselines instead of re-basing (audit2 #4). Written by the
-   * onPhaseBudgets callback (merged — nested frames share the table); read
-   * into initialPhaseBudgets at resume.
+   * `${runId}:${phaseTitle}` — persisted so resume() can adopt the original
+   * baselines instead of re-basing. Written by the onPhaseBudgets callback;
+   * read into initialPhaseBudgets at resume.
    */
   phaseBudgets?: Record<string, { budget: number; startSpent: number; warned?: boolean }>;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
 export interface ExecOptions {
-  /**
-   * Replay these journaled agent/checkpoint results for the unchanged prefix
-   * (resume), keyed by `${runId}:${index}` — see
-   * WorkflowRunOptions.resumeJournal in workflow.ts.
-   */
-  resumeJournal?: Map<string, JournalEntry>;
+  /** Replay these journaled agent/checkpoint results for the unchanged prefix (resume), keyed by call index. */
+  resumeJournal?: Map<number, JournalEntry>;
   /** Durable checkpoint response being replayed by this execution. */
   resumeCheckpoint?: WorkflowCheckpoint;
 
@@ -329,8 +324,6 @@ export interface WorkflowResumeOptions {
 export interface WorkflowManagerOptions {
   cwd?: string;
   concurrency?: number;
-  /** Resolve a saved-workflow name to its script, enabling nested `workflow('name')`. */
-  loadSavedWorkflow?: (name: string) => string | undefined;
   /** Inject a custom agent runner (tests); defaults to a real subagent session. */
   agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents and inheritMainModel routing. */
@@ -394,7 +387,6 @@ export interface WorkflowManagerOptions {
 export type WorkflowManagerReloadOptions = Pick<
   WorkflowManagerOptions,
   | "concurrency"
-  | "loadSavedWorkflow"
   | "defaultAgentTimeoutMs"
   | "defaultAgentRetries"
   | "defaultTokenBudget"
@@ -486,7 +478,6 @@ export class WorkflowManager extends EventEmitter {
   private persistence: RunPersistence;
   private cwd: string;
   private concurrency: number;
-  private loadSavedWorkflow?: (name: string) => string | undefined;
   private agent?: Pick<WorkflowAgent, "run">;
   /** The session's main model (provider/id), for auto-tiering explore agents and inheritMainModel routing. */
   private mainModel?: string;
@@ -509,7 +500,6 @@ export class WorkflowManager extends EventEmitter {
     super();
     this.cwd = options.cwd ?? process.cwd();
     this.concurrency = options.concurrency ?? 8;
-    this.loadSavedWorkflow = options.loadSavedWorkflow;
     this.agent = options.agent;
     this.mainModel = options.mainModel;
     this.modelRegistry = options.modelRegistry;
@@ -652,7 +642,6 @@ export class WorkflowManager extends EventEmitter {
    */
   reconfigureAfterReload(options: WorkflowManagerReloadOptions): void {
     this.concurrency = options.concurrency ?? 8;
-    this.loadSavedWorkflow = options.loadSavedWorkflow;
     this.defaultAgentTimeoutMs = options.defaultAgentTimeoutMs ?? null;
     this.defaultAgentRetries = options.defaultAgentRetries ?? 0;
     this.defaultTokenBudget = options.defaultTokenBudget ?? null;
@@ -973,7 +962,6 @@ export class WorkflowManager extends EventEmitter {
         excludeTools: this.excludeSubagentTools,
         providerMiddlewareExtensions: this.providerMiddlewareExtensions,
         confirm,
-        loadSavedWorkflow: this.loadSavedWorkflow,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
         resumeCheckpoint,
@@ -990,31 +978,22 @@ export class WorkflowManager extends EventEmitter {
             throw error;
           }
         },
-        // Seed the fresh SharedRuntime's spend counter from the persisted total
-        // (resume()) so the hard tokenBudget cap holds cumulatively across a
-        // pause/resume cycle instead of resetting to zero each time (see A2 —
-        // runWorkflow only applies this on the fresh-SharedRuntime branch, never
-        // overriding an inherited options.sharedRuntime from a nested workflow()).
+        // Seed the run's spend counter from the persisted total (resume()) so
+        // the hard tokenBudget cap holds cumulatively across a pause/resume
+        // cycle instead of resetting to zero each time.
         initialTokenUsage,
         initialPhaseBudgets: initialPhaseBudgets ?? managed.phaseBudgets,
         onPhaseBudgets: (budgets) => {
-          // Merge, don't replace: nested workflow() frames share this flat
-          // table, and a child's first declaration carries only ITS entries —
-          // replacing would drop the parent's (re-introducing the per-resume
-          // re-base audit2 #4 fixes).
           managed.phaseBudgets = { ...managed.phaseBudgets, ...budgets };
         },
         onAgentJournal: (entry) => {
-          // Append (crash-safe-ish): keep the latest entry per (runId, index)
-          // pair, then persist. Matching on index ALONE would let a nested
-          // workflow()'s callIndex-0 entry evict the parent's own
-          // callIndex-0 entry (and vice versa) — they're only distinguished
-          // by runId (see JournalEntry.runId). This is the high-frequency
-          // progress persist (fires once per completed agent, can burst
-          // under concurrency) — throttled (trailing edge). Every
-          // lifecycle-critical persist below (status transitions, run end,
-          // pause/resume/stop) still calls persistRun() directly and flushes this.
-          managed.journal = managed.journal.filter((e) => !(e.index === entry.index && e.runId === entry.runId));
+          // Append (crash-safe-ish): keep the latest entry per call index,
+          // then persist. This is the high-frequency progress persist (fires
+          // once per completed agent, can burst under concurrency) — throttled
+          // (trailing edge). Every lifecycle-critical persist below (status
+          // transitions, run end, pause/resume/stop) still calls persistRun()
+          // directly and flushes this.
+          managed.journal = managed.journal.filter((e) => e.index !== entry.index);
           managed.journal.push(entry);
           this.schedulePersist(managed);
         },
@@ -1867,10 +1846,9 @@ export class WorkflowManager extends EventEmitter {
    *
    * `opts.script` lets the orchestrating model resume with an EDITED script
    * (cached-prefix reuse / iteration): unchanged agent() calls whose content
-   * hash still matches the journal entry at their run-qualified call identity
-   * replay from cache, while the first changed or newly inserted call — including
-   * downstream nested workflows — and everything after it re-runs live. When
-   * `opts.script` is omitted, resume behaves
+   * hash still matches the journal entry at their call index replay from
+   * cache, while the first changed or newly inserted call and everything after
+   * it re-runs live. When `opts.script` is omitted, resume behaves
    * exactly as before and uses the persisted script (auto-resume, TUI resume);
    * this keeps the existing single-arg `resume(runId)` callers (e.g. the
    * UsageLimitScheduler) unchanged. `opts.args` overrides the persisted args
@@ -1977,8 +1955,15 @@ export class WorkflowManager extends EventEmitter {
     // Shape-guard the persisted journal, container AND elements: a corrupt
     // entry (null, non-object, index-less) must not throw AFTER the run lease
     // is acquired and the managed run registered (lease leak + phantom run).
-    const persistedJournal = (Array.isArray(persisted.journal) ? persisted.journal : []).filter(
-      (entry) => entry && typeof entry === "object" && typeof entry.index === "number",
+    // Records from releases whose scripts could nest saved workflows also hold
+    // entries tagged with a child frame's runId; those can never replay, so
+    // they are dropped together with the obsolete tag.
+    const persistedJournal = (Array.isArray(persisted.journal) ? persisted.journal : []).flatMap(
+      (entry): JournalEntry[] => {
+        if (!entry || typeof entry !== "object" || typeof entry.index !== "number") return [];
+        const { runId: frameRunId, ...journalEntry } = entry as JournalEntry & { runId?: unknown };
+        return frameRunId === undefined || frameRunId === runId ? [journalEntry] : [];
+      },
     );
     const seededAgentTimestamps = new Map<number, { startedAt: string; endedAt?: string }>();
     // Settle ghosts at wall-clock, but never BEFORE the record's last write:
@@ -2160,14 +2145,7 @@ export class WorkflowManager extends EventEmitter {
     // Persist before notifying renderers: listRuns() is their source of truth for
     // lifecycle status, while getRun() supplies the live in-memory snapshot.
     this.persistRun(managed);
-    // Namespace by (runId, index) exactly like the live onAgentJournal dedup
-    // above and like SharedStore's deltaKey — see JournalEntry.runId. A
-    // legacy entry persisted before namespacing existed has no `runId`; it is
-    // assumed to belong to this run's own top-level runId (the only frame
-    // that existed before nested workflow() journaling was namespaced), so it
-    // still resume-hits for a top-level call and safely cache-misses (re-runs
-    // live, does not misapply) for what was actually a nested-run entry.
-    const resumeJournal = new Map(persistedJournal.map((e) => [`${e.runId ?? runId}:${e.index}`, e] as const));
+    const resumeJournal = new Map(persistedJournal.map((e) => [e.index, e] as const));
     this.emit("resumed", { runId });
     // Run in the background; executeRun records status/errors on the managed run.
     // initialTokenUsage seeds the resumed execution's fresh SharedRuntime.spent

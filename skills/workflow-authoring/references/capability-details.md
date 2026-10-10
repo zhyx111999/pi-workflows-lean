@@ -65,61 +65,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: a null stage result is passed to the next stage; authors must guard missing coverage explicitly
 - Constraint: recoverable stage failures become null; nonrecoverable failures throw
 
-<a id="workflow"></a>
-## workflow
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `workflow(savedName, childArgs?) => Promise<unknown>`
-- Constraint: one nested level
-- Constraint: shares limiter, counters, token accounting, and store
-- Constraint: nested workflows do not reuse the parent resume journal
-
-<a id="loopuntildry"></a>
-## loopUntilDry
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>`
-- Option shape: `loop-until-dry-options`
-- `round`: (roundIndex: number) => unknown[] | Promise<unknown[]> (required)
-- `key`: (item: unknown) => string (optional; default: JSON.stringify)
-- `consecutiveEmpty`: number (optional; default: 2; authors should provide a finite integer; runtime clamps below 1)
-- `maxRounds`: number (optional; default: 50; authors should provide a finite positive integer)
-- Constraint: roundIndex is zero-based; null, non-array, or duplicate-only round results count as empty
-- Constraint: token-budget or agent-limit capacity exhaustion returns the accumulated partial array instead of throwing
-- Constraint: the returned array does not report whether termination came from dryness, maxRounds, or capacity exhaustion
-- Constraint: authors must retain failed-round identity and truthful termination state outside the helper
-
-<a id="retry"></a>
-## retry
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>`
-- Option shape: `retry-options`
-- `attempts`: number (optional; default: 3; authors must provide a finite integer; runtime clamps values below 1 to 1)
-- `until`: (result: unknown) => boolean (optional; default: accept first result when omitted; must be synchronous; use gate for asynchronous validation)
-- Constraint: attempt is zero-based and attempts counts total thunk calls
-- Constraint: until is synchronous; returning a Promise is truthy and accepts the first result
-- Constraint: omitting until accepts the first result regardless of attempts
-- Constraint: stops when until(result) is true; exhaustion returns only the last result without attempt metadata
-- Constraint: authors must supply a finite attempts bound when overriding the default
-
-<a id="gate"></a>
-## gate
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>`
-- Option shape: `gate-options`
-- `attempts`: number (optional; default: 3; authors must provide a finite integer; runtime clamps values below 1 to 1)
-- Constraint: feedback is undefined on the first thunk call and then receives the previous validator feedback string
-- Constraint: attempt is zero-based for the thunk while the returned attempts count is one-based
-- Constraint: a value is accepted when the validator returns an object with a truthy ok property; a bare boolean is not accepted
-- Constraint: exhaustion returns ok false with the last value and the bounded attempts count
-- Constraint: authors must supply a finite attempts bound when overriding the default
-
 <a id="checkpoint"></a>
 ## checkpoint
 
@@ -187,7 +132,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `budget: { total, spent(), remaining() }`
 - Constraint: frozen view over shared soft token accounting
 - Constraint: spend accrues after agents finish, so in-flight work can overshoot
-- Constraint: nested workflows share the same accounting
 
 <a id="console"></a>
 ## console
@@ -237,8 +181,8 @@ Every exact fact below is projected from the installed extension's capability co
 - Support: `supported`
 - Signature: `maxAgents?: number = 1000`
 - Constraint: default, not a hard product maximum
-- Constraint: counts logical agent() and checkpoint() calls across the shared nested run tree
-- Constraint: agent execution retries do not consume extra logical slots; retry(), gate(), and loopUntilDry callbacks must be budgeted from their bounded planned calls
+- Constraint: counts logical agent() and checkpoint() calls
+- Constraint: agent execution retries do not consume extra logical slots
 
 <a id="tool-input-concurrency"></a>
 ## concurrency

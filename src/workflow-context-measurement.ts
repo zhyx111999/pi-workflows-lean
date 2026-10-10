@@ -29,7 +29,7 @@ export const WORKFLOW_AUTHORING_PROFILES = [
       `${SKILL_ROOT}/references/lifecycle.md`,
       `${SKILL_ROOT}/references/focused-recipes.md`,
       `${SKILL_ROOT}/examples/phased-budgets.js`,
-      `${SKILL_ROOT}/examples/saved-nested-workflows.js`,
+      `${SKILL_ROOT}/examples/bounded-semantic-retry.js`,
     ],
   },
   {
@@ -48,8 +48,8 @@ export const WORKFLOW_AUTHORING_PROFILES = [
       SKILL_PATH,
       `${SKILL_ROOT}/references/runtime.md`,
       `${SKILL_ROOT}/references/debugging.md`,
-      `${SKILL_ROOT}/references/specialized-helpers.md`,
-      `${SKILL_ROOT}/examples/validated-gate.js`,
+      `${SKILL_ROOT}/references/checkpoint.md`,
+      `${SKILL_ROOT}/examples/defensive-json-parsing.js`,
     ],
   },
   {
@@ -69,7 +69,7 @@ export const WORKFLOW_AUTHORING_PROFILES = [
     files: [
       SKILL_PATH,
       `${SKILL_ROOT}/references/runtime.md`,
-      `${SKILL_ROOT}/references/retry-helper.md`,
+      `${SKILL_ROOT}/references/lifecycle.md`,
       `${SKILL_ROOT}/references/focused-recipes.md`,
       `${SKILL_ROOT}/examples/bounded-semantic-retry.js`,
       `${SKILL_ROOT}/examples/structured-output.js`,

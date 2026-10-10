@@ -20,15 +20,11 @@ const EXPECTED_RUNTIME_GLOBALS = [
   "checkpoint",
   "console",
   "cwd",
-  "gate",
   "log",
-  "loopUntilDry",
   "parallel",
   "phase",
   "pipeline",
   "process",
-  "retry",
-  "workflow",
 ] as const;
 
 const EXPECTED_TOOL_INPUTS = [
@@ -63,10 +59,7 @@ test("capability definition inventories the settled runtime and invocation contr
   assert.deepEqual(WORKFLOW_CAPABILITY_DEFINITION.optionShapes.map((shape) => shape.id).sort(), [
     "agent-options",
     "checkpoint-options",
-    "gate-options",
-    "loop-until-dry-options",
     "phase-options",
-    "retry-options",
   ]);
   assert.ok(
     WORKFLOW_CAPABILITY_DEFINITION.capabilities.some(

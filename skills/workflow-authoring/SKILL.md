@@ -14,8 +14,8 @@ Load this skill when workflow JavaScript changes. Running an existing workflow n
 Read only what the task needs:
 
 - **Write or edit:** start with [runtime](references/runtime.md). Add [pattern selection](references/pattern-selection.md) for topology, [lifecycle](references/lifecycle.md) for limits or resume, and [focused recipes](references/focused-recipes.md) for the matching concern.
-- **Helper task:** read the [retry helper](references/retry-helper.md) only for `retry`, and [specialized helpers](references/specialized-helpers.md) only for `loopUntilDry`, `gate`, or `checkpoint`.
-- **Review:** use the [review checklist](references/review.md), plus only the matching [retry](references/retry-helper.md) or [specialized](references/specialized-helpers.md) helper contract.
+- **Checkpoint:** read [checkpoints](references/checkpoint.md) only when the script pauses with `checkpoint`.
+- **Review:** use the [review checklist](references/review.md).
 - **Debug:** use the [debugging map](references/debugging.md).
 - **Routing:** read [registry ownership](references/registry-ownership.md) before using `model`, `tier`, phase models, or `agentType`; use environment-specific names only when context supplies them.
 - **Exact lookup or portability:** start with the generated [capability index](references/capabilities.md). Follow its exhaustive-facts pointer only for constraints or support boundaries. Use [versions](references/versions.md) when moving scripts between installations.

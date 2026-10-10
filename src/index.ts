@@ -109,7 +109,6 @@ export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-t
 export type {
   AgentOptions,
   JournalEntry,
-  SharedRuntime,
   WorkflowCheckpoint,
   WorkflowCheckpointInput,
   WorkflowMeta,

@@ -106,10 +106,6 @@ test("skill guidance calls only functions the workflow runtime injects", () => {
   );
   // Call-shaped names in the guidance that are not runtime globals, and why each is legitimate.
   const notGlobals = new Set([
-    "thunk", // retry/gate callback parameter
-    "validator", // gate callback parameter
-    "until", // retry predicate option
-    "round", // loopUntilDry callback option
     "spent", // budget.spent()
     "remaining", // budget.remaining()
     "cwd", // process.cwd()
@@ -126,7 +122,7 @@ test("skill guidance calls only functions the workflow runtime injects", () => {
       );
     }
   }
-  for (const removed of ["verify", "judgePanel", "completenessCheck"]) {
+  for (const removed of ["verify", "judgePanel", "completenessCheck", "retry", "gate", "loopUntilDry", "workflow"]) {
     assert.equal(runtimeGlobals.has(removed), false, `${removed} must stay removed from the runtime contract`);
   }
 });
@@ -226,8 +222,6 @@ test("generated facts cover the lifecycle constraints taught by the skill", () =
   const facts = new Map(WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts().map((fact) => [fact.id, fact]));
   const exactFacts = [
     "workflow.runtime.agent",
-    "workflow.runtime.workflow",
-    "workflow.runtime.retry",
     "workflow.runtime.checkpoint",
     "workflow.runtime.budget",
     "workflow.script.return-value",
@@ -243,8 +237,6 @@ test("generated facts cover the lifecycle constraints taught by the skill", () =
     /recoverable failures return null/i,
     /selector priority/i,
     /longest unchanged prefix/i,
-    /one nested level/i,
-    /exhaustion returns (?:only )?the last result/i,
     /consumes one agent slot and no tokens/i,
     /in-flight work can overshoot/i,
     /JSON-serializable/i,
@@ -254,73 +246,13 @@ test("generated facts cover the lifecycle constraints taught by the skill", () =
   }
 });
 
-test("generated gate facts expose exact callback, option, and result contracts", () => {
-  const gate = WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts().find(
-    (fact) => fact.id === "workflow.runtime.gate",
-  );
-
-  assert.ok(gate);
-  assert.equal(
-    gate.signature,
-    "gate(thunk: (feedback: string | undefined, attempt: number) => unknown | Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } | Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>",
-  );
-  assert.deepEqual(gate.options?.options, [
-    {
-      name: "attempts",
-      type: "number",
-      optional: true,
-      default: "3",
-      constraints: ["authors must provide a finite integer; runtime clamps values below 1 to 1"],
-      dynamicReference: null,
-    },
-  ]);
-  assert.match(gate.constraints.join(" "), /feedback is undefined.*first thunk call/i);
-  assert.match(gate.constraints.join(" "), /attempt is zero-based/i);
-  assert.match(gate.constraints.join(" "), /accepted when.*truthy ok.*bare boolean.*not accepted/i);
-
-  const helpers = readFileSync(join(ROOT, SKILL_ROOT, "references/specialized-helpers.md"), "utf8");
-  assert.match(helpers, /thunk.*feedback.*attempt/i);
-  assert.match(helpers, /zero-based/i);
-  assert.match(helpers, /validator.*value.*ok.*feedback/i);
-  assert.match(helpers, /bare boolean.*not accepted/i);
-
-  const recipes = readFileSync(join(ROOT, SKILL_ROOT, "references/focused-recipes.md"), "utf8");
-  assert.match(recipes, /\[Validated gate\]\(\.\.\/examples\/validated-gate\.js\)/);
-});
-
-test("generated helper facts expose exact callback, option, result, and failure contracts", () => {
+test("generated facts and skill references agree on result and failure contracts", () => {
   const facts = new Map(WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts().map((fact) => [fact.id, fact]));
-  const loopUntilDry = facts.get("workflow.runtime.loopUntilDry");
-  const retry = facts.get("workflow.runtime.retry");
   const pipeline = facts.get("workflow.runtime.pipeline");
   const agent = facts.get("workflow.runtime.agent");
   const checkpoint = facts.get("workflow.runtime.checkpoint");
   const background = facts.get("workflow.tool-input.background");
   const metadata = facts.get("workflow.script.metadata");
-
-  assert.match(loopUntilDry?.signature ?? "", /round.*roundIndex.*key.*consecutiveEmpty.*maxRounds/i);
-  assert.deepEqual(
-    loopUntilDry?.options?.options.map(({ name, default: value }) => [name, value]),
-    [
-      ["round", null],
-      ["key", "JSON.stringify"],
-      ["consecutiveEmpty", "2"],
-      ["maxRounds", "50"],
-    ],
-  );
-  assert.match(loopUntilDry?.constraints.join(" ") ?? "", /capacity exhaustion.*partial array/i);
-  assert.match(loopUntilDry?.constraints.join(" ") ?? "", /does not report whether termination/i);
-
-  assert.match(retry?.signature ?? "", /attempt: number.*until.*boolean.*Promise<unknown>/i);
-  assert.deepEqual(
-    retry?.options?.options.map(({ name, default: value }) => [name, value]),
-    [
-      ["attempts", "3"],
-      ["until", "accept first result when omitted"],
-    ],
-  );
-  assert.match(retry?.constraints.join(" ") ?? "", /zero-based/i);
-  assert.match(retry?.constraints.join(" ") ?? "", /synchronous.*Promise.*first result/i);
 
   assert.match(pipeline?.constraints.join(" ") ?? "", /null.*next stage/i);
   assert.match(agent?.constraints.join(" ") ?? "", /schema noncompliance.*nonrecoverable/i);
@@ -333,14 +265,8 @@ test("generated helper facts expose exact callback, option, result, and failure 
   assert.match(metadata?.constraints.join(" ") ?? "", /only legal export/i);
   assert.match(metadata?.constraints.join(" ") ?? "", /literal.*string concatenation.*template interpolation/i);
 
-  const retryHelper = readFileSync(join(ROOT, SKILL_ROOT, "references/retry-helper.md"), "utf8");
-  const specializedHelpers = readFileSync(join(ROOT, SKILL_ROOT, "references/specialized-helpers.md"), "utf8");
-  assert.match(specializedHelpers, /loopUntilDry.*agent-limit exhaustion.*partial/i);
-  assert.match(retryHelper, /retry.*zero-based.*synchronous/i);
-  assert.match(retryHelper, /await retry/i);
-  assert.match(specializedHelpers, /await gate/i);
-  assert.match(retryHelper, /await.*agent.*resolved value.*ledger/i);
-  assert.match(specializedHelpers, /await.*agent.*resolved value.*ledger/i);
+  const checkpointReference = readFileSync(join(ROOT, SKILL_ROOT, "references/checkpoint.md"), "utf8");
+  assert.match(checkpointReference, /attachCheckpointResponse\(runId, checkpointId, response\).*before.*resume/i);
   const runtime = readFileSync(join(ROOT, SKILL_ROOT, "references/runtime.md"), "utf8");
   assert.match(runtime, /pipeline.*null.*next stage/i);
   assert.match(runtime, /schema noncompliance.*throw/i);
@@ -680,47 +606,6 @@ test("phased-budget recipe reports soft-gate spending and bounds later calls", a
   assert.doesNotThrow(() => JSON.stringify(result.result));
 });
 
-test("saved-workflow recipe runs context-supplied nested jobs sequentially at one level", async () => {
-  const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/saved-nested-workflows.js"), "utf8");
-  const child = `export const meta = { name: 'installed_child', description: 'fixture' }
-const result = await agent('child:' + args.id, { label: 'child:' + args.id })
-return { id: args.id, result }`;
-  const labels: string[] = [];
-  let active = 0;
-  let maxActive = 0;
-  const result = await runWorkflow<{
-    nested: Array<{ id: string; status: string; result: unknown }>;
-    missing: string[];
-  }>(script, {
-    args: { savedWorkflowName: "installed-child", jobs: [{ id: "alpha" }, { id: "beta" }] },
-    persistLogs: false,
-    loadSavedWorkflow: (name) => (name === "installed-child" ? child : undefined),
-    onAgentStart: ({ label }) => labels.push(label),
-    agent: {
-      async run(_prompt: string, { label }: { label?: string }) {
-        active++;
-        maxActive = Math.max(maxActive, active);
-        await Promise.resolve();
-        active--;
-        if (label === "child:beta") return null;
-        return label === "prepare-nested-jobs" ? { ready: true } : `result:${label}`;
-      },
-    },
-  });
-
-  assert.equal(maxActive, 1);
-  assert.deepEqual(labels, ["prepare-nested-jobs", "child:alpha", "child:beta"]);
-  assert.deepEqual(Array.from(result.result.missing), ["beta"]);
-  assert.deepEqual(
-    Array.from(result.result.nested, ({ id, status }) => ({ id, status })),
-    [
-      { id: "alpha", status: "complete" },
-      { id: "beta", status: "missing" },
-    ],
-  );
-  assert.doesNotThrow(() => JSON.stringify(result.result));
-});
-
 test("bounded-retry recipe separates transport retries and preserves every semantic attempt", async () => {
   const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/bounded-semantic-retry.js"), "utf8");
   const labels: string[] = [];
@@ -751,61 +636,6 @@ test("bounded-retry recipe separates transport retries and preserves every seman
   );
   assert.equal(result.result.ok, false);
   assert.equal(result.result.exhausted, true);
-  assert.doesNotThrow(() => JSON.stringify(result.result));
-});
-
-test("validated-gate recipe uses exact callbacks and returns feedback-ledger evidence", async () => {
-  const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/validated-gate.js"), "utf8");
-  const labels: string[] = [];
-  const prompts: string[] = [];
-  const result = await runWorkflow<{
-    ok: boolean;
-    value: { acceptable: boolean; answer: string; feedback: string };
-    attempts: number;
-    ledger: Array<{
-      attempt: number;
-      feedbackReceived: string | null;
-      accepted: boolean;
-      validatorFeedback: string | null;
-    }>;
-  }>(script, {
-    args: { task: "Explain the contract", maxAttempts: 3 },
-    persistLogs: false,
-    onAgentStart: ({ label }) => labels.push(label),
-    agent: {
-      async run(prompt: string, { label, schema }: { label?: string; schema?: Record<string, unknown> }) {
-        prompts.push(prompt);
-        assert.deepEqual(requiredSchemaFields(schema), ["acceptable", "answer", "feedback"]);
-        if (label === "gate-attempt:1") {
-          return { acceptable: false, answer: "too short", feedback: "add concrete detail" };
-        }
-        return { acceptable: true, answer: "A concrete and complete answer", feedback: "" };
-      },
-    },
-  });
-
-  assert.deepEqual(labels, ["gate-attempt:1", "gate-attempt:2"]);
-  assert.match(prompts[1] ?? "", /add concrete detail/);
-  assert.equal(result.result.ok, true);
-  assert.equal(result.result.attempts, 2);
-  assert.equal(result.result.value.answer, "A concrete and complete answer");
-  assert.deepEqual(
-    Array.from(result.result.ledger, ({ attempt, feedbackReceived, accepted, validatorFeedback }) => ({
-      attempt,
-      feedbackReceived,
-      accepted,
-      validatorFeedback,
-    })),
-    [
-      {
-        attempt: 1,
-        feedbackReceived: null,
-        accepted: false,
-        validatorFeedback: "add concrete detail",
-      },
-      { attempt: 2, feedbackReceived: "add concrete detail", accepted: true, validatorFeedback: null },
-    ],
-  );
   assert.doesNotThrow(() => JSON.stringify(result.result));
 });
 

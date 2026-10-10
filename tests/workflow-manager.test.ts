@@ -766,72 +766,6 @@ return results`;
 );
 
 test(
-  "manager attributes concurrent parent and nested agents by opaque agent identity",
-  withTempCwd(async (cwd) => {
-    let started = 0;
-    let releaseBothStarted: () => void = () => {};
-    const bothStarted = new Promise<void>((resolve) => {
-      releaseBothStarted = resolve;
-    });
-    let releaseAgents: () => void = () => {};
-    const agentsReleased = new Promise<void>((resolve) => {
-      releaseAgents = resolve;
-    });
-    const childScript = `export const meta = { name: 'child', description: 'nested child' }
-return await agent('child work', { label: 'worker' })`;
-    const manager = new WorkflowManager({
-      cwd,
-      loadSavedWorkflow: (name) => (name === "child" ? childScript : undefined),
-      agent: {
-        async run(prompt, options) {
-          started++;
-          if (started === 2) {
-            releaseBothStarted();
-          }
-          await bothStarted;
-          const total = prompt === "parent work" ? 10 : 100;
-          const usage = { input: 0, output: total, total, cost: 0, cacheRead: 0, cacheWrite: 0 };
-          options?.onUsageProgress?.(usage);
-          await agentsReleased;
-          options?.onUsage?.(usage);
-          return prompt;
-        },
-      },
-    });
-    const parentScript = `export const meta = { name: 'parent', description: 'parent and nested child' }
-const results = await parallel([
-  () => agent('parent work', { label: 'worker' }),
-  () => workflow('child'),
-])
-return results`;
-
-    const { runId, promise } = manager.startInBackground(parentScript);
-    while (true) {
-      const agents = manager.getRun(runId)?.snapshot.agents;
-      if (agents?.length === 2 && agents.every((agent) => agent.tokens !== undefined)) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    assert.deepEqual(
-      manager.getRun(runId)?.snapshot.agents.map((agent) => [agent.prompt, agent.tokens]),
-      [
-        ["parent work", 10],
-        ["child work", 100],
-      ],
-    );
-
-    releaseAgents();
-    await promise;
-    assert.equal(
-      manager.getRun(runId)?.snapshot.agents.every((agent) => agent.status === "done"),
-      true,
-    );
-    assert.equal(manager.getRun(runId)?.snapshot.tokenUsage?.total, 110);
-  }),
-);
-
-test(
   "manager defaultAgentTimeoutMs applies when run options omit agentTimeoutMs",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
@@ -2345,7 +2279,7 @@ return { a, b }`;
 );
 
 test(
-  "resume replays parent and nested journals without duplicate token spend",
+  "resume replays journaled calls without duplicate token spend",
   withTempCwd(async (cwd) => {
     let parentRuns = 0;
     let childRuns = 0;
@@ -2356,11 +2290,6 @@ test(
     });
     const manager = new WorkflowManager({
       cwd,
-      loadSavedWorkflow: (name) =>
-        name === "child"
-          ? `export const meta = { name: 'child', description: 'nested child' }
-return await agent('child', { label: 'child' })`
-          : undefined,
       agent: {
         async run(prompt, options) {
           if (prompt === "parent") {
@@ -2378,7 +2307,7 @@ return await agent('child', { label: 'child' })`
             markAfterStarted();
             return new Promise((resolve, reject) => {
               void resolve;
-              options?.signal?.addEventListener("abort", () => reject(new Error("paused after nested work")), {
+              options?.signal?.addEventListener("abort", () => reject(new Error("paused after child work")), {
                 once: true,
               });
             });
@@ -2389,9 +2318,9 @@ return await agent('child', { label: 'child' })`
       },
     });
     manager.on("error", () => {});
-    const script = `export const meta = { name: 'nested_resume', description: 'nested journal resume' }
+    const script = `export const meta = { name: 'journal_resume', description: 'journal resume' }
 const parent = await agent('parent', { label: 'parent' })
-const child = await workflow('child')
+const child = await agent('child', { label: 'child' })
 const after = await agent('after', { label: 'after' })
 return { parent, child, after }`;
 
@@ -2416,7 +2345,7 @@ return { parent, child, after }`;
 );
 
 test(
-  "edited parent call invalidates nested and suffix journal replay",
+  "an edited call invalidates journal replay for every later call",
   withTempCwd(async (cwd) => {
     const runs = { parent: 0, child: 0, after: 0 };
     let markAfterStarted: () => void = () => {};
@@ -2425,8 +2354,6 @@ test(
     });
     const manager = new WorkflowManager({
       cwd,
-      loadSavedWorkflow: () => `export const meta = { name: 'child', description: 'nested child' }
-return await agent('child', { label: 'child' })`,
       agent: {
         async run(prompt, options) {
           if (prompt.startsWith("parent")) {
@@ -2444,7 +2371,7 @@ return await agent('child', { label: 'child' })`,
             markAfterStarted();
             return new Promise((resolve, reject) => {
               void resolve;
-              options?.signal?.addEventListener("abort", () => reject(new Error("paused after nested work")), {
+              options?.signal?.addEventListener("abort", () => reject(new Error("paused after child work")), {
                 once: true,
               });
             });
@@ -2457,9 +2384,9 @@ return await agent('child', { label: 'child' })`,
     manager.on("error", () => {});
     const script = (
       parentPrompt: string,
-    ) => `export const meta = { name: 'nested_edit', description: 'nested edit resume' }
+    ) => `export const meta = { name: 'suffix_edit', description: 'edited prefix resume' }
 const parent = await agent('${parentPrompt}', { label: 'parent' })
-const child = await workflow('child')
+const child = await agent('child', { label: 'child' })
 const after = await agent('after', { label: 'after' })
 return { parent, child, after }`;
 
@@ -4837,7 +4764,7 @@ test(
 );
 
 /** Runner that records prompts and pauses (usage limit) on a third, later call. */
-function nestedPauseResumeRunner() {
+function pauseOnThirdCallRunner() {
   const seen: string[] = [];
   const state = { failThird: true };
   return {
@@ -4859,74 +4786,54 @@ function nestedPauseResumeRunner() {
 }
 
 test(
-  "manager resume: both a nested child's AND the parent's own index-0 journal entries cache-hit, not re-run live (M6)",
+  "resume drops journal entries that a legacy nested workflow() frame recorded",
   withTempCwd(async (cwd) => {
-    // Regression coverage for the manager-level journal dedup keying. The
-    // nested child's agent('inner-call') and the parent's own
-    // agent('outer-call') both land at callIndex 0 in their respective
-    // frames and BOTH journal successfully during the SAME live execution —
-    // this is exactly the shape that collides if managed.journal's dedup
-    // filter matched on `index` alone (not `(index, runId)`): whichever of
-    // the two journals SECOND would evict the other from managed.journal,
-    // so the persisted journal silently ends up with only one of the two
-    // entries. A third call then fails (usage limit) to force a pause with
-    // that (possibly corrupted) journal on disk, and resume must show BOTH
-    // completed calls cache-hitting — not just whichever survived a buggy
-    // dedup.
-    const { seen, state, runner } = nestedPauseResumeRunner();
+    // Releases that could nest saved workflows journaled child-frame calls
+    // under the child's runId, with indexes restarting at 0. Such an entry must
+    // neither displace the run's own index-0 entry nor survive the resume.
+    const { seen, state, runner } = pauseOnThirdCallRunner();
     const manager = new WorkflowManager({ cwd, agent: runner });
     manager.on("paused", () => {});
     manager.on("error", () => {});
-
-    const script = `export const meta = { name: 'nested_pause_resume', description: 'nested resume' }
-const inner = await workflow(\`
-  export const meta = { name: 'nested_pause_resume_inner', description: 'inner' }
-  const x = await agent('inner-call', { label: 'inner' })
-  return x
-\`, {})
-const outer = await agent('outer-call', { label: 'outer' })
+    const script = `export const meta = { name: 'legacy_journal', description: 'legacy nested journal entries' }
+const first = await agent('first-call', { label: 'first' })
 const third = await agent('third-call', { label: 'third' })
-return { inner, outer, third }`;
+return { first, third }`;
 
-    // First run: the nested child's index-0 call AND the parent's own
-    // index-0 call both complete and journal; the parent's third call hits
-    // a usage limit -> run pauses.
     const { runId, promise } = manager.startInBackground(script);
     await promise.catch(() => {});
     assert.equal(manager.getRun(runId)?.status, "paused", "run pauses on the third call's usage limit");
-    assert.equal(seen.filter((p) => p === "inner-call").length, 1, "the nested child's agent ran once before pause");
-    assert.equal(seen.filter((p) => p === "outer-call").length, 1, "the parent's own agent ran once before pause");
+    const persistence = manager.getPersistence();
+    const paused = persistence.load(runId);
+    assert.ok(paused?.journal?.length === 1);
+    const own = paused.journal[0];
+    persistence.save({
+      ...paused,
+      journal: [
+        { ...own, runId },
+        { index: 0, runId: `${runId}-nested1`, hash: "child-frame-hash", result: "child-frame-result" },
+      ] as typeof paused.journal,
+    });
 
-    const persisted = manager.listRuns().find((r) => r.runId === runId);
-    assert.equal(
-      persisted?.journal?.length,
-      2,
-      "BOTH the child's and the parent's completed index-0 calls must be journaled — neither may have evicted the other",
-    );
-
-    // Resume: let the third call succeed this time.
     state.failThird = false;
     const seenBeforeResume = seen.length;
-    const resumed = await manager.resume(runId);
-    assert.equal(resumed, true);
-    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(await manager.resume(runId), true);
+    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
 
     const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.status, "completed", "resumed run completes");
-    assert.equal(finalRun?.result?.result?.inner, "ran:inner-call");
-    assert.equal(finalRun?.result?.result?.outer, "ran:outer-call");
-    assert.equal(finalRun?.result?.result?.third, "ran:third-call");
-
-    const promptsDuringResume = seen.slice(seenBeforeResume);
-    assert.ok(
-      !promptsDuringResume.includes("inner-call"),
-      "the nested child's journaled call must cache-hit on resume, not re-run live",
+    assert.equal(finalRun?.status, "completed");
+    assert.equal(finalRun?.result?.result?.first, "ran:first-call");
+    assert.deepEqual(seen.slice(seenBeforeResume), ["third-call"], "the run's own journaled call replays");
+    assert.deepEqual(
+      finalRun?.journal.map((entry) => [entry.index, Object.keys(entry).includes("runId")]),
+      [
+        [0, false],
+        [1, false],
+      ],
+      "the child-frame entry is gone and the obsolete frame tag is not carried forward",
     );
-    assert.ok(
-      !promptsDuringResume.includes("outer-call"),
-      "the parent's own journaled call must cache-hit on resume, not re-run live",
-    );
-    assert.ok(promptsDuringResume.includes("third-call"), "the parent's previously-failed third call re-runs live");
   }),
 );
 
@@ -6599,34 +6506,6 @@ return { a, blocked }`;
       ["a"],
       "'a' replayed in place (budget gate must not strand the replay)",
     );
-  }),
-);
-
-test(
-  "nested frames MERGE into the persisted phase-budget table (parent entries survive a child declaration)",
-  withTempCwd(async (cwd) => {
-    const child = `export const meta = { name: 'childwf', description: 'c' }
-phase('childphase', { budget: 50 })
-const r = await agent('child task')
-return { child: r }`;
-    const parent = `export const meta = { name: 'parentwf', description: 'p' }
-phase('parentphase', { budget: 100 })
-const a = await agent('parent task')
-const nested = await workflow('childwf')
-return { a, nested }`;
-    const manager = new WorkflowManager({
-      cwd,
-      agent: fakeAgent({ total: 10 }),
-      loadSavedWorkflow: (name: string) => (name === "childwf" ? child : undefined),
-    });
-    manager.on("error", () => {});
-    const { runId, promise } = manager.startInBackground(parent);
-    await promise;
-    const persisted = manager.getPersistence().load(runId);
-    assert.ok(persisted?.phaseBudgets?.[`${runId}:parentphase`], "parent entry survives the child's declaration");
-    assert.ok(persisted?.phaseBudgets?.[`${runId}-nested1:childphase`], "child entry recorded under its own frame key");
-    assert.equal(persisted?.phaseBudgets?.[`${runId}:parentphase`]?.budget, 100);
-    assert.equal(persisted?.phaseBudgets?.[`${runId}-nested1:childphase`]?.budget, 50);
   }),
 );
 

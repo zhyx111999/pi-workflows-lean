@@ -438,7 +438,7 @@ export class NavigatorModel {
 function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
   // Array guards (#110): structurally corrupt persisted arrays must not crash
   // the overlay. Resumable runs also avoid duplicating full results in agents[]
-  // and the journal, so rehydrate done agents by namespaced call identity. The
+  // and the journal, so rehydrate done agents by call identity. The
   // positional index remains a fallback for files written before callId existed.
   const agents = (Array.isArray(p.agents) ? p.agents : []).filter((agent) => agent && typeof agent === "object");
   const journalByIndex = new Map<number, unknown>();
@@ -446,7 +446,10 @@ function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
   for (const entry of Array.isArray(p.journal) ? p.journal : []) {
     if (entry && typeof entry === "object" && typeof entry.index === "number") {
       journalByIndex.set(entry.index, entry.result);
-      journalByCallId.set(`${entry.runId ?? p.runId}:${entry.index}`, entry.result);
+      // Records from releases that could nest saved workflows tag child-frame
+      // entries with the child's runId; honour it so those rows still rehydrate.
+      const frameRunId = (entry as { runId?: unknown }).runId;
+      journalByCallId.set(`${typeof frameRunId === "string" ? frameRunId : p.runId}:${entry.index}`, entry.result);
     }
   }
   const snapshotAgents = agents.map((a, callIndex) => {
