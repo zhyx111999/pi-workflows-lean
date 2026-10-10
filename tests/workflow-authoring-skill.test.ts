@@ -135,6 +135,18 @@ test("skill guidance calls only functions the workflow runtime injects", () => {
   }
 });
 
+test("skill guidance does not require an agent() call, matching a runtime that accepts agent-free scripts", async () => {
+  const run = await runWorkflow(
+    "export const meta = { name: 'no_agents', description: 'returns data only' }\nreturn { ok: true }",
+    { agent: { run: async () => assert.fail("no agent may run") }, persistLogs: false },
+  );
+  assert.equal(run.agentCount, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(run.result)), { ok: true });
+  for (const { path, source } of skillMarkdown()) {
+    assert.doesNotMatch(source, /at least (once|one agent)/i, `${path} states a rule the runtime never enforces`);
+  }
+});
+
 test("always-read skill guidance preserves identity and payload across downstream agent calls", () => {
   const skill = readFileSync(join(ROOT, SKILL_ROOT, "SKILL.md"), "utf8");
 
