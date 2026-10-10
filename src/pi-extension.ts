@@ -27,7 +27,7 @@ import { createWorkflowControlTool } from "./workflow-control-tool.js";
 import { installParentPromptHook, registerWorkflowProgressCommands } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage } from "./workflow-saved.js";
-import { loadWorkflowSettings, saveWorkflowSettingsForCwd } from "./workflow-settings.js";
+import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
 import { createWorkflowTailTool, WORKFLOW_TAIL_TOOL_NAME } from "./workflow-tail-tool.js";
 import { createWorkflowTool } from "./workflow-tool.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
@@ -97,9 +97,7 @@ function buildManagerOptions(cwd: string) {
     },
     excludeSubagentTools: settings.excludeSubagentTools,
     providerMiddlewareExtensions: settings.providerMiddlewareExtensions,
-    defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
-    concurrency: settings.defaultConcurrency,
-    defaultAgentRetries: settings.defaultAgentRetries,
+    ...workflowRunLimits(settings),
     persistAgentSessions: settings.persistAgentSessions,
     inheritMainModel: settings.inheritMainModel,
   };

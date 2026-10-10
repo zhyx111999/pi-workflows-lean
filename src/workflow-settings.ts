@@ -11,11 +11,16 @@ import { MAX_AGENT_RETRIES, MAX_CONCURRENCY, WORKFLOW_SETTINGS_FILE } from "./co
 import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
 export interface WorkflowSettings {
+  // Run limits. Every run, including a resumed one, uses the values loaded by
+  // the current extension session; a workflow call cannot override them.
+  /** Timeout per agent attempt in ms. null or omitted means no hard timeout. */
   defaultAgentTimeoutMs?: number | null;
-  /** Default max concurrent agents per run. Clamped to the runtime maximum. */
+  /** Max concurrent agents per run. Clamped to the runtime maximum. */
   defaultConcurrency?: number;
-  /** Default retry attempts after recoverable agent failures. */
+  /** Retry attempts after recoverable agent failures, clamped to 0..3. */
   defaultAgentRetries?: number;
+  /** Max logical agent()/checkpoint() calls per run. Default 1000. */
+  defaultMaxAgents?: number;
   /** Bottom task-panel display mode: "compact" (default, one line per run) | "detailed". */
   progressPanelMode?: "compact" | "detailed";
   /** Max agents shown per phase in detailed progress mode (default 8). */
@@ -57,6 +62,24 @@ export interface WorkflowSettings {
    * extensions are always excluded.
    */
   providerMiddlewareExtensions?: string[];
+}
+
+/** Run limits a WorkflowManager applies to every execution. */
+export interface WorkflowRunLimits {
+  concurrency?: number;
+  maxAgents?: number;
+  agentTimeoutMs: number | null;
+  agentRetries?: number;
+}
+
+/** Map the run-limit settings onto WorkflowManager options. */
+export function workflowRunLimits(settings: WorkflowSettings): WorkflowRunLimits {
+  return {
+    concurrency: settings.defaultConcurrency,
+    maxAgents: settings.defaultMaxAgents,
+    agentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
+    agentRetries: settings.defaultAgentRetries,
+  };
 }
 
 export interface WorkflowSettingsStore {
@@ -181,6 +204,8 @@ function normalizeSettings(value: unknown): WorkflowSettings {
   if (defaultConcurrency !== undefined) settings.defaultConcurrency = defaultConcurrency;
   const defaultAgentRetries = normalizeInteger(raw.defaultAgentRetries, 0, MAX_AGENT_RETRIES);
   if (defaultAgentRetries !== undefined) settings.defaultAgentRetries = defaultAgentRetries;
+  const defaultMaxAgents = normalizeInteger(raw.defaultMaxAgents, 1, Number.MAX_SAFE_INTEGER);
+  if (defaultMaxAgents !== undefined) settings.defaultMaxAgents = defaultMaxAgents;
   if (raw.progressPanelMode === "compact" || raw.progressPanelMode === "detailed") {
     settings.progressPanelMode = raw.progressPanelMode;
   }

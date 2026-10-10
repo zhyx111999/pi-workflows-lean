@@ -2,7 +2,7 @@
 
 ## Bounds
 
-Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script. `maxAgents` counts logical `agent()` and `checkpoint()` calls. Agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. Treat an invocation-level `agentTimeoutMs` as an opt-in user constraint, not a precautionary default. An omitted `agentTimeoutMs` uses the configured `defaultAgentTimeoutMs` and is otherwise unbounded. Token usage is measured and reported, never capped.
+Bound loops, fan-out, and semantic retries inside the script. Run limits come only from the workflow settings: `defaultConcurrency` (1–16), `defaultAgentRetries` (0–3, recoverable failures only), `defaultAgentTimeoutMs` (unset means no hard timeout), and `defaultMaxAgents` (default 1000). Neither a script nor a workflow call can override them. `defaultMaxAgents` counts logical `agent()` and `checkpoint()` calls; agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. A run that stops at the cap finishes by raising the setting and resuming it. Token usage is measured and reported, never capped.
 
 ## Checkpoints
 
@@ -12,11 +12,11 @@ Checkpoint answers are journaled and can replay during an unchanged resume prefi
 
 ## Retry and recoverable failure
 
-Recoverable execution failures retry according to the per-agent option or invocation-time tool input, then return `null`. Nonrecoverable failures throw without becoming `null`. A semantic retry written as a script loop is separate: each attempt is a new agent call, and the script must record and handle exhaustion itself.
+Recoverable execution failures retry `defaultAgentRetries` times, then return `null`. Nonrecoverable failures throw without becoming `null`. A semantic retry written as a script loop is separate: each attempt is a new agent call, and the script must record and handle exhaustion itself.
 
 Always retain `{ id, status, result }` or an equivalent ledger for each intended work unit. Filtering `null` before recording identity turns an execution failure into invisible missing coverage.
 
-`AGENT_EMPTY_OUTPUT` (whitespace-only text from a schema-less call) is recoverable and retries like any other transient failure. Some models occasionally produce it on an otherwise-working first attempt; a fleet built on such a model should set `agentRetries: 1-2` rather than treat one occurrence as a failed run. A `schema` call never trips this check — schema noncompliance is its own, nonrecoverable failure (see [serialization](#serialization)).
+`AGENT_EMPTY_OUTPUT` (whitespace-only text from a schema-less call) is recoverable and retries like any other transient failure. Some models occasionally produce it on an otherwise-working first attempt; a fleet built on such a model needs `defaultAgentRetries` of 1–2 rather than treating one occurrence as a failed run. A `schema` call never trips this check — schema noncompliance is its own, nonrecoverable failure (see [serialization](#serialization)).
 
 ## Resume
 

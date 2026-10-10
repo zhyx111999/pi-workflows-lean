@@ -24,11 +24,10 @@ Every exact fact below is projected from the installed extension's capability co
 - `cwd`: string (optional; non-empty absolute existing directory; resolved to its real path; coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host; cannot combine with worktree isolation)
 - `thread`: string (optional; non-empty name; same-name calls must be sequential)
 - `agentType`: string (optional; must come from provided context; dynamic reference: agent-types)
-- `timeoutMs`: number | null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)
-- `retries`: number (optional; default: run retry count; finite values are floored and clamped to 0..3)
 - Constraint: recoverable failures return null after retries; nonrecoverable failures throw
 - Constraint: schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries
-- Constraint: per-agent retries override invocation retries; retries are floored and clamped to 0..3
+- Constraint: run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)
+- Constraint: every agent() and checkpoint() call consumes one of the run's defaultMaxAgents slots (default 1000); execution retries consume none
 - Constraint: resume replays only the longest unchanged prefix; the first miss and every later call execute live
 - Constraint: a named thread retains its full Pi transcript and session identity only within one uninterrupted workflow invocation
 - Constraint: threaded calls are live-execution resume barriers and are never journaled
@@ -153,39 +152,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `background?: boolean`
 - Constraint: ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes
 - Constraint: kept in the schema so calls that still send it are not rejected
-
-<a id="tool-input-maxagents"></a>
-## maxAgents
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `maxAgents?: number = 1000`
-- Constraint: default, not a hard product maximum
-- Constraint: counts logical agent() and checkpoint() calls
-- Constraint: agent execution retries do not consume extra logical slots
-
-<a id="tool-input-concurrency"></a>
-## concurrency
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `concurrency?: number`
-- Constraint: runtime clamps to 1..16
-
-<a id="tool-input-agentretries"></a>
-## agentRetries
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `agentRetries?: number = configured value or 0`
-- Constraint: floored and clamped to 0..3
-
-<a id="tool-input-agenttimeoutms"></a>
-## agentTimeoutMs
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `agentTimeoutMs?: number = configured default or unbounded`
 
 <a id="tool-input-resumefromrunid"></a>
 ## resumeFromRunId

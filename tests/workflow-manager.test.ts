@@ -766,9 +766,9 @@ return results`;
 );
 
 test(
-  "manager defaultAgentTimeoutMs applies when run options omit agentTimeoutMs",
+  "manager agentTimeoutMs bounds each agent attempt",
   withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
+    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), agentTimeoutMs: 5 });
 
     const result = await manager.runSync(oneAgentScript);
 
@@ -776,29 +776,16 @@ test(
     const agent = manager.listRuns()[0]?.agents[0];
     assert.equal(agent?.status, "error");
     assert.match(agent?.error ?? "", /timed out after 5ms/);
-    assert.match(agent?.error ?? "", /raise or omit timeoutMs\/agentTimeoutMs/);
+    assert.match(agent?.error ?? "", /raise defaultAgentTimeoutMs in the workflow settings/);
   }),
 );
 
 test(
-  "run option agentTimeoutMs overrides manager defaultAgentTimeoutMs",
+  "reconfigureAfterReload refreshes run limits without replacing the live manager",
   withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
+    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), agentTimeoutMs: 5 });
 
-    const result = await manager.runSync(oneAgentScript, undefined, { agentTimeoutMs: null });
-
-    assert.equal((result.result as { a: unknown }).a, "slow");
-    const agent = manager.listRuns()[0]?.agents[0];
-    assert.equal(agent?.status, "done");
-  }),
-);
-
-test(
-  "reconfigureAfterReload refreshes defaults without replacing the live manager",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
-
-    manager.reconfigureAfterReload({ defaultAgentTimeoutMs: 100 });
+    manager.reconfigureAfterReload({ agentTimeoutMs: 100 });
     const result = await manager.runSync(oneAgentScript);
 
     assert.equal((result.result as { a: unknown }).a, "slow");
@@ -833,7 +820,7 @@ test(
         });
       },
     };
-    const manager = new WorkflowManager({ cwd, agent: hangingUntilAborted, defaultAgentTimeoutMs: 20 });
+    const manager = new WorkflowManager({ cwd, agent: hangingUntilAborted, agentTimeoutMs: 20 });
 
     const result = await manager.runSync(oneAgentScript);
 
@@ -978,11 +965,12 @@ test(
 );
 
 test(
-  "resume with a higher maxAgents raises the persisted ceiling and finishes the journaled suffix",
+  "a run that hit maxAgents finishes on resume once the limit is raised",
   withTempCwd(async (cwd) => {
-    // Sequential workers fill the cap; synthesis needs one more slot. Without an
-    // explicit raise, resume keeps maxAgents: 2 and fails again; with raise, the
-    // two workers replay from the journal and only synthesis runs live.
+    // Sequential workers fill the cap; synthesis needs one more slot. Every
+    // execution uses the manager's current limits, so raising maxAgents (a
+    // settings change applied on reload) and resuming replays the workers
+    // from the journal and runs only synthesis live.
     const livePrompts: string[] = [];
     const agent = {
       async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
@@ -991,200 +979,59 @@ test(
         return `${prompt}-ok`;
       },
     };
-    const manager = new WorkflowManager({ cwd, agent });
+    const manager = new WorkflowManager({ cwd, agent, maxAgents: 2 });
     manager.on("error", () => {});
-    const script = `export const meta = { name: 'raise_cap', description: 'raise maxAgents on resume' }
+    const script = `export const meta = { name: 'raise_cap', description: 'raise maxAgents before resume' }
 const a = await agent('worker-a', { label: 'a' })
 const b = await agent('worker-b', { label: 'b' })
 const synthesis = await agent('synthesis', { label: 'synthesis' })
 return { a, b, synthesis }`;
+    const settle = async (runId: string) => {
+      for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
 
-    const first = await manager.runSync(script, undefined, { maxAgents: 2 }).catch((err: unknown) => err);
+    const first = await manager.runSync(script).catch((err: unknown) => err);
     assert.ok(first instanceof WorkflowError);
     assert.equal(first.code, WorkflowErrorCode.AGENT_LIMIT_EXCEEDED);
     const runId = manager.listRuns().find((r) => r.workflowName === "raise_cap")?.runId;
     assert.ok(runId, "failed run should still be listed");
     assert.match(
       first.message,
-      new RegExp(`resumeFromRunId="${runId}".*same script.*maxAgents: N \\(N>2\\)`),
-      "AGENT_LIMIT text must include the concrete resume recipe",
+      new RegExp(`Raise defaultMaxAgents.*resume run "${runId}"`),
+      "AGENT_LIMIT text names the setting and the run to resume",
     );
     const failed = manager.getPersistence().load(runId);
     assert.equal(failed?.status, "failed");
-    assert.equal(failed?.maxAgents, 2);
     assert.ok((failed?.journal?.length ?? 0) >= 2, "workers should be journaled before the cap error");
-    const liveBeforeResume = livePrompts.length;
-    assert.equal(liveBeforeResume, 2, "only the two workers should have run live");
+    assert.deepEqual(livePrompts, ["worker-a", "worker-b"]);
 
-    assert.equal(await manager.resume(runId, { maxAgents: 3 }), true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    // Same limit: the resumed run replays the workers and stops at the cap again.
+    assert.equal(await manager.resume(runId), true);
+    await settle(runId);
+    const stillFailed = manager.getPersistence().load(runId);
+    assert.equal(stillFailed?.status, "failed");
+    assert.deepEqual(livePrompts, ["worker-a", "worker-b"], "workers replay from the journal");
+
+    // Older records persisted their start-time limits; they must not pin the cap.
+    assert.ok(stillFailed);
+    manager.getPersistence().save({
+      ...stillFailed,
+      maxAgents: 2,
+      concurrency: 1,
+      agentRetries: 3,
+    } as typeof stillFailed);
+    manager.reconfigureAfterReload({ maxAgents: 3 });
+    assert.equal(await manager.resume(runId), true);
+    await settle(runId);
 
     const done = manager.getPersistence().load(runId);
-    assert.equal(done?.status, "completed", "raised ceiling must let synthesis finish");
-    assert.equal(done?.maxAgents, 3, "raised maxAgents must persist for later resumes");
-    assert.deepEqual(
-      livePrompts.slice(liveBeforeResume),
-      ["synthesis"],
-      "workers must replay from journal; only synthesis runs live",
-    );
-
-    // Omit override → keep raised cap; a lower request must not shrink it.
-    const again = manager.getPersistence().load(runId);
-    assert.equal(again?.maxAgents, 3);
-    // Build a fresh failed-at-cap run to assert a non-raise is refused.
-    livePrompts.length = 0;
-    const secondManager = new WorkflowManager({ cwd, agent });
-    secondManager.on("error", () => {});
-    await secondManager.runSync(script, undefined, { maxAgents: 2 }).catch(() => {});
-    const runId2 = secondManager.listRuns().find((r) => r.workflowName === "raise_cap")?.runId;
-    assert.ok(runId2);
-    assert.equal(await secondManager.resume(runId2, { maxAgents: 1 }), false);
-    const notLowered = secondManager.getPersistence().load(runId2);
-    assert.equal(notLowered?.maxAgents, 2, "resume must never lower the persisted ceiling");
-    assert.equal(notLowered?.status, "failed", "non-raise resume is refused; run stays failed at the old cap");
-
-    // prior === undefined: effective prior is MAX_AGENTS_PER_RUN. Resume with 50
-    // must refuse rather than pin a lower ceiling onto a never-set run.
-    const uncapped = new WorkflowManager({ cwd, agent });
-    uncapped.on("error", () => {});
-    const uncappedId = "uncapped-max-agents";
-    uncapped.getPersistence().save({
-      runId: uncappedId,
-      workflowName: "raise_cap",
-      script,
-      args: undefined,
-      status: "failed",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    assert.equal(await uncapped.resume(uncappedId, { maxAgents: 50 }), false);
-    assert.equal(
-      uncapped.getPersistence().load(uncappedId)?.maxAgents,
-      undefined,
-      "resume must not pin 50 over an implicit 1000 default",
-    );
-  }),
-);
-
-test(
-  "resume re-resolves the run's maxAgents/agentTimeoutMs and keeps its start-time values (#A1)",
-  withTempCwd(async (cwd) => {
-    // 'a' hangs on its first invocation (pause point), then on its second
-    // invocation (post-resume) resolves slower than the run's OWN frozen
-    // agentTimeoutMs (30ms) but well under the manager's defaultAgentTimeoutMs
-    // (5000ms) — it only times out if agentTimeoutMs survived resume.
-    let aAttempts = 0;
-    const zeroUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
-    const agent = {
-      async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
-        if (prompt === "a") {
-          aAttempts++;
-          if (aAttempts === 1) return new Promise(() => {}); // hang until paused
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          options?.onUsage?.(zeroUsage);
-          return "a-result";
-        }
-        options?.onUsage?.(zeroUsage);
-        return `${prompt}-result`;
-      },
-    };
-    const manager = new WorkflowManager({ cwd, agent, defaultAgentTimeoutMs: 5000 });
-    manager.on("error", () => {});
-
-    // Three agents fanned out via parallel() with maxAgents: 3 so the cap is
-    // fully consumed by the fan-out itself (each reserves a slot atomically,
-    // in call order, before any of them actually run) — a 4th call ('after')
-    // then only succeeds if the cap has silently reverted to the ~1000 default.
-    const script = `export const meta = { name: 'cap_demo', description: 'agent cap across resume' }
-const xs = await parallel(['a','b','c'].map((label) => () => agent(label, { label })))
-const after = await agent('after', { label: 'after' })
-return { xs, after }`;
-
-    const { runId, promise } = manager.startInBackground(script, undefined, { maxAgents: 3, agentTimeoutMs: 30 });
-    promise.catch(() => {});
-    // Pause well before 'a's own 30ms agentTimeoutMs would fire on the ORIGINAL
-    // execution too (it's frozen for the whole run, not just post-resume) — 5ms
-    // is enough for 'b'/'c' (no artificial delay) to complete and journal.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(aAttempts, 1, "'a' should be in flight before pausing");
-    assert.equal(manager.pause(runId), true);
-
-    const paused = manager.getPersistence().load(runId);
-    assert.equal(paused?.status, "paused");
-    assert.equal(paused?.maxAgents, 3, "maxAgents persists with the run");
-    assert.equal(paused?.agentTimeoutMs, 30, "agentTimeoutMs persists with the run");
-    assert.ok((paused?.journal?.length ?? 0) >= 2, "'b' and 'c' should be journaled before pause");
-
-    assert.equal(await manager.resume(runId), true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(done?.status, "completed", "the raised limit lets synthesis finish");
+    assert.deepEqual(livePrompts.slice(2), ["synthesis"], "only synthesis runs live");
+    for (const key of ["maxAgents", "agentTimeoutMs", "concurrency", "agentRetries"]) {
+      assert.equal(Object.hasOwn(done ?? {}, key), false, `${key} is no longer persisted`);
     }
-
-    const resumed = manager.getPersistence().load(runId);
-    const aAgent = resumed?.agents.find((ag) => ag.label === "a");
-    assert.match(
-      aAgent?.error ?? "",
-      /timed out after 30ms/,
-      "agentTimeoutMs must survive resume, not reset to the manager default",
-    );
-    // The resumed run must still enforce maxAgents: 3 — the 4th call ('after',
-    // after a/b/c already reserved a slot each in the fan-out) must throw
-    // AGENT_LIMIT_EXCEEDED, failing the run, not silently pass under a
-    // reverted-to-default cap of ~1000.
-    assert.equal(resumed?.status, "failed", "maxAgents must survive resume, not reset to the 1000 default");
-    const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.error?.code, WorkflowErrorCode.AGENT_LIMIT_EXCEEDED);
-  }),
-);
-
-test(
-  "resuming a legacy persisted run (no agentTimeoutMs field) falls back to the manager's CURRENT default, not null",
-  withTempCwd(async (cwd) => {
-    // A run persisted before this fix existed never had an agentTimeoutMs
-    // field at all — and its only real timeout, both at its original start
-    // AND under pre-fix resume(), was always the manager's default (pre-fix
-    // resume never threaded agentTimeoutMs through, so it fell straight to
-    // this.defaultAgentTimeoutMs via executeRun's fallback chain). Falling
-    // back to null here would silently grant such a run an unbounded timeout
-    // it never had. Use a slow agent so only a real 20ms enforcement times it
-    // out — an unbounded (null) fallback would let it complete instead.
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(60), defaultAgentTimeoutMs: 20 });
-    const pers = manager.getPersistence();
-    const runId = "legacy-no-agent-timeout-1";
-    pers.save({
-      runId,
-      workflowName: "legacy",
-      script: oneAgentScript,
-      args: undefined,
-      status: "paused",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      // Deliberately no maxAgents/agentTimeoutMs/concurrency/agentRetries —
-      // simulates a run persisted by pre-A1 code.
-    });
-
-    const resumed = await manager.resume(runId);
-    assert.equal(resumed, true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    const persisted = manager.getPersistence().load(runId);
-    assert.equal(
-      persisted?.agentTimeoutMs,
-      20,
-      "resume must apply the manager's current defaultAgentTimeoutMs for a legacy run, not leave it unbounded",
-    );
-    const agent = persisted?.agents.find((a) => a.label === "a");
-    assert.match(agent?.error ?? "", /timed out after 20ms/, "the legacy run's agent must actually time out at 20ms");
   }),
 );
 
@@ -1210,7 +1057,7 @@ test(
         return new Promise(() => {}); // 'b' hangs until paused
       },
     };
-    const manager = new WorkflowManager({ cwd, agent });
+    const manager = new WorkflowManager({ cwd, agent, agentRetries: 1 });
     manager.on("error", () => {});
 
     const script = `export const meta = { name: 'retry_spend_demo', description: 'retry spend' }
@@ -1218,7 +1065,7 @@ const a = await agent('a', { label: 'a' })
 const b = await agent('b', { label: 'b' })
 return { a, b }`;
 
-    const { runId, promise } = manager.startInBackground(script, undefined, { agentRetries: 1 });
+    const { runId, promise } = manager.startInBackground(script);
     promise.catch(() => {});
     for (let i = 0; i < 200 && aAttempts < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1239,15 +1086,15 @@ return { a, b }`;
 );
 
 test(
-  "manager forwards exec concurrency and agentRetries to runtime",
+  "manager forwards its concurrency and agentRetries to the runtime",
   withTempCwd(async (cwd) => {
     let active = 0;
     let maxActive = 0;
     const callsByPrompt = new Map<string, number>();
     const manager = new WorkflowManager({
       cwd,
-      concurrency: 8,
-      defaultAgentRetries: 0,
+      concurrency: 1,
+      agentRetries: 1,
       agent: {
         async run(prompt: string) {
           active++;
@@ -1264,33 +1111,11 @@ test(
 const xs = await parallel(['a','b'].map((p) => () => agent(p, { label: p })))
 return xs`;
 
-    const result = await manager.runSync(script, undefined, { concurrency: 1, agentRetries: 1 });
+    const result = await manager.runSync(script);
 
     assert.deepEqual(result.result, ["ok:a", "ok:b"]);
-    assert.equal(maxActive, 1, "exec concurrency should override the manager default");
-    assert.deepEqual([...callsByPrompt.values()], [2, 2], "exec agentRetries should be forwarded");
-  }),
-);
-
-test(
-  "manager defaultAgentRetries applies when run options omit agentRetries",
-  withTempCwd(async (cwd) => {
-    let calls = 0;
-    const manager = new WorkflowManager({
-      cwd,
-      defaultAgentRetries: 1,
-      agent: {
-        async run() {
-          calls++;
-          return calls === 1 ? "" : "ok";
-        },
-      },
-    });
-
-    const result = await manager.runSync(oneAgentScript);
-
-    assert.equal((result.result as { a: unknown }).a, "ok");
-    assert.equal(calls, 2);
+    assert.equal(maxActive, 1, "manager concurrency should cap parallel agents");
+    assert.deepEqual([...callsByPrompt.values()], [2, 2], "manager agentRetries should be forwarded");
   }),
 );
 

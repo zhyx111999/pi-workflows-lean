@@ -30,8 +30,8 @@ workflow) through the tool's top-level `name` input.
 ```
 
 This is a `workflow` tool call, not a script — omit `script` entirely. The run
-starts in the background exactly like the slash-command form; `maxAgents`,
-`concurrency`, `agentRetries`, and `agentTimeoutMs` all still apply.
+starts in the background exactly like the slash-command form; run limits come
+from the workflow settings, as for any run.
 
 ## Writing a new workflow instead
 

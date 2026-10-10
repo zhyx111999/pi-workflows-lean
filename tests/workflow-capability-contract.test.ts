@@ -26,17 +26,7 @@ const EXPECTED_RUNTIME_GLOBALS = [
   "process",
 ] as const;
 
-const EXPECTED_TOOL_INPUTS = [
-  "agentRetries",
-  "agentTimeoutMs",
-  "args",
-  "background",
-  "concurrency",
-  "maxAgents",
-  "name",
-  "resumeFromRunId",
-  "script",
-] as const;
+const EXPECTED_TOOL_INPUTS = ["args", "background", "name", "resumeFromRunId", "script"] as const;
 
 function implementations(): Record<string, unknown> {
   return Object.fromEntries(EXPECTED_RUNTIME_GLOBALS.map((name) => [name, { name }]));
@@ -77,12 +67,29 @@ test("capability definition inventories the settled runtime and invocation contr
   assert.equal(WORKFLOW_CAPABILITY_DEFINITION.versions.content.kind, "present-at");
 });
 
-test("tool-input contract records configured omission defaults", () => {
-  const agentTimeoutMs = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
-    ({ id }) => id === "workflow.tool-input.agentTimeoutMs",
-  );
+test("run limits are agent facts sourced from settings, not tool inputs or agent options", () => {
+  const agent = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(({ id }) => id === "workflow.runtime.agent");
+  const constraints = agent?.constraints.join(" ") ?? "";
 
-  assert.equal(agentTimeoutMs?.signature, "agentTimeoutMs?: number = configured default or unbounded");
+  assert.match(constraints, /run limits come only from settings.*defaultAgentRetries.*defaultAgentTimeoutMs/);
+  assert.match(constraints, /defaultMaxAgents slots \(default 1000\)/);
+  const agentOptions = WORKFLOW_CAPABILITY_DEFINITION.optionShapes.find(({ id }) => id === "agent-options");
+  assert.deepEqual(
+    agentOptions?.options.map(({ name }) => name),
+    [
+      "label",
+      "phase",
+      "schema",
+      "model",
+      "thinking",
+      "tier",
+      "isolation",
+      "keepWorktree",
+      "cwd",
+      "thread",
+      "agentType",
+    ],
+  );
 });
 
 test("declared tool inputs match the provider-visible workflow tool schema", () => {

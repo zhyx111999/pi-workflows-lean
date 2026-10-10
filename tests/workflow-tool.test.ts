@@ -173,25 +173,14 @@ test("createWorkflowTool documents `background` as ignored in the parameter sche
   assert.doesNotMatch(tool.promptGuidelines.join(" "), /runs are background by default/i);
 });
 
-test("createWorkflowTool schema describes the configured or unbounded timeout", () => {
-  const tool = createWorkflowTool();
-  const description = parameterDescription(tool, "agentTimeoutMs");
+test("createWorkflowTool leaves run limits to settings", () => {
+  const { parameters } = createWorkflowTool();
+  const properties = Object.keys((parameters as { properties: Record<string, unknown> }).properties);
 
-  assert.match(description, /Omit to use configured `defaultAgentTimeoutMs`/i);
-  assert.match(description, /without one.*no hard timeout/i);
-  assert.match(description, /only when the user asks/i);
-});
-
-test("createWorkflowTool schema exposes resource controls and large-fan-out authority", () => {
-  const tool = createWorkflowTool();
-
-  assert.match(parameterDescription(tool, "concurrency"), /Maximum concurrent agents/i);
-  assert.match(parameterDescription(tool, "agentRetries"), /Retry attempts/i);
-  assert.match(parameterDescription(tool, "maxAgents"), /1000.*safety/i);
-  assert.match(parameterDescription(tool, "maxAgents"), /count each planned agent\(\) call/i);
-  assert.doesNotMatch(parameterDescription(tool, "maxAgents"), /verify|judgePanel|completenessCheck/);
-  assert.match(parameterDescription(tool, "maxAgents"), /retries add no slots/i);
-  assert.match(parameterDescription(tool, "maxAgents"), /large fan-outs.*explicit user intent/i);
+  for (const removed of ["maxAgents", "concurrency", "agentRetries", "agentTimeoutMs", "tokenBudget"]) {
+    assert.equal(properties.includes(removed), false, `${removed} is a setting, not a tool input`);
+  }
+  assert.doesNotMatch(parameterDescription(createWorkflowTool(), "script"), /timeoutMs|retries/);
 });
 
 test("createWorkflowTool invalid args throws descriptive error", () => {
@@ -250,25 +239,13 @@ test("createWorkflowTool prepareArguments strips javascript fences", () => {
 test("createWorkflowTool prepareArguments passes through args", () => {
   const tool = createWorkflowTool();
   if (tool.prepareArguments) {
-    const prepare = tool.prepareArguments as (args: unknown) => {
-      script: string;
-      args?: unknown;
-      maxAgents?: number;
-      concurrency?: number;
-      agentRetries?: number;
-    };
+    const prepare = tool.prepareArguments as (args: unknown) => { script: string; args?: unknown };
     const result = prepare({
       script: "export const meta = { name: 't', description: 't' }",
       args: { question: "test" },
-      maxAgents: 5,
-      concurrency: 2,
-      agentRetries: 1,
     });
     assert.equal(result.script, "export const meta = { name: 't', description: 't' }");
     assert.deepEqual(result.args, { question: "test" });
-    assert.equal(result.maxAgents, 5);
-    assert.equal(result.concurrency, 2);
-    assert.equal(result.agentRetries, 1);
   }
 });
 
@@ -458,11 +435,12 @@ return { a, b }`;
 );
 
 test(
-  "createWorkflowTool resumeFromRunId forwards maxAgents and finishes a failed-at-cap run",
+  "createWorkflowTool resumeFromRunId finishes a failed-at-cap run once maxAgents is raised",
   withToolTempCwd(async (cwd) => {
     const livePrompts: string[] = [];
     const manager = new WorkflowManager({
       cwd,
+      maxAgents: 2,
       agent: {
         async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
           livePrompts.push(prompt);
@@ -479,20 +457,15 @@ const b = await agent('worker-b', { label: 'b' })
 const synthesis = await agent('synthesis', { label: 'synthesis' })
 return { a, b, synthesis }`;
 
-    const { runId, promise } = manager.startInBackground(script, undefined, { maxAgents: 2 });
+    const { runId, promise } = manager.startInBackground(script);
     await promise.catch(() => {});
     assert.equal(manager.getRun(runId)?.status, "failed");
-    assert.equal(manager.getPersistence().load(runId)?.maxAgents, 2);
     const liveBefore = livePrompts.length;
     assert.equal(liveBefore, 2);
 
-    const res = await tool.execute(
-      "t-raise",
-      { script, resumeFromRunId: runId, maxAgents: 3 },
-      undefined,
-      undefined,
-      undefined,
-    );
+    // A defaultMaxAgents settings change reaches the live manager on reload.
+    manager.reconfigureAfterReload({ maxAgents: 3 });
+    const res = await tool.execute("t-raise", { script, resumeFromRunId: runId }, undefined, undefined, undefined);
     const details = res.details as { runId?: string; resumedFrom?: string };
     assert.equal(details.runId, runId);
     assert.equal(details.resumedFrom, runId);
@@ -502,7 +475,6 @@ return { a, b, synthesis }`;
     }
     const done = manager.getPersistence().load(runId);
     assert.equal(done?.status, "completed");
-    assert.equal(done?.maxAgents, 3);
     assert.deepEqual(livePrompts.slice(liveBefore), ["synthesis"]);
   }),
 );

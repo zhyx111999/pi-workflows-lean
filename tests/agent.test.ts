@@ -2982,10 +2982,11 @@ test("agent() with timeout should handle gracefully (timeout returns null)", asy
   const result = await runWorkflow<unknown>(
     `export const meta = { name: 'test', description: 't' }
      let val = null
-     try { val = await agent('slow', { label: 's', timeoutMs: 5 }) } catch (e) { val = 'error:' + (e && e.message || e) }
+     try { val = await agent('slow', { label: 's' }) } catch (e) { val = 'error:' + (e && e.message || e) }
      return { val }`,
     {
       agent: slow,
+      agentTimeoutMs: 5,
       persistLogs: false,
       onAgentEnd: (event) => {
         if (event.error) errorMessage = event.error;
@@ -2996,7 +2997,7 @@ test("agent() with timeout should handle gracefully (timeout returns null)", asy
   // agent() catches timeout internally (recoverable) and returns null
   assert.equal(r.val, null, "timeout agent should return null (recoverable)");
   assert.match(errorMessage, /timed out after 5ms/);
-  assert.match(errorMessage, /raise or omit timeoutMs\/agentTimeoutMs/);
+  assert.match(errorMessage, /raise defaultAgentTimeoutMs in the workflow settings/);
 });
 
 test("agent() default timeout is unbounded", async () => {
@@ -3016,21 +3017,25 @@ test("agent() default timeout is unbounded", async () => {
   assert.equal(result.result.val, "slow");
 });
 
-test("agent() timeoutMs null overrides a run-level timeout", async () => {
+test("agent() ignores the removed per-call timeoutMs and retries options", async () => {
+  // Run limits come only from the run (settings); a script cannot lift them.
+  let calls = 0;
   const slow = {
     async run() {
+      calls++;
       await new Promise((r) => setTimeout(r, 25));
       return "slow";
     },
   };
-  const result = await runWorkflow<{ val: string }>(
+  const result = await runWorkflow<{ val: string | null }>(
     `export const meta = { name: 'test', description: 't' }
-     const val = await agent('slow', { label: 's', timeoutMs: null })
+     const val = await agent('slow', { label: 's', timeoutMs: null, retries: 3 })
      return { val }`,
     { agent: slow, agentTimeoutMs: 5, persistLogs: false },
   );
 
-  assert.equal(result.result.val, "slow");
+  assert.equal(result.result.val, null, "the run-level timeout still applies");
+  assert.equal(calls, 1, "the run-level retry count (0) still applies");
 });
 
 test("agent() with parallel invokes all agents", async () => {

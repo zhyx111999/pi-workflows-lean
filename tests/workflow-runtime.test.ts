@@ -385,8 +385,10 @@ test("a timed-out named turn fully settles before retrying the thread", async ()
   let maxActive = 0;
   const result = await runWorkflow(
     `export const meta = { name: 'thread_timeout_retry', description: 'safe retry' }
-return await agent('work', { thread: 'implementer', timeoutMs: 5, retries: 1 })`,
+return await agent('work', { thread: 'implementer' })`,
     {
+      agentTimeoutMs: 5,
+      agentRetries: 1,
       agent: {
         async run(_prompt, options) {
           calls++;
@@ -447,8 +449,9 @@ test("runWorkflow reconciles timeout fallback with exact abort-teardown usage", 
   };
   const result = await runWorkflow(
     `export const meta = { name: 'timeout_usage', description: 'timeout usage' }
-return await agent('short prompt', { label: 'slow', timeoutMs: 5 })`,
+return await agent('short prompt', { label: 'slow' })`,
     {
+      agentTimeoutMs: 5,
       agent: {
         async run(prompt: string, options?: AgentRunOptions) {
           void prompt;
@@ -482,8 +485,10 @@ test("runWorkflow waits for timed-out teardown before starting a retry", { timeo
   const releaseFirstAttempt = createDeferred<void>();
   const run = runWorkflow(
     `export const meta = { name: 'slow_teardown', description: 'slow timeout teardown' }
-return await agent('stuck', { label: 'stuck', timeoutMs: 5, retries: 1 })`,
+return await agent('stuck', { label: 'stuck' })`,
     {
+      agentTimeoutMs: 5,
+      agentRetries: 1,
       agent: {
         async run(prompt: string) {
           void prompt;
@@ -574,28 +579,6 @@ return a`,
   assert.equal(calls, 1);
 });
 
-test("per-agent retries override run-level retries", async () => {
-  let calls = 0;
-  const result = await runWorkflow(
-    `export const meta = { name: 'agent_retry_override', description: 'override' }
-const a = await agent('work', { label: 'a', retries: 1 })
-return a`,
-    {
-      agent: {
-        async run() {
-          calls++;
-          return calls === 1 ? "" : "ok";
-        },
-      },
-      agentRetries: 0,
-      persistLogs: false,
-    },
-  );
-
-  assert.equal(result.result, "ok");
-  assert.equal(calls, 2);
-});
-
 test("runWorkflow accumulates real per-agent usage (incl. cost + cache tokens)", async () => {
   const result = await runWorkflow(twoAgentScript, {
     agent: fakeAgent({ input: 100, output: 40, total: 140, cost: 0.002, cacheRead: 50, cacheWrite: 10 }),
@@ -656,8 +639,9 @@ test("onAgentEnd reports cumulative settled usage across retries", async () => {
   let endedUsage: AgentUsage | undefined;
   const result = await runWorkflow(
     `export const meta = { name: 'retry_usage', description: 'retry usage' }
-     return await agent('work', { label: 'worker', retries: 1 })`,
+     return await agent('work', { label: 'worker' })`,
     {
+      agentRetries: 1,
       agent: {
         async run(prompt, options) {
           void prompt;
@@ -2046,27 +2030,8 @@ return await agent('flaky')`;
   );
 });
 
-test("agent() rejects timeoutMs <= 0 instead of spawn-aborting sessions (audit2 #8)", async () => {
-  const script = `export const meta = { name: 'bad_timeout', description: 'bad timeout' }
-return await agent('x', { timeoutMs: 0 })`;
-  await assert.rejects(
-    () => runWorkflow(script, { agent: fakeAgent({}), persistLogs: false }),
-    (e: unknown) => e instanceof WorkflowError && e.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-  );
-  // Call-level NaN/Infinity/sub-1/overflow are rejected too (all spawn-then-instant-abort).
-  for (const bad of ["NaN", "Infinity", "0.5", "2 ** 32"]) {
-    const badScript = `export const meta = { name: 'bt', description: 'bt' }
-return await agent('x', { timeoutMs: ${bad} })`;
-    await assert.rejects(
-      () => runWorkflow(badScript, { agent: fakeAgent({}), persistLogs: false }),
-      (e: unknown) => e instanceof WorkflowError && e.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      `timeoutMs ${bad} rejected`,
-    );
-  }
-});
-
-test("a run-level invalid agentTimeoutMs coerces to the default (legacy resume compatibility)", async () => {
-  // A persisted legacy 0 must not make an old run unresumable; coerce + log.
+test("a run-level invalid agentTimeoutMs coerces to the default", async () => {
+  // An embedding host's 0 must not fail the run or instantly abort sessions; coerce + log.
   const script = `export const meta = { name: 't3', description: 't3' }
 return await agent('x')`;
   const logs: string[] = [];
@@ -2153,29 +2118,6 @@ return await agent('flaky')`;
     assert.equal(result.result, "recovered");
     const elapsed = Date.now() - started;
     assert.ok(elapsed >= 240 && elapsed < 5_000, `default backoff used (${elapsed}ms)`);
-  }
-});
-
-test("the timeoutMs validation throws SYNCHRONOUSLY (no leaked rejection for void agent())", async () => {
-  // Regression pin for the sync-throw property: a Promise.reject would surface
-  // as an unhandled rejection for fire-and-forget calls and the run would
-  // RESOLVE instead of rejecting.
-  const script = `export const meta = { name: 'sync_throw', description: 'sync throw' }
-void agent('x', { timeoutMs: 0 })
-return 'frame-returned'`;
-  let unhandled = 0;
-  const onUnhandled = () => unhandled++;
-  process.on("unhandledRejection", onUnhandled);
-  try {
-    await assert.rejects(
-      () => runWorkflow(script, { agent: fakeAgent({}), persistLogs: false }),
-      (e: unknown) => e instanceof WorkflowError && e.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-      "the run rejects (a Promise.reject would let it resolve 'frame-returned')",
-    );
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(unhandled, 0, "no unhandled rejection leaked");
-  } finally {
-    process.off("unhandledRejection", onUnhandled);
   }
 });
 

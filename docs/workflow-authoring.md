@@ -11,7 +11,7 @@ Use the packaged `workflow-authoring` skill for pattern selection, lifecycle rul
 <!-- BEGIN GENERATED SUPPORTED WORKFLOW CAPABILITIES -->
 | Name | Classification | Signature | Options and defaults |
 | --- | --- | --- | --- |
-| agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional)<br>`timeoutMs`: number \| null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)<br>`retries`: number (optional; default: run retry count) |
+| agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional) |
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
 | checkpoint | runtime-global | `checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | — |
@@ -23,9 +23,5 @@ Use the packaged `workflow-authoring` skill for pattern selection, lifecycle rul
 | script | workflow-tool-input | `script?: string` | — |
 | name | workflow-tool-input | `name?: string` | — |
 | args | workflow-tool-input | `args?: unknown` | — |
-| maxAgents | workflow-tool-input | `maxAgents?: number = 1000` | — |
-| concurrency | workflow-tool-input | `concurrency?: number` | — |
-| agentRetries | workflow-tool-input | `agentRetries?: number = configured value or 0` | — |
-| agentTimeoutMs | workflow-tool-input | `agentTimeoutMs?: number = configured default or unbounded` | — |
 | resumeFromRunId | workflow-tool-input | `resumeFromRunId?: string` | — |
 <!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->

@@ -11,7 +11,7 @@ import { type AgentRunOptions, WorkflowAgent, type WorkflowAgentOptions } from "
 import type { AgentHistoryEntry } from "./agent-history.js";
 import { type AgentRegistry, agentDefinitionKey, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 import { type AgentUsage, createAgentCallUsageTracker, sumAgentUsage } from "./agent-usage.js";
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
+import { DEFAULT_AGENT_TIMEOUT_MS, DEFAULT_MAX_AGENTS, MAX_AGENT_RETRIES, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
@@ -109,13 +109,14 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * fallback). Injectable for tests.
    */
   agentRegistry?: AgentRegistry;
+  /** Maximum concurrent agents, clamped to 1..16. Hosts pass the defaultConcurrency setting. */
   concurrency?: number;
-  /** Retry attempts after a recoverable agent failure. Default 0. */
+  /** Retry attempts after a recoverable agent failure, clamped to 0..3. Default 0. */
   agentRetries?: number;
   signal?: AbortSignal;
-  /** Maximum number of agents allowed in this run. Default: 1000 */
+  /** Maximum logical agent()/checkpoint() calls in this run. Default: 1000 */
   maxAgents?: number;
-  /** Timeout per agent in milliseconds. null/omitted means no hard timeout. */
+  /** Timeout per agent attempt in milliseconds. null/omitted means no hard timeout. */
   agentTimeoutMs?: number | null;
   /**
    * Grace period (ms) for the terminal drain once this run is ABORT-SIGNALED
@@ -315,15 +316,6 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
    * and falls back to default tools/model with no role prompt.
    */
   agentType?: string;
-  /**
-   * Override timeout for this specific agent. null means no hard timeout.
-   * Must be a finite number in [1, 2^31-1] — anything else (0, negatives,
-   * NaN, Infinity) throws SCRIPT_VALIDATION_ERROR instead of
-   * spawn-then-instantly-aborting a real session.
-   */
-  timeoutMs?: number | null;
-  /** Retry attempts after a recoverable failure for this specific agent. */
-  retries?: number;
 }
 
 interface RuntimeState {
@@ -423,11 +415,9 @@ export async function runWorkflow<T = unknown>(
   const { meta, body } = parseWorkflowScript(script);
   // Per-phase model routing from meta.phases[].model, with meta.model as the default.
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
-  const maxAgents = options.maxAgents ?? MAX_AGENTS_PER_RUN;
-  // A persisted legacy agentTimeoutMs of 0/NaN would make an old run
-  // unresumable if rejected outright — coerce to the default and log instead.
-  // Call-level timeoutMs IS rejected (see agent()); the run-level option is
-  // also a persisted-resume surface, which the call level is not.
+  const maxAgents = options.maxAgents ?? DEFAULT_MAX_AGENTS;
+  // An embedding host's invalid timeout must not fail the run (or spawn and
+  // instantly abort sessions); coerce to the default and log instead.
   let agentTimeoutMs = options.agentTimeoutMs !== undefined ? options.agentTimeoutMs : DEFAULT_AGENT_TIMEOUT_MS;
   if (
     agentTimeoutMs !== null &&
@@ -512,7 +502,7 @@ export async function runWorkflow<T = unknown>(
 
   const agentLimitError = () =>
     new WorkflowError(
-      `Agent limit exceeded (${state.agentCount}/${maxAgents}). Re-call workflow with resumeFromRunId="${runId}", the same script, and maxAgents: N (N>${maxAgents}) — journaled prefix replays free. /workflows resume alone cannot raise the cap.`,
+      `Agent limit exceeded (${state.agentCount}/${maxAgents}). Raise defaultMaxAgents in the workflow settings, reload, then resume run "${runId}" — the journaled prefix replays free.`,
       WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
       { recoverable: false },
     );
@@ -537,24 +527,6 @@ export async function runWorkflow<T = unknown>(
   };
 
   const agent = (prompt: string, agentOptions: AgentOptions = {}): Promise<unknown> => {
-    if (
-      agentOptions.timeoutMs !== undefined &&
-      agentOptions.timeoutMs !== null &&
-      (typeof agentOptions.timeoutMs !== "number" ||
-        !Number.isFinite(agentOptions.timeoutMs) ||
-        agentOptions.timeoutMs < 1 ||
-        agentOptions.timeoutMs > 2_147_483_647)
-    ) {
-      // timeoutMs <= 0 / NaN / Infinity / overflow would spawn-then-instantly-
-      // abort a real session on every retry attempt (#8) — fail fast instead of
-      // burning sessions. Throw SYNCHRONOUSLY: a fire-and-forget `void
-      // agent(...)` call must not surface this as an unhandled rejection.
-      throw new WorkflowError(
-        "agent() timeoutMs must be a finite number of milliseconds in [1, 2^31-1]",
-        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-        { recoverable: false },
-      );
-    }
     const rawThread = agentOptions.thread;
     const thread = rawThread === undefined ? undefined : typeof rawThread === "string" ? rawThread.trim() : "";
     let call: Promise<unknown>;
@@ -725,8 +697,7 @@ export async function runWorkflow<T = unknown>(
       if (state.agentCallbacksClosed) {
         throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
       }
-      const timeout = agentOptions.timeoutMs !== undefined ? agentOptions.timeoutMs : agentTimeoutMs;
-      const retryAttempts = normalizeAgentRetries(agentOptions.retries ?? options.agentRetries ?? 0);
+      const retryAttempts = normalizeAgentRetries(options.agentRetries ?? 0);
       const maxAttempts = retryAttempts + 1;
 
       // Requested isolation is mandatory for this call; retained trees belong
@@ -873,7 +844,7 @@ export async function runWorkflow<T = unknown>(
             // Attach a rejection handler immediately: a timed-out run can reject
             // before the timeout catch awaits its teardown for usage reconciliation.
             void runPromise.catch(() => undefined);
-            const result = await withTimeout(runPromise, timeout, label, () => agentController.abort());
+            const result = await withTimeout(runPromise, agentTimeoutMs, label, () => agentController.abort());
 
             // Abort-only check, deliberately NOT throwIfAborted(): the result is
             // paid for at this point, so a pending durable checkpoint suspension
@@ -1750,7 +1721,7 @@ async function withTimeout<T>(
       }
       reject(
         new WorkflowError(
-          `Agent "${label}" timed out after ${ms}ms; raise or omit timeoutMs/agentTimeoutMs to allow longer runs`,
+          `Agent "${label}" timed out after ${ms}ms; raise defaultAgentTimeoutMs in the workflow settings to allow longer runs`,
           WorkflowErrorCode.AGENT_TIMEOUT,
           { recoverable: true },
         ),

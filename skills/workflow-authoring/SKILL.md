@@ -26,6 +26,6 @@ Read only what the task needs:
 - Call `agent()` at least once, give every call a short unique `label`, and return plain JSON data explicitly.
 - Give each subagent one task. Do not add a subagent whose job is to cross-check another subagent; the parent model reviews the returned result.
 - Pair ordered results with stable work IDs before filtering. When one agent consumes another's selected result, include both its stable ID and actual data in the downstream prompt. Treat recoverable `null` as missing coverage and report it.
-- Bound fan-out, loops, retries, agents, and concurrency to the task. Treat an invocation-level time cap as an opt-in user constraint, not a default.
+- Bound fan-out, loops, and semantic retries in the script. Concurrency, agent retries, timeouts, and the agent cap come from settings, not from the call.
 - Use `log()` for new code; `console` is compatibility-only.
 - Write plain JavaScript without imports or filesystem modules. Pass nondeterminism through `args`; `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable.

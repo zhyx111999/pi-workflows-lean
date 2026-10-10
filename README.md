@@ -72,7 +72,7 @@ return await agent(
 
 ## Why use it
 
-- **Real parallel orchestration** — fan out up to 16 concurrent and 1000 total subagents from one orchestration script.
+- **Real parallel orchestration** — fan out up to 16 concurrent and, by default, 1000 total subagents from one orchestration script.
 - **Per-agent model routing** — use `small`, `medium`, or `big` tiers, or choose an exact provider/model and thinking level.
 - **Journaled resume** — replay completed agents after interruption without rerunning them or spending their tokens again. The orchestrator can also resume with an **edited script** (`resumeFromRunId`): unchanged `agent()` calls replay from cache and only edited/new ones re-run — so a single bad prompt no longer means paying to re-run the whole workflow.
 - **Git worktree isolation** — parallel agents edit on separate branches with `isolation: "worktree"`. Kept by default for merge; pass `keepWorktree: false` to delete (tests).
@@ -88,7 +88,7 @@ The installed extension generates this compact index from its executable capabil
 <!-- BEGIN GENERATED SUPPORTED WORKFLOW CAPABILITIES -->
 | Name | Classification | Signature | Options and defaults |
 | --- | --- | --- | --- |
-| agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional)<br>`timeoutMs`: number \| null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)<br>`retries`: number (optional; default: run retry count) |
+| agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional) |
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
 | checkpoint | runtime-global | `checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | — |
@@ -100,10 +100,6 @@ The installed extension generates this compact index from its executable capabil
 | script | workflow-tool-input | `script?: string` | — |
 | name | workflow-tool-input | `name?: string` | — |
 | args | workflow-tool-input | `args?: unknown` | — |
-| maxAgents | workflow-tool-input | `maxAgents?: number = 1000` | — |
-| concurrency | workflow-tool-input | `concurrency?: number` | — |
-| agentRetries | workflow-tool-input | `agentRetries?: number = configured value or 0` | — |
-| agentTimeoutMs | workflow-tool-input | `agentTimeoutMs?: number = configured default or unbounded` | — |
 | resumeFromRunId | workflow-tool-input | `resumeFromRunId?: string` | — |
 <!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->
 
@@ -156,7 +152,6 @@ Agent details use a compact summary by default: completed agents show their fina
 | `keepWorktree` | Default `true` (kept for merge). `false` deletes after the call (test runs) |
 | `schema` | JSON Schema for a validated structured result |
 | `label` / `phase` | Display label and phase override |
-| `timeoutMs` / `retries` | Optional per-agent timeout and recoverable-failure retries |
 
 Host setting / SDK option (not an `agent()` call option): `providerMiddlewareExtensions: string[]` opts child sessions into trusted provider/auth extensions; default `[]`.
 
@@ -198,13 +193,22 @@ Use `/workflows-models` to edit them interactively; it is cwd-aware and can save
 
 Untagged `agent()` calls (no `model`, no `tier`, and no agentType/phase routing) use the configured `medium` tier, or the Pi settings default when no tiers are saved. Set `"inheritMainModel": true` in `~/.pi/workflows/settings.json` (or a project overlay) to instead have untagged agents inherit the orchestrating session's main model — the model in effect when the run starts; a mid-run `/model` switch applies to subsequent runs; when the session has no main model, legacy routing applies — with no tier config required. Explicit `model`/`tier` tags are unaffected, and an unavailable inherited model degrades to the settings default with a run-visible warning instead of throwing.
 
-An omitted `agentTimeoutMs` uses the configured `defaultAgentTimeoutMs` setting; without it, agents have no hard timeout. Add per-run or per-agent values when you need explicit gates. `concurrency` is clamped to 16; `agentRetries` retries only recoverable failures. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific.
+Run limits come only from settings; neither the `workflow` tool nor a script can override them:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `defaultConcurrency` | 8 | Agents running at once, clamped to 1–16 |
+| `defaultMaxAgents` | 1000 | Logical `agent()` and `checkpoint()` calls per run; retries add none |
+| `defaultAgentRetries` | 0 | Retries after a recoverable agent failure, clamped to 0–3 |
+| `defaultAgentTimeoutMs` | none | Hard timeout per agent attempt; unset or `null` means no timeout |
+
+Changes apply after `/reload` or in a new session. Every execution, including a resumed one, uses the current values, so a run that stopped at the agent cap finishes after you raise `defaultMaxAgents` and resume it. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific.
 
 Child sessions intentionally disable host extensions to avoid per-child factory churn and recursive orchestration. Some providers require extension request/auth hooks in addition to a shared model registry. To opt in, set `"providerMiddlewareExtensions": ["example-provider-adapter"]` in `~/.pi/workflows/settings.json` (also available on `WorkflowAgent`, `runWorkflow`, and `WorkflowManager` SDK options). Omitted or `[]` keeps all host extensions disabled. Names match an extension filename without its JS/TS suffix, an exact npm package identity, or a resolved local/Git package source name, case-insensitively; ancestor directory names do not authorize descendants; only enabled resources are considered, and project resources still require Pi project trust. `pi-dynamic-workflows`, `workflow`, and `pi-subagents` are always excluded, even if allowlisted. Only allow trusted, child-safe middleware: the allowlist enables whole extensions, not a hook-only sandbox, and opted-in factories and runtimes are isolated per child session and receive session_shutdown before disposal. Extension-free resource loaders remain shared. Explicit SDK resource-loader injection remains authoritative and bypasses this discovery filter.
 
-A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `agentRetries: 1-2` rather than treating an isolated empty output as a failed run. Because an exhausted recoverable failure resolves to `null` rather than throwing, a run whose **every** agent came back empty still reports `completed`; when that happens the runtime logs a prominent `⚠ Workflow produced no usable results` warning (naming the empty agents and pointing at `agentRetries` and output-token limits) so an all-null fleet can't be mistaken for success.
+A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `defaultAgentRetries` to 1–2 rather than treating an isolated empty output as a failed run. Because an exhausted recoverable failure resolves to `null` rather than throwing, a run whose **every** agent came back empty still reports `completed`; when that happens the runtime logs a prominent `⚠ Workflow produced no usable results` warning (naming the empty agents and pointing at `defaultAgentRetries` and output-token limits) so an all-null fleet can't be mistaken for success.
 
-Pausing and resuming a run keeps the limits it started with — `maxAgents`, `agentTimeoutMs`, `concurrency`, and `agentRetries` carry over instead of falling back to defaults, and token totals stay cumulative across the pause.
+Token totals stay cumulative across a pause and resume.
 
 Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the final wait for agents that ignore cancellation. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a `workflow` tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
 

@@ -138,7 +138,7 @@ describe("errors", () => {
 describe("config", () => {
   it("exports expected constants", async () => {
     const c = await loadConfig();
-    assert.equal(c.MAX_AGENTS_PER_RUN, 1000);
+    assert.equal(c.DEFAULT_MAX_AGENTS, 1000);
     assert.equal(c.MAX_CONCURRENCY, 16);
     assert.equal(c.DEFAULT_AGENT_TIMEOUT_MS, null);
     assert.equal(c.WORKFLOW_RUNS_DIR, ".pi/workflows/runs");

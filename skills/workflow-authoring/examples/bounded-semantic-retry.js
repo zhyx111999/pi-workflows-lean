@@ -1,14 +1,12 @@
 export const meta = {
   name: "bounded_semantic_retry",
-  description: "Separate recoverable transport retries from a visible bounded semantic attempt ledger",
+  description: "Keep a visible bounded semantic attempt ledger, separate from runtime retries",
   phases: [{ title: "Attempt" }],
 };
 
 // ADAPT: define task-owned acceptance, prompts, bounds, and structured result fields.
 const maxSemanticAttempts =
   args && Number.isInteger(args.maxSemanticAttempts) ? Math.max(1, Math.min(args.maxSemanticAttempts, 5)) : 3;
-const transportRetries =
-  args && Number.isInteger(args.transportRetries) ? Math.max(0, Math.min(args.transportRetries, 3)) : 0;
 const resultSchema = {
   type: "object",
   properties: {
@@ -24,14 +22,11 @@ let acceptedResult = null;
 
 phase("Attempt");
 for (let attempt = 1; attempt <= maxSemanticAttempts; attempt++) {
+  // Runtime retries (the defaultAgentRetries setting) repeat one logical call
+  // after recoverable execution failures; each iteration here is a new call.
   const result = await agent(
     `Produce an acceptable answer.${feedback ? ` Address this prior feedback: ${feedback}` : ""}`,
-    {
-      label: `semantic-attempt:${attempt}`,
-      schema: resultSchema,
-      // Runtime retries repeat this same logical call after recoverable execution failures.
-      retries: transportRetries,
-    },
+    { label: `semantic-attempt:${attempt}`, schema: resultSchema },
   );
   if (result === null) {
     attempts.push({ attempt, status: "missing", result: null });

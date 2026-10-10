@@ -27,8 +27,8 @@ Review author-visible behavior, not formatting preferences.
 
 ## Lifecycle
 
-- Are runtime retries and semantic retries separately bounded?
-- Are loops, agents, concurrency, and timeout bounded appropriately?
+- Are semantic retries bounded in the script, separately from the runtime retries set in settings?
+- Are loops and fan-out bounded appropriately for the configured agent cap?
 - Does every checkpoint use a stable, unique `checkpointId` and a JSON payload?
 - Would lexical call order remain stable under resume?
 

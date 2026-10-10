@@ -2,8 +2,8 @@
  * Configuration constants for pi-dynamic-workflows.
  */
 
-/** Maximum number of agents allowed per workflow run. */
-export const MAX_AGENTS_PER_RUN = 1000;
+/** Default cap on logical agent()/checkpoint() calls per run (setting: defaultMaxAgents). */
+export const DEFAULT_MAX_AGENTS = 1000;
 
 /** Default timeout for a single agent in milliseconds. null means no hard timeout. */
 export const DEFAULT_AGENT_TIMEOUT_MS = null;

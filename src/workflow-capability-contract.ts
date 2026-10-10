@@ -161,8 +161,6 @@ const AGENT_OPTIONS: OptionShape = {
     ]),
     option("thread", "string", true, null, ["non-empty name; same-name calls must be sequential"]),
     option("agentType", "string", true, null, ["must come from provided context"], "agent-types"),
-    option("timeoutMs", "number | null", true, "run timeout, finite ms in [1, 2^31-1]; null disables"),
-    option("retries", "number", true, "run retry count", ["finite values are floored and clamped to 0..3"]),
   ],
 };
 interface RuntimeDescriptorOptions {
@@ -217,7 +215,8 @@ const capabilities: readonly CapabilityDescriptor[] = [
     constraints: [
       "recoverable failures return null after retries; nonrecoverable failures throw",
       "schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries",
-      "per-agent retries override invocation retries; retries are floored and clamped to 0..3",
+      "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)",
+      "every agent() and checkpoint() call consumes one of the run's defaultMaxAgents slots (default 1000); execution retries consume none",
       "resume replays only the longest unchanged prefix; the first miss and every later call execute live",
       "a named thread retains its full Pi transcript and session identity only within one uninterrupted workflow invocation",
       "threaded calls are live-execution resume barriers and are never journaled",
@@ -287,14 +286,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
     ],
     CapabilitySupport.COMPATIBILITY,
   ),
-  toolInput("maxAgents", "maxAgents?: number = 1000", [
-    "default, not a hard product maximum",
-    "counts logical agent() and checkpoint() calls",
-    "agent execution retries do not consume extra logical slots",
-  ]),
-  toolInput("concurrency", "concurrency?: number", ["runtime clamps to 1..16"]),
-  toolInput("agentRetries", "agentRetries?: number = configured value or 0", ["floored and clamped to 0..3"]),
-  toolInput("agentTimeoutMs", "agentTimeoutMs?: number = configured default or unbounded"),
   toolInput("resumeFromRunId", "resumeFromRunId?: string", [
     "resumes a prior incomplete run with an edited script",
     "unchanged positional agent calls replay from cache until the first changed or inserted call",

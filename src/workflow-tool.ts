@@ -2,12 +2,11 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { BUILTIN_WORKFLOW_NAMES, resolveWorkflowInvocation } from "./builtin-workflows.js";
-import { MAX_AGENTS_PER_RUN } from "./config.js";
 import { renderWorkflowText, type WorkflowSnapshot } from "./display.js";
 import { parseWorkflowScript } from "./workflow.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
-import { loadWorkflowSettings } from "./workflow-settings.js";
+import { loadWorkflowSettings, workflowRunLimits } from "./workflow-settings.js";
 
 /** The single always-on gate that authorizes workflow use without forcing it. */
 export const WORKFLOW_GATE_GUIDELINE =
@@ -20,7 +19,7 @@ const workflowToolSchema = Type.Object({
         "Raw JavaScript workflow script, with no Markdown fences. Required unless `name` is given.",
         "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Add phases: [{ title: 'Phase' }] only when the workflow has named phases, and declare only phases it will use. With multiple phases, call phase('Exact Title') before each phase's work or set `phase` in the agent options.",
         "Subagents only do the task in the agent() prompt. Do not add a follow-up subagent to cross-check results.",
-        "agent(prompt, { label, tier: 'small'|'medium'|'big', model, thinking, schema, timeoutMs, retries }). Untagged agents use the medium tier. An explicit model overrides tier. thinking is off|minimal|low|medium|high|xhigh|max and is separate from tier.",
+        "agent(prompt, { label, tier: 'small'|'medium'|'big', model, thinking, schema }). Untagged agents use the medium tier. An explicit model overrides tier. thinking is off|minimal|low|medium|high|xhigh|max and is separate from tier.",
         "The optional `agentType` option selects a named user or project definition that can bind tools, a model, and role instructions; use it only when its name and purpose are provided in context. Its bound model overrides `tier`; an explicit `model` overrides both.",
         "Use plain JavaScript only; imports, require(), filesystem modules, Date.now(), Math.random(), and new Date() are unavailable.",
         "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, cwd, and process.cwd(). The workflow must call agent() at least once.",
@@ -62,30 +61,6 @@ const workflowToolSchema = Type.Object({
         "Ignored. Workflows always run in the background: the tool returns a run ID, this turn ends, and the result is delivered back when the run finishes.",
     }),
   ),
-  maxAgents: Type.Optional(
-    Type.Number({
-      description:
-        "Agent cap (1000 default; safety). Count each planned agent() call. Retries add no slots. Large fan-outs need explicit user intent.",
-    }),
-  ),
-  concurrency: Type.Optional(
-    Type.Number({
-      description:
-        "Maximum concurrent agents for this run. Clamped to the runtime maximum. Use when provider/transport stability matters.",
-    }),
-  ),
-  agentRetries: Type.Optional(
-    Type.Number({
-      description:
-        "Retry attempts for recoverable agent failures such as timeout, connection failure, or empty assistant output. Default 0 unless configured.",
-    }),
-  ),
-  agentTimeoutMs: Type.Optional(
-    Type.Number({
-      description:
-        "Timeout per agent in milliseconds. Omit to use configured `defaultAgentTimeoutMs`; without one, there is no hard timeout. Set only when the user asks to bound time.",
-    }),
-  ),
   resumeFromRunId: Type.Optional(
     Type.String({
       description: [
@@ -108,16 +83,11 @@ export type WorkflowToolInput = {
   name?: string;
   args?: Record<string, unknown>;
   background?: boolean;
-  maxAgents?: number;
-  concurrency?: number;
-  agentRetries?: number;
-  agentTimeoutMs?: number;
   resumeFromRunId?: string;
 };
 
 export interface WorkflowToolOptions {
   cwd?: string;
-  concurrency?: number;
   /** Shared manager so background runs are reachable from the `/workflows` command. */
   manager?: WorkflowManager;
   /**
@@ -132,18 +102,11 @@ export interface WorkflowToolOptions {
   getStorage?: () => WorkflowStorage;
   /** Live project cwd for name-resolution / settings. */
   getCwd?: () => string;
-  /** Default per-agent timeout for runs created by this tool. null means no hard timeout. */
-  defaultAgentTimeoutMs?: number | null;
-  /** Default max concurrent agents when no tool-level concurrency is passed. */
-  defaultConcurrency?: number;
-  /** Default retry attempts after recoverable agent failures. */
-  defaultAgentRetries?: number;
 }
 
 export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefinition<typeof workflowToolSchema, any> {
   const fallbackCwd = options.cwd ?? process.cwd();
   const fallbackStorage = options.storage ?? createWorkflowStorage(fallbackCwd);
-  const defaults = resolveWorkflowToolDefaults(options, fallbackCwd);
   // Lazy (audit2 #38): WorkflowManager's constructor scans — and on stale-run
   // recovery, REWRITES — the cwd's run store. Callers that only need the
   // tool's schema/description (context measurement, contract tests) must not
@@ -157,9 +120,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         // Bind to the factory-time cwd, not a re-read of process.cwd() at
         // execute time (r1 NIT: split-brain with fallbackStorage).
         cwd: options.cwd ?? fallbackCwd,
-        concurrency: defaults.concurrency,
-        defaultAgentTimeoutMs: defaults.agentTimeoutMs,
-        defaultAgentRetries: defaults.agentRetries,
+        ...workflowRunLimits(loadWorkflowSettings({ cwd: fallbackCwd })),
       });
     }
     return fallbackManager;
@@ -223,15 +184,9 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       // detached and its result is delivered back into the conversation).
       if (params.resumeFromRunId) {
         const runId = params.resumeFromRunId;
-        const resumed = await manager.resume(runId, {
-          script,
-          args: params.args,
-          // Explicit raise only — resume keeps the start-time cap unless the
-          // caller passes a higher maxAgents (see WorkflowManager.resume, #146).
-          maxAgents: params.maxAgents,
-        });
+        const resumed = await manager.resume(runId, { script, args: params.args });
         if (!resumed) {
-          throw new Error(resumeFailureText(manager, runId, params.maxAgents));
+          throw new Error(resumeFailureText(manager, runId));
         }
         return {
           content: [{ type: "text", text: resumedText(parsed.meta.name, runId) }],
@@ -242,10 +197,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       // Runs never block the tool call: the run ID returns now and
       // installResultDelivery sends the result back when the run finishes.
       const { runId } = manager.startInBackground(script, params.args, {
-        maxAgents: params.maxAgents,
-        concurrency: params.concurrency,
-        agentRetries: params.agentRetries,
-        agentTimeoutMs: params.agentTimeoutMs,
         tools: invocationTools,
         toolset: invocationToolset,
       });
@@ -276,21 +227,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return new Text(clean || theme.fg("muted", "workflow"), 0, 0);
     },
   });
-}
-
-function resolveWorkflowToolDefaults(
-  options: WorkflowToolOptions,
-  cwd: string,
-): { agentTimeoutMs: number | null; concurrency?: number; agentRetries: number } {
-  const settings = loadWorkflowSettings({ cwd });
-  return {
-    agentTimeoutMs:
-      options.defaultAgentTimeoutMs !== undefined
-        ? options.defaultAgentTimeoutMs
-        : (settings.defaultAgentTimeoutMs ?? null),
-    concurrency: options.defaultConcurrency ?? options.concurrency ?? settings.defaultConcurrency,
-    agentRetries: options.defaultAgentRetries ?? settings.defaultAgentRetries ?? 0,
-  };
 }
 
 /**
@@ -344,7 +280,7 @@ export function resumedText(name: string, runId: string): string {
  * tool error instead of a silent failure. Inspects live + persisted state to
  * name the concrete reason (not found / running / completed / stopped).
  */
-export function resumeFailureText(manager: WorkflowManager, runId: string, requestedMaxAgents?: number): string {
+export function resumeFailureText(manager: WorkflowManager, runId: string): string {
   const active = manager.getRun(runId);
   if (active?.status === "running") {
     return `Cannot resume workflow run "${runId}": it is still running. Wait for it to finish (or /workflows stop ${runId}) before resuming with an edited script.`;
@@ -361,12 +297,6 @@ export function resumeFailureText(manager: WorkflowManager, runId: string, reque
   }
   if (!persisted.script) {
     return `Cannot resume workflow run "${runId}": it has no persisted script to resume. Start a new run instead (omit resumeFromRunId).`;
-  }
-  if (typeof requestedMaxAgents === "number" && Number.isFinite(requestedMaxAgents)) {
-    const effectivePrior = persisted.maxAgents ?? MAX_AGENTS_PER_RUN;
-    if (Math.floor(requestedMaxAgents) <= effectivePrior) {
-      return `Cannot resume workflow run "${runId}": cannot lower or keep maxAgents at ${effectivePrior}; pass maxAgents > ${effectivePrior}.`;
-    }
   }
   return `Cannot resume workflow run "${runId}": it is not currently resumable (it may be busy under another process). Try again shortly, or start a new run.`;
 }

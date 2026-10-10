@@ -269,6 +269,8 @@ test("generated facts and skill references agree on result and failure contracts
   assert.match(lifecycle, /every workflow run starts in the background.*ignores `background`/i);
   assert.doesNotMatch(lifecycle, /checkpoint\(prompt|headless/i);
   assert.match(lifecycle, /agent execution retries do not add slots/i);
+  assert.match(lifecycle, /run limits come only from the workflow settings/i);
+  assert.match(lifecycle, /raising the setting and resuming/i);
 });
 
 test("fan-out-and-synthesize example waits for the complete result set and preserves failures", async () => {
@@ -565,7 +567,7 @@ test("loop-until-done resets its consecutive dry streak after missing coverage",
   assert.equal(result.result.complete, false);
 });
 
-test("bounded-retry recipe separates transport retries and preserves every semantic attempt", async () => {
+test("bounded-retry recipe preserves every semantic attempt", async () => {
   const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/bounded-semantic-retry.js"), "utf8");
   const labels: string[] = [];
   const result = await runWorkflow<{
@@ -573,7 +575,7 @@ test("bounded-retry recipe separates transport retries and preserves every seman
     exhausted: boolean;
     attempts: Array<{ attempt: number; status: string; result: unknown }>;
   }>(script, {
-    args: { maxSemanticAttempts: 3, transportRetries: 1 },
+    args: { maxSemanticAttempts: 3 },
     persistLogs: false,
     onAgentStart: ({ label }) => labels.push(label),
     agent: {
