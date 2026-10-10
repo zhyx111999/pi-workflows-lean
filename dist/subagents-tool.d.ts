@@ -9,7 +9,7 @@ import type { WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 export declare const SUBAGENTS_TOOL_NAME = "subagents";
 /** The single always-on gate: it authorizes delegation without forcing it. */
-export declare const SUBAGENTS_GATE_GUIDELINE = "Whether to call subagents is decided by the note appended to the user message.";
+export declare const SUBAGENTS_GATE_GUIDELINE = "Whether to call subagents is decided by the hidden note that follows the user message.";
 declare const subagentsSchema: Type.TObject<{
     tasks: Type.TOptional<Type.TArray<Type.TObject<{
         label: Type.TString;

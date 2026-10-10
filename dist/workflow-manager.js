@@ -1173,10 +1173,11 @@ export class WorkflowManager extends EventEmitter {
             const terminal = IN_MEMORY_TERMINAL_STATUSES.has(managed.status);
             if (terminal)
                 this.settleManagedAgentsForTerminalRun(managed, now);
-            // Resumable states need their journal; completed/aborted states need rich
-            // agent details. Persist exactly one full copy of each agent result instead
-            // of writing it to both agents[].result and journal[].result.
-            const keepsResumeJournal = managed.status !== "completed" && managed.status !== "aborted";
+            // Every run keeps its journal: a finished or stopped run can be resumed with
+            // an edited task list or script, reusing each unchanged call. Terminal runs
+            // also keep full agent results for the navigator; live and paused runs hold
+            // those in memory and in the journal.
+            const keepsAgentResults = managed.status === "completed" || managed.status === "aborted";
             const persistError = terminal && managed.status !== "completed" ? managed.error : undefined;
             this.persistence.save({
                 runId: managed.runId,
@@ -1195,7 +1196,7 @@ export class WorkflowManager extends EventEmitter {
                 parentSessionFile: managed.parentSessionFile,
                 // Fail-closed delivery marker — survives endpoint gaps / process restart.
                 pendingDelivery: managed.pendingDelivery,
-                journal: keepsResumeJournal ? managed.journal : undefined,
+                journal: managed.journal,
                 status: managed.status,
                 error: persistError?.message,
                 errorCode: persistError?.code,
@@ -1232,9 +1233,7 @@ export class WorkflowManager extends EventEmitter {
                     const ts = managed.agentTimestamps.get(a.id);
                     return {
                         ...summary,
-                        // Live runs keep the rich value in memory. Cold resumable runs use
-                        // the journal and retain resultPreview until replay reconstructs it.
-                        ...(keepsResumeJournal || result === undefined ? {} : { result }),
+                        ...(keepsAgentResults && result !== undefined ? { result } : {}),
                         startedAt: ts?.startedAt,
                         endedAt: ts?.endedAt,
                     };
@@ -1404,8 +1403,9 @@ export class WorkflowManager extends EventEmitter {
         }
     }
     /**
-     * Resume an interrupted run: replay journaled results for the unchanged prefix
-     * and run the rest live. Returns false if there is nothing resumable.
+     * Resume a paused, failed, or stopped run, or rerun a finished one with an
+     * edit: replay journaled results for unchanged calls and run the rest live.
+     * Returns false if there is nothing resumable.
      *
      * `opts.script` lets the orchestrating model resume with an EDITED script
      * (cached-prefix reuse / iteration): unchanged agent() calls whose content
@@ -1417,14 +1417,14 @@ export class WorkflowManager extends EventEmitter {
      */
     async resume(runId, opts) {
         const active = this.runs.get(runId);
-        if (active?.status === "running" || active?.status === "aborted")
+        if (active?.status === "running")
             return false;
+        // A stopped or paused run may still be draining its last agents.
         const settlingExecution = active ? this.executions.get(active) : undefined;
         if (settlingExecution) {
             if (!(await waitForPausedExecutionSettlement(settlingExecution)))
                 return false;
-            const current = this.runs.get(runId);
-            if (current !== active || current?.status === "aborted")
+            if (this.runs.get(runId) !== active)
                 return false;
         }
         const persisted = this.persistence.load(runId);
@@ -1444,7 +1444,9 @@ export class WorkflowManager extends EventEmitter {
         else if (resumeCheckpoint?.status === "waiting" || resumeCheckpoint?.status === "resuming") {
             throw new Error(`run is waiting at checkpoint ${JSON.stringify(resumeCheckpoint.checkpointId)}; resume requires its exact checkpoint ID`);
         }
-        if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted")
+        // A finished run has nothing left to continue; it reruns only with an edit.
+        const edited = opts?.script !== undefined || opts?.tasks !== undefined;
+        if (!persisted?.script || (persisted.status === "completed" && !edited))
             return false;
         // Validated before the lease: nothing may throw once it is held.
         const taskMoves = opts?.tasks ? taskListMoves(runId, persisted, opts) : undefined;

@@ -531,8 +531,9 @@ export declare class WorkflowManager extends EventEmitter {
      */
     attachCheckpointResponse(runId: string, checkpointId: string, responseValue: unknown): Promise<void>;
     /**
-     * Resume an interrupted run: replay journaled results for the unchanged prefix
-     * and run the rest live. Returns false if there is nothing resumable.
+     * Resume a paused, failed, or stopped run, or rerun a finished one with an
+     * edit: replay journaled results for unchanged calls and run the rest live.
+     * Returns false if there is nothing resumable.
      *
      * `opts.script` lets the orchestrating model resume with an EDITED script
      * (cached-prefix reuse / iteration): unchanged agent() calls whose content

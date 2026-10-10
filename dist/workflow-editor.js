@@ -5,8 +5,6 @@
  */
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "./parent-prompt.js";
 import { loadWorkflowSettings, saveWorkflowSettings, } from "./workflow-settings.js";
-/** The exact name of the workflow tool that `/workflows run` makes sure is active. */
-export const WORKFLOW_TOOL_NAME = "workflow";
 /**
  * The directive for the explicit `/workflows run <prompt>` command. The user
  * typed a command whose only purpose is to run a workflow, so the model is told
@@ -20,10 +18,10 @@ export function buildForcedWorkflowPrompt(text) {
         "",
         "---",
         "[/workflows run — you ran an explicit command to execute a workflow for this request.",
-        "Call the `workflow` tool now: write a script that fans this task out across subagents",
-        "via agent()/parallel()/pipeline(). (This is a direct command, not a heuristic guess, so",
-        "do not answer in prose instead of running the workflow.)",
-        "The `workflow` tool always runs in the background: this turn will end and the result is delivered back into the conversation automatically when it finishes — that's expected, not a stall, so you do not need to stay and block.]",
+        "Call the `subagents` tool now: list the tasks to fan this request out across subagents,",
+        "or write a script when the steps depend on each other. (This is a direct command, not a",
+        "heuristic guess, so do not answer in prose instead of starting the subagents.)",
+        "The `subagents` tool always runs in the background: this turn will end and the result is delivered back into the conversation automatically when it finishes — that's expected, not a stall, so you do not need to stay and block.]",
     ].join("\n");
 }
 /**

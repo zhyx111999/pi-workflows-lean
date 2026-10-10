@@ -5,8 +5,6 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type WorkflowSettingsStore } from "./workflow-settings.js";
-/** The exact name of the workflow tool that `/workflows run` makes sure is active. */
-export declare const WORKFLOW_TOOL_NAME = "workflow";
 /**
  * The directive for the explicit `/workflows run <prompt>` command. The user
  * typed a command whose only purpose is to run a workflow, so the model is told

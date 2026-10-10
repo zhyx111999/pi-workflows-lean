@@ -57,7 +57,6 @@ function summarizeResult(result, maxChars = DEFAULT_DELIVERED_MAX_CHARS) {
         return "null";
     if (typeof result === "object") {
         const obj = result;
-        // `synthesis` is what the built-in multi-perspective workflow returns.
         for (const key of ["verdict", "report", "summary", "synthesis"]) {
             const val = obj[key];
             if (typeof val === "string" && val.trim())
@@ -1223,22 +1222,37 @@ export function installResultDelivery(pi, manager, opts = {}) {
         const text = `✗ Background workflow ${runId} failed: ${error?.message ?? "unknown error"}`;
         routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
     });
-    // A provider usage/quota limit checkpoints the run as paused (not failed): tell the
-    // user it is resumable once their budget refills, rather than letting it look dead.
-    // Manual pause() also emits "paused" but with no reason — guard so only the
-    // usage-limit case delivers a message.
-    manager.on("paused", ({ runId, reason, error, resetHint, }) => {
-        if (reason !== "usage_limit")
-            return;
-        const run = manager.getRun(runId);
+    // Two pauses need the model: a provider usage limit (the run is resumable once
+    // the limit resets, not dead) and a script waiting at a durable checkpoint (it
+    // stays paused until someone answers). A manual pause() carries no reason and
+    // is the user's own action, so it delivers nothing.
+    manager.on("paused", (event) => {
+        const run = manager.getRun(event.runId);
         if (!run?.background)
             return;
-        const when = resetHint ? ` (${resetHint})` : "";
-        const cause = error?.message ?? "provider usage limit reached";
-        const text = `⏸ Background workflow ${runId} paused: ${cause}${when}. ` +
-            `Completed steps are saved — run /workflows resume ${runId} once your usage limit resets.`;
-        routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
+        const text = pausedRunText(event);
+        if (text)
+            routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
     });
+}
+const CHECKPOINT_PAYLOAD_PREVIEW_CHARS = 500;
+/** The delivered notice for a pause the model must act on, or undefined for a manual pause. */
+function pausedRunText({ runId, reason, error, resetHint, checkpoint }) {
+    if (reason === "usage_limit") {
+        const when = resetHint ? ` (${resetHint})` : "";
+        return (`⏸ Subagents run ${runId} paused: ${error?.message ?? "provider usage limit reached"}${when}. ` +
+            `Finished work is saved — continue it with subagents_control action "resume", runId "${runId}" once the limit resets.`);
+    }
+    if (reason === "workflow_checkpoint" && checkpoint) {
+        const payload = JSON.stringify(checkpoint.payload) ?? "undefined";
+        const preview = payload.length > CHECKPOINT_PAYLOAD_PREVIEW_CHARS
+            ? `${payload.slice(0, CHECKPOINT_PAYLOAD_PREVIEW_CHARS)}…`
+            : payload;
+        return (`⏸ Subagents run ${runId} is waiting at checkpoint "${checkpoint.checkpointId}" (${checkpoint.kind}). Payload: ${preview}
+` +
+            `Answer it with subagents_control action "resume", runId "${runId}", checkpointId "${checkpoint.checkpointId}", and your response.`);
+    }
+    return undefined;
 }
 /** @internal test helper — reset process-wide delivery registries between cases. */
 export function _resetDeliveryRegistriesForTests() {

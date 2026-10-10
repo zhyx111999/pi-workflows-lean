@@ -521,11 +521,6 @@ export async function runWorkflow(script, options = {}) {
                         store.discardDelta(deltaKey);
                         if (workflowError.recoverable && attempt < maxAttempts) {
                             log(`agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`);
-                            // This attempt's spend already accrued into state.tokenUsage
-                            // above — but it will never reach onAgentEnd (only
-                            // the final attempt does), so report it on the dedicated channel
-                            // instead (see WorkflowRunOptions.onRetrySpend).
-                            options.onRetrySpend?.(usageCommit.tokens);
                             // Small capped backoff between attempts (audit2 #7) — an
                             // immediate retry storms the provider when a parallel() batch
                             // fails together. The abort check after the wait keeps pause/stop

@@ -111,12 +111,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     /** Persist a durable checkpoint transition before it becomes externally observable. */
     onWorkflowCheckpoint?: (checkpoint: WorkflowCheckpoint) => void;
     /**
-     * Called once per failed-and-retried attempt with that attempt's finalized token cost.
-     * @deprecated Use `onAgentUsage` for per-agent display and `onTokenUsage` for
-     * finalized run accounting. Do not combine those cumulative callbacks with this delta.
-     */
-    onRetrySpend?: (tokens: number) => void;
-    /**
      * Backoff (ms) before retry attempt N (1-based — the attempt that just
      * failed). Default: min(250 * 2^(N-1), 2000) — immediate retries let a whole
      * parallel() batch hammer the provider synchronously. The retry keeps its
