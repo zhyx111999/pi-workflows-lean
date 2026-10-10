@@ -199,23 +199,22 @@ export function registerWorkflowCommands(pi, manager, opts = {}) {
                             : `Watching ${id} — the final status prints here when it finishes.`, "info");
                         return;
                     }
-                    const live = manager.getSnapshot(id);
-                    if (live) {
-                        await print(renderWorkflowText(recomputeWorkflowSnapshot(live), false));
-                        return;
-                    }
-                    const run = manager.listRuns().find((r) => r.runId === id);
+                    // The record decides whether the run exists, as it does for subagents_control.
+                    const run = manager.findRun(id);
                     if (!run) {
                         ctx.ui.notify(`No workflow run "${id}"`, "error");
                         return;
                     }
-                    await print(renderPersistedStatus(run));
+                    const live = manager.getSnapshot(id);
+                    await print(live ? renderWorkflowText(recomputeWorkflowSnapshot(live), false) : renderPersistedStatus(run));
                     return;
                 }
                 case "stop": {
                     if (!id)
                         return ctx.ui.notify(USAGE, "warning");
-                    ctx.ui.notify(manager.stop(id) ? `Stopped ${id}` : `Cannot stop ${id} (not running)`, manager.getRun(id) ? "info" : "warning");
+                    if (manager.stop(id))
+                        return ctx.ui.notify(`Stopped ${id}`, "info");
+                    ctx.ui.notify(manager.findRun(id) ? `Cannot stop ${id} (not running)` : `No run ${id}`, "warning");
                     return;
                 }
                 case "pause": {
@@ -227,8 +226,9 @@ export function registerWorkflowCommands(pi, manager, opts = {}) {
                 case "resume": {
                     if (!id)
                         return ctx.ui.notify(USAGE, "warning");
-                    const ok = await manager.resume(id);
-                    ctx.ui.notify(ok ? `Resumed ${id}` : `Resume not available for ${id} yet`, ok ? "info" : "warning");
+                    if (await manager.resume(id))
+                        return ctx.ui.notify(`Resumed ${id}`, "info");
+                    ctx.ui.notify(manager.findRun(id) ? `Resume not available for ${id} yet` : `No run ${id}`, "warning");
                     return;
                 }
                 case "rm": {

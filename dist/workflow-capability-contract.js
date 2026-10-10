@@ -7,7 +7,8 @@ export { WorkflowCapabilityContractError } from "./errors.js";
 const DETAILS_PATH = "skills/workflow-authoring/references/capability-details.md";
 const NONE = [];
 const option = (name, type, optional, defaultValue = null, constraints = NONE, dynamicReference = null) => ({ name, type, optional, default: defaultValue, constraints, dynamicReference });
-const AGENT_OPTIONS = {
+/** The complete set of agent() options; the runtime rejects any other key. */
+export const AGENT_OPTIONS = {
     id: "agent-options",
     options: [
         option("label", "string", true, "derived from phase and call count"),
@@ -24,6 +25,7 @@ const AGENT_OPTIONS = {
             "non-empty absolute existing directory; resolved to its real path",
             "coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host",
             "cannot combine with worktree isolation",
+            "on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory",
         ]),
         option("thread", "string", true, null, ["non-empty name; same-name calls must be sequential"]),
         option("agentType", "string", true, null, ["must come from provided context"], "agent-types"),
@@ -65,6 +67,7 @@ const capabilities = [
         signature: "agent(prompt, options?) => Promise<string | structured value | null>",
         optionShape: "agent-options",
         constraints: [
+            "options must be an object using only the declared option names; anything else fails before dispatch with an error listing the accepted names",
             "recoverable failures return null after retries; nonrecoverable failures throw",
             "schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries",
             "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)",

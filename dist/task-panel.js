@@ -1062,7 +1062,13 @@ function flushSessionDiskPending(manager, sessionId, endpoint) {
             const live = manager.getRun?.(state.runId);
             if (live?.pendingDelivery)
                 continue;
-            tryOne(state.runId, state.pendingDelivery, live, state);
+            try {
+                tryOne(state.runId, state.pendingDelivery, live, state);
+            }
+            catch {
+                // The list can still show a run another process just deleted, whose
+                // record then fails to read; skip it so the other results still go out.
+            }
         }
     }
     catch {

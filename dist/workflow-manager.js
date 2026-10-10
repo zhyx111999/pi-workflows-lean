@@ -131,6 +131,8 @@ export class WorkflowManager extends EventEmitter {
     maxTerminalRunsInMemory;
     /** Executions by managed run, so pause/resume can wait for settlement before overlapping. */
     executions = new WeakMap();
+    /** Runs deleted here or by another process; an execution still winding down finishes their deletion. */
+    deletedRuns = new WeakSet();
     persistence;
     cwd;
     concurrency;
@@ -224,9 +226,8 @@ export class WorkflowManager extends EventEmitter {
                 continue;
             if (managed.sessionId === sessionId)
                 continue;
-            managed.sessionId = sessionId;
-            this.persistRun(managed);
-            adopted++;
+            if (this.moveRunToSession(managed, sessionId))
+                adopted++;
         }
         // Disk-only undelivered rows (terminal runs already evicted from memory).
         // Re-home markers tagged with the previous session id; never claim foreign
@@ -241,19 +242,49 @@ export class WorkflowManager extends EventEmitter {
                     continue;
                 if (prev == null || state.sessionId !== prev)
                     continue;
-                if (this.persistence.updateMetadata) {
-                    if (!this.persistence.updateMetadata(state.runId, { sessionId }))
-                        continue;
-                }
-                else
-                    this.persistence.save({ ...state, sessionId });
-                adopted++;
+                if (this.rehomeRecord(state.runId, sessionId))
+                    adopted++;
             }
         }
         catch {
             // best-effort — live adopt above is the critical path
         }
         return adopted;
+    }
+    /**
+     * Re-home one in-memory run; false when it turned out to be deleted. The
+     * execution holding the lease owns the record and rewrites it. A settled copy
+     * only caches a record that another process may have resumed, finished, or
+     * deleted since, so it moves the owner field alone.
+     */
+    moveRunToSession(managed, sessionId) {
+        if (managed.lease) {
+            managed.sessionId = sessionId;
+            this.persistRun(managed);
+            return this.isCurrent(managed);
+        }
+        try {
+            if (!this.rehomeRecord(managed.runId, sessionId)) {
+                this.dropIfDeleted(managed);
+                return false;
+            }
+        }
+        catch (error) {
+            // Best-effort like every progress persist: the local copy still moves.
+            console.warn("[workflow-manager] Persist run failed:", error);
+        }
+        managed.sessionId = sessionId;
+        return true;
+    }
+    /** Point a record at another delivery session, leaving the rest as written. False when it is gone. */
+    rehomeRecord(runId, sessionId) {
+        if (this.persistence.updateMetadata)
+            return this.persistence.updateMetadata(runId, { sessionId });
+        const state = this.persistence.load(runId);
+        if (!state)
+            return false;
+        this.persistence.save({ ...state, sessionId });
+        return true;
     }
     /**
      * On startup, any persisted run still marked "running" belongs to a process
@@ -955,6 +986,17 @@ export class WorkflowManager extends EventEmitter {
                     console.warn("[workflow-manager] Failed to remove external abort listener:", error);
                 }
             }
+            // Deletion aborts the execution, but a script that catches the abort keeps
+            // running, and its run log recreates <runId>.log after the files were
+            // removed. Nothing writes for this execution any more, so remove it again.
+            if (this.deletedRuns.has(managed)) {
+                try {
+                    this.persistence.delete(managed.runId);
+                }
+                catch {
+                    // Best-effort: a leftover log never resurrects the run.
+                }
+            }
         }
     }
     /**
@@ -1286,6 +1328,7 @@ export class WorkflowManager extends EventEmitter {
             this.persistTimers.delete(managed.runId);
         }
         this.runs.delete(managed.runId);
+        this.deletedRuns.add(managed);
         this.releaseRunLease(managed);
         this.emit("deleted", { runId: managed.runId });
     }
@@ -1428,7 +1471,11 @@ export class WorkflowManager extends EventEmitter {
                 return false;
         }
         const persisted = this.persistence.load(runId);
-        const resumeCheckpoint = persisted?.checkpoint;
+        if (!persisted) {
+            this.dropIfDeleted(active);
+            return false;
+        }
+        const resumeCheckpoint = persisted.checkpoint;
         if (opts?.checkpointId !== undefined) {
             if (!resumeCheckpoint)
                 throw new Error("run has no durable checkpoint");
@@ -1438,7 +1485,7 @@ export class WorkflowManager extends EventEmitter {
             if (resumeCheckpoint.status === "waiting") {
                 throw new Error(`checkpoint ${JSON.stringify(opts.checkpointId)} has no attached response`);
             }
-            if (resumeCheckpoint.status === "consumed" && persisted?.status === "completed")
+            if (resumeCheckpoint.status === "consumed" && persisted.status === "completed")
                 return true;
         }
         else if (resumeCheckpoint?.status === "waiting" || resumeCheckpoint?.status === "resuming") {
@@ -1446,7 +1493,7 @@ export class WorkflowManager extends EventEmitter {
         }
         // A finished run has nothing left to continue; it reruns only with an edit.
         const edited = opts?.script !== undefined || opts?.tasks !== undefined;
-        if (!persisted?.script || (persisted.status === "completed" && !edited))
+        if (!persisted.script || (persisted.status === "completed" && !edited))
             return false;
         // Validated before the lease: nothing may throw once it is held.
         const taskMoves = opts?.tasks ? taskListMoves(runId, persisted, opts) : undefined;
@@ -1676,64 +1723,50 @@ export class WorkflowManager extends EventEmitter {
         return true;
     }
     /**
-     * Stop a running workflow.
+     * Stop a running or paused workflow.
      *
-     * Fast path: the run is live in this process (`this.runs`) — abort its
-     * controller and persist "aborted" as before. Fallback: the run is not in
-     * memory but is persisted as "running" or "paused" — e.g. it belongs to a
-     * prior pi session that this process's recoverStaleRuns() flipped to
-     * "paused" on disk without repopulating this.runs (see subagents-control-tool's
-     * findRun(), which resolves candidates from disk via listAllRuns()). There is no
-     * live controller to abort in that case — the run simply isn't executing in
-     * this process — so mark it aborted on disk directly, mirroring resume()'s
-     * persisted-fallback lease handling.
+     * Only the execution that holds the run's lease owns it: abort it and persist
+     * "aborted". Like pause(), it keeps the lease: the execution may drain for a
+     * while and its executeRun() tail writes the run once more, so releasing now
+     * would let another process resume the run and then lose that record to the
+     * tail. The tail releases the lease and makes the run eviction-eligible. Any
+     * other run is stopped through its record under a fresh lease (see stopRecord()).
      */
     stop(runId) {
         const managed = this.runs.get(runId);
-        if (managed) {
-            if (managed.status !== "running" && managed.status !== "paused")
-                return false;
-            // Whether this run's OWN executeRun() promise has already fully settled
-            // matters for whether stop() itself must be the one to call
-            // recordTerminalRun(): a usage-limit checkpoint runs executeRun()'s
-            // catch tail to completion before "paused" is ever observable (it
-            // deliberately skipped recordTerminalRun() then, since "paused" isn't
-            // terminal) — so there is no FUTURE tail left that will ever call it
-            // for this managed object. A manual pause() sets "paused" while its
-            // cooperative abort may still be settling; in that narrow window the
-            // tail later settles this object to "aborted" (terminal) and records a
-            // SECOND time — a tolerated duplicate: recordTerminalRun() is
-            // idempotent-safe under duplicates (re-validates the current entry),
-            // the lease was already cleared here, and the worst case is the
-            // stopped run leaving memory earlier than FIFO order (persistence
-            // fallback covers every consumer). A "running" run, by contrast,
-            // always still has that tail pending;
-            // it (not stop()) is what calls recordTerminalRun() once it actually
-            // settles to "aborted" — see the `runs` field doc comment's rule that
-            // eviction eligibility must wait for the real settle, not a request to
-            // abort. Without this, stopping an already-paused run left it in
-            // `runs` forever (no future tail to mark it eviction-eligible) — a
-            // small leak in exactly the class this manager otherwise bounds.
-            const hadNoPendingSettle = managed.status === "paused";
-            managed.status = "aborted";
-            managed.error ??= new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, {
-                recoverable: true,
-            });
-            this.abortForLifecycleControl(managed, "stop");
-            this.emit("stopped", { runId });
-            this.persistRun(managed);
-            this.releaseRunLease(managed);
-            if (hadNoPendingSettle)
-                this.recordTerminalRun(runId);
-            return true;
-        }
-        const persisted = this.persistence.load(runId);
-        if (!persisted || (persisted.status !== "running" && persisted.status !== "paused"))
+        if (!managed?.lease)
+            return this.stopRecord(runId, managed);
+        if (managed.status !== "running" && managed.status !== "paused")
+            return false;
+        this.markStopped(managed);
+        this.abortForLifecycleControl(managed, "stop");
+        this.emit("stopped", { runId });
+        this.persistRun(managed);
+        return true;
+    }
+    /**
+     * Stop a run that no execution in this process owns: one from an earlier
+     * session, or one whose execution here has settled. A settled local copy only
+     * caches the record, which another process may since have resumed (and still
+     * be running), finished, or deleted, so the record decides. It is re-read
+     * under the lease; a run another live process executes cannot be leased.
+     */
+    stopRecord(runId, cached) {
+        // A cheap read first, so an unknown or finished run takes no lock.
+        const current = this.findRun(runId)?.status;
+        if (current !== "running" && current !== "paused")
             return false;
         const lease = this.persistence.acquireRunLease(runId);
         if (!lease)
             return false;
         try {
+            const persisted = this.persistence.load(runId);
+            if (!persisted) {
+                this.dropIfDeleted(cached);
+                return false;
+            }
+            if (persisted.status !== "running" && persisted.status !== "paused")
+                return false;
             const endedAt = new Date().toISOString();
             const errorMessage = persisted.error ?? "workflow aborted";
             const errorCode = persisted.errorCode ?? WorkflowErrorCode.WORKFLOW_ABORTED;
@@ -1750,8 +1783,19 @@ export class WorkflowManager extends EventEmitter {
         finally {
             this.persistence.releaseRunLease(lease);
         }
+        // No execution will settle the cached copy, so it becomes eviction-eligible here.
+        if (cached && this.isCurrent(cached)) {
+            this.markStopped(cached);
+            this.recordTerminalRun(runId);
+        }
         this.emit("stopped", { runId });
         return true;
+    }
+    markStopped(managed) {
+        managed.status = "aborted";
+        managed.error ??= new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, {
+            recoverable: true,
+        });
     }
     /**
      * Queue an instruction into every running agent of a live run that has this
@@ -1787,6 +1831,44 @@ export class WorkflowManager extends EventEmitter {
     /** All persisted runs regardless of session (used by cross-session recovery). */
     listAllRuns() {
         return this.persistence.list();
+    }
+    /**
+     * One run's record, read now rather than from the list cache, in any session;
+     * undefined when it does not exist. A settled local copy of a run that another
+     * process deleted is dropped here, so every caller agrees the run is gone.
+     */
+    findRun(runId) {
+        let run;
+        try {
+            run = this.readRecordPreview(runId);
+        }
+        catch {
+            // A damaged record is unreadable, not deleted; list() skips it as well.
+            return undefined;
+        }
+        if (!run)
+            this.dropIfDeleted(this.runs.get(runId));
+        return run ?? undefined;
+    }
+    readRecordPreview(runId) {
+        return this.persistence.loadPreview ? this.persistence.loadPreview(runId) : this.persistence.load(runId);
+    }
+    /**
+     * Drop a settled local copy whose record another process deleted. A copy
+     * still executing holds the lease, and its next write detects the deletion;
+     * a record that exists but fails validation is damaged, not deleted.
+     */
+    dropIfDeleted(cached) {
+        if (!cached || cached.lease)
+            return;
+        try {
+            if (this.readRecordPreview(cached.runId))
+                return;
+        }
+        catch {
+            return;
+        }
+        this.forgetDeletedRun(cached);
     }
     /**
      * Get snapshot of a run.
@@ -1849,6 +1931,8 @@ export class WorkflowManager extends EventEmitter {
                 return false;
         }
         this.runs.delete(runId);
+        if (managed)
+            this.deletedRuns.add(managed);
         // Cancel any pending throttled write so a deferred persist can't fire after
         // deletion and resurrect the run's file on disk.
         const timer = this.persistTimers.get(runId);
@@ -1913,9 +1997,11 @@ export class WorkflowManager extends EventEmitter {
         if (!lease)
             return;
         try {
-            const current = this.persistence.loadPreview ? this.persistence.loadPreview(runId) : this.persistence.load(runId);
-            if (!current)
+            const current = this.readRecordPreview(runId);
+            if (!current) {
+                this.dropIfDeleted(managed);
                 return;
+            }
             if ((current.autoResumeAttempts ?? 0) !== attempts) {
                 if (this.persistence.updateMetadata) {
                     if (!this.persistence.updateMetadata(runId, { autoResumeAttempts: attempts }))

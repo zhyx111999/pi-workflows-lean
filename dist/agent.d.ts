@@ -336,13 +336,6 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
  * additional tool names via WorkflowAgentOptions.excludeTools.
  */
 export declare const DEFAULT_EXCLUDED_SUBAGENT_TOOLS: string[];
-/**
- * The full subagent tool denylist: the always-on defaults plus any names the
- * caller added (via WorkflowAgentOptions.excludeTools) or set on the injected
- * session options. Extracted so the merge — and its order — is unit-testable;
- * a spread-order regression that dropped the defaults would slip past a test
- * that only asserts the constant. The SDK dedupes, so overlap is harmless.
- */
 export declare function subagentExcludedTools(extra?: string[], sessionExclude?: string[]): string[];
 export declare class WorkflowAgent {
     private readonly cwd;

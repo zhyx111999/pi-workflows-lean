@@ -14,7 +14,7 @@ import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta, resolveModelForPhase } from "./model-routing.js";
 import { validateThinkingLevel } from "./model-spec.js";
 import { createAgentStoreTools, SharedStore } from "./shared-store.js";
-import { WORKFLOW_CAPABILITY_CONTRACT } from "./workflow-capability-contract.js";
+import { AGENT_OPTIONS, WORKFLOW_CAPABILITY_CONTRACT, } from "./workflow-capability-contract.js";
 import { createWorktree, removeWorktree } from "./worktree.js";
 /**
  * Batch-scoped cancellation for a single parallel()/pipeline() fan-out. When a
@@ -167,24 +167,31 @@ export async function runWorkflow(script, options = {}) {
             throw new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
         }
     };
-    const agent = (prompt, agentOptions = {}) => {
+    /** Validate the call synchronously, then start it; a validation failure throws. */
+    const startAgentCall = (prompt, agentOptions) => {
+        validateAgentOptions(agentOptions);
         const rawThread = agentOptions.thread;
         const thread = rawThread === undefined ? undefined : typeof rawThread === "string" ? rawThread.trim() : "";
-        let call;
         if (rawThread !== undefined && !thread) {
-            call = Promise.reject(new WorkflowError("agent() thread must be a non-empty string", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
+            throw new WorkflowError("agent() thread must be a non-empty string", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, {
                 recoverable: false,
-            }));
+            });
         }
-        else if (thread && state.activeThreads.has(thread)) {
-            call = Promise.reject(new WorkflowError(`agent thread "${thread}" is already running; same-thread calls must be sequential`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false }));
+        if (!thread)
+            return agentImpl(prompt, agentOptions);
+        if (state.activeThreads.has(thread)) {
+            throw new WorkflowError(`agent thread "${thread}" is already running; same-thread calls must be sequential`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
         }
-        else {
-            if (thread)
-                state.activeThreads.add(thread);
-            call = agentImpl(prompt, thread === rawThread ? agentOptions : { ...agentOptions, thread });
-            if (thread)
-                call = call.finally(() => state.activeThreads.delete(thread));
+        state.activeThreads.add(thread);
+        return agentImpl(prompt, thread === rawThread ? agentOptions : { ...agentOptions, thread }).finally(() => state.activeThreads.delete(thread));
+    };
+    const agent = (prompt, agentOptions = {}) => {
+        let call;
+        try {
+            call = startAgentCall(prompt, agentOptions);
+        }
+        catch (error) {
+            call = Promise.reject(error);
         }
         // Track every call (awaited or not) so the top-level run can drain
         // outstanding calls before completing (see RuntimeState.inFlight and the
@@ -1205,6 +1212,21 @@ function hashAgentCall(prompt, model, phase, options, agentDefKey, cwd, resolved
         ...(resolvedIsolation === "worktree" ? { keepWorktree: options.keepWorktree !== false } : {}),
     });
     return createHash("sha256").update(identity).digest("hex");
+}
+const AGENT_OPTION_NAMES = AGENT_OPTIONS.options.map((option) => option.name);
+/**
+ * Reject agent() options the runtime would otherwise drop, so a misspelled or
+ * unsupported key fails before dispatch instead of seeming to take effect.
+ */
+function validateAgentOptions(options) {
+    const accepted = `accepted options: ${AGENT_OPTION_NAMES.join(", ")}`;
+    if (options === null || typeof options !== "object" || Array.isArray(options)) {
+        throw new WorkflowError(`agent() options must be an object; ${accepted}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
+    }
+    const unknown = Object.keys(options).filter((key) => !AGENT_OPTION_NAMES.includes(key));
+    if (unknown.length > 0) {
+        throw new WorkflowError(`agent() does not accept ${unknown.map((key) => `"${key}"`).join(", ")}; ${accepted}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
+    }
 }
 /** Validate a script-supplied agent cwd without allocating an agent slot. */
 function resolveAgentCwd(value) {

@@ -91,7 +91,8 @@ export function createRunPersistence(cwd, fsOverride, options) {
     const primaryLockPath = (runId) => lockPath(runsDir, runId);
     const legacyLockPath = (runId) => lockPath(legacyRunsDir, runId);
     const candidateRunPaths = (runId) => [primaryRunPath(runId), legacyRunPath(runId)];
-    const recordExists = (runId) => candidateRunPaths(runId).some((path) => _existsSync(path) || _existsSync(`${path}.bak`));
+    // A record is its head file or the backup that recovers it.
+    const existingRecordPath = (runId) => candidateRunPaths(runId).find((path) => _existsSync(path) || _existsSync(`${path}.bak`));
     // Runs this instance has written or read. Every write path re-saves a state it
     // obtained that way, so a known run whose record is now absent was deleted by
     // another writer; recreating it would resurrect the deleted run. A run this
@@ -181,6 +182,14 @@ export function createRunPersistence(cwd, fsOverride, options) {
             invalidateListCache();
         }
     };
+    // Merge a small write into the run's existing record; never creates one.
+    const updateExistingRecord = (runId, write) => mutate(runId, () => {
+        const path = existingRecordPath(runId);
+        if (!path)
+            return false;
+        knownRunIds.add(runId);
+        return write(path);
+    });
     // list() cache: recomputed lazily, invalidated synchronously by every
     // mutation this instance performs (save()/delete()) so a stale read can
     // never outlive a mutation this process made. A read from another process
@@ -329,13 +338,19 @@ export function createRunPersistence(cwd, fsOverride, options) {
         for (const path of candidateRunPaths(runId)) {
             // Delete every readable recovery candidate before releasing either lock:
             // a foreign resume that acquires between those operations must never find
-            // a surviving primary, backup, or legacy record to resurrect.
-            for (const sidecar of [`${path}.bak`, `${path}.tmp`, records.logPath(path)]) {
+            // a surviving primary, backup, or legacy record to resurrect. The backup
+            // goes before the head so a reader never recovers from it mid-delete; a
+            // backup alone is still a record, so removing it is a deletion.
+            const backup = `${path}.bak`;
+            if (unlinkData(backup))
+                deleted = true;
+            for (const sidecar of [`${path}.tmp`, records.logPath(path)]) {
                 unlinkData(sidecar);
                 fileStateCache.delete(sidecar);
             }
             if (unlinkData(path))
                 deleted = true;
+            fileStateCache.delete(backup);
             fileStateCache.delete(path);
             records.forget(path);
         }
@@ -388,7 +403,7 @@ export function createRunPersistence(cwd, fsOverride, options) {
             // atomic on the same filesystem). A .bak from the previous good save is the
             // recovery fallback if the primary is somehow truncated.
             mutate(state.runId, () => {
-                if (knownRunIds.has(state.runId) && !recordExists(state.runId))
+                if (knownRunIds.has(state.runId) && !existingRecordPath(state.runId))
                     throw new RunRecordDeletedError(state.runId);
                 records.save(path, state);
                 knownRunIds.add(state.runId);
@@ -411,22 +426,10 @@ export function createRunPersistence(cwd, fsOverride, options) {
             return null;
         },
         recoverInterrupted(runId) {
-            return mutate(runId, () => {
-                for (const path of candidateRunPaths(runId)) {
-                    if (_existsSync(path) || _existsSync(`${path}.bak`))
-                        return records.recoverInterrupted(path);
-                }
-                return false;
-            });
+            return updateExistingRecord(runId, (path) => records.recoverInterrupted(path));
         },
         updateMetadata(runId, patch, expectedDeliveryId) {
-            return mutate(runId, () => {
-                for (const path of candidateRunPaths(runId)) {
-                    if (_existsSync(path) || _existsSync(`${path}.bak`))
-                        return records.updateMetadata(path, patch, expectedDeliveryId);
-                }
-                return false;
-            });
+            return updateExistingRecord(runId, (path) => records.updateMetadata(path, patch, expectedDeliveryId));
         },
         load(runId) {
             // Try the primary, then the .bak — so a corrupt primary doesn't lose the run.

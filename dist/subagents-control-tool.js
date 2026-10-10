@@ -43,7 +43,7 @@ export function createSubagentsControlTool(host) {
                 return listRuns(manager);
             if (input.action === "read")
                 return readAgent(manager, input.runId, input.label);
-            const run = findRun(manager, input.runId);
+            const run = manager.findRun(input.runId);
             if (!run)
                 return controlError(input.action, input.runId, "run not found", ["list"]);
             try {
@@ -52,7 +52,7 @@ export function createSubagentsControlTool(host) {
                         return statusOf(manager, run);
                     case "stop":
                         if (!manager.stop(run.runId))
-                            return refused("stop", run);
+                            return refused(manager, "stop", run);
                         return actionResult("stop", "stopped", currentSummary(manager, run));
                     case "resume":
                         return await resumeRun(manager, run, input);
@@ -99,7 +99,7 @@ function statusOf(manager, run) {
 }
 function readAgent(manager, runId, label) {
     const run = runId
-        ? findRun(manager, runId)
+        ? manager.findRun(runId)
         : manager
             .listRuns()
             .slice()
@@ -145,7 +145,7 @@ async function resumeRun(manager, run, input) {
         reused = "Finished work is reused.";
     }
     if (!resumed)
-        return refused("resume", run);
+        return refused(manager, "resume", run);
     const summary = currentSummary(manager, run);
     return result(`action=resume result=resumed ${formatRunSummary(summary)}\n${reused} The result is delivered here when the run finishes.`, { action: "resume", result: "resumed", run: summary });
 }
@@ -156,11 +156,8 @@ async function messageAgent(manager, run, label, text) {
     }
     return result(`action=message result=queued runId=${run.runId} label=${JSON.stringify(label)} subagents=${delivered}\nIt reaches the subagent before its next model call; if the subagent finishes first, the instruction is dropped.`, { action: "message", result: "queued", runId: run.runId, label, subagents: delivered });
 }
-function findRun(manager, runId) {
-    return manager.listAllRuns().find((candidate) => candidate.runId === runId);
-}
 function currentSummary(manager, fallback) {
-    const current = findRun(manager, fallback.runId) ?? fallback;
+    const current = manager.findRun(fallback.runId) ?? fallback;
     return summarizeRun(current, manager.getSnapshot(current.runId));
 }
 function result(text, details) {
@@ -169,15 +166,24 @@ function result(text, details) {
 function actionResult(action, outcome, run) {
     return result(`action=${action} result=${outcome} ${formatRunSummary(run)}`, { action, result: outcome, run });
 }
-/** Why a stop or resume was refused, phrased as what to do instead. */
-function refused(action, run) {
-    const reasons = {
-        running: "it is still running; message it, or stop it first",
-        completed: "it already finished; pass edited tasks or script to rerun it, reusing unchanged work",
-    };
-    const reason = action === "resume"
-        ? (reasons[run.status] ?? "it is busy in another process or still settling; try again shortly")
-        : `cannot stop a ${run.status} run`;
+/**
+ * Why a stop or resume was refused, phrased as what to do instead. Judged from
+ * the record as it is now: another process may have deleted, finished, or
+ * resumed the run since it was looked up.
+ */
+function refused(manager, action, attempted) {
+    const run = manager.findRun(attempted.runId);
+    if (!run)
+        return controlError(action, attempted.runId, "run not found", ["list"]);
+    const busy = "it is busy in another process or still settling; try again shortly";
+    // A refused stop of a running or paused run means another process holds its lease.
+    const reasons = action === "resume"
+        ? {
+            running: "it is still running; message it, or stop it first",
+            completed: "it already finished; pass edited tasks or script to rerun it, reusing unchanged work",
+        }
+        : { running: "it is running in another session; stop it there", paused: busy };
+    const reason = reasons[run.status] ?? (action === "resume" ? busy : `cannot stop a ${run.status} run`);
     return controlError(action, run.runId, reason, allowedActions(run.status));
 }
 function controlError(action, runId, message, allowed) {

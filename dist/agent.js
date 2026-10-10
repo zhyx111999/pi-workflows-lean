@@ -459,6 +459,24 @@ let workflowAgentSeq = 0;
  * a spread-order regression that dropped the defaults would slip past a test
  * that only asserts the constant. The SDK dedupes, so overlap is harmless.
  */
+/**
+ * Refuse a run directory that Windows would silently swap for another one.
+ * fs calls reach it literally, but process creation normalizes the path: it
+ * drops a single trailing period from inner segments and all trailing periods
+ * and spaces from the last segment. The agent's shell would then run in a
+ * different (possibly existing) directory than its file tools.
+ */
+function assertProcessesStartIn(cwd, label) {
+    if (process.platform !== "win32")
+        return;
+    const segments = cwd.split("\\");
+    const startsIn = segments
+        .map((segment, index) => index === segments.length - 1 ? segment.replace(/[. ]+$/, "") : segment.replace(/([^.])\.$/, "$1"))
+        .join("\\");
+    if (startsIn === cwd)
+        return;
+    throw new WorkflowError(`agent cwd "${cwd}" cannot be used on Windows: processes started there run in "${startsIn}", because Windows drops trailing dots and spaces from path segments`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false, agentLabel: label });
+}
 export function subagentExcludedTools(extra, sessionExclude) {
     return [...DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ...(sessionExclude ?? []), ...(extra ?? [])];
 }
@@ -766,6 +784,7 @@ export class WorkflowAgent {
         // Per-call cwd (e.g. a worktree) needs coding tools bound to that directory,
         // since tools capture their cwd at construction and can't be relocated.
         const runCwd = realpathSync(options.cwd ?? this.cwd);
+        assertProcessesStartIn(runCwd, options.label);
         let usesBaseDirectory = false;
         try {
             usesBaseDirectory = runCwd === realpathSync(this.cwd);

@@ -1,21 +1,100 @@
 /**
+ * Per-agent git worktree isolation. When an agent requests `isolation: "worktree"`,
  * it runs in a git worktree on its own branch so parallel agents can edit the
  * same files without conflict. Results are NOT auto-merged. The path is logged
  * and kept by default (`keepWorktree: false` deletes after the call).
  */
-import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
-const exec = promisify(execFile);
 /**
  * Bound every git invocation (audit2 #21): a hung git (network FS, credential
  * helper prompt) must not block agent spawn or teardown forever. 30s is far
- * above any local worktree add/remove; maxBuffer caps a noisy stderr.
+ * above any local worktree add/remove.
  */
-const GIT_EXEC_OPTIONS = { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 };
-const gitOptions = (opts) => opts?.timeoutMs !== undefined ? { ...GIT_EXEC_OPTIONS, timeout: opts.timeoutMs } : GIT_EXEC_OPTIONS;
+const GIT_TIMEOUT_MS = 30_000;
+/** Cleanup after a failed add must not stall the spawn path. */
+const CLEANUP_TIMEOUT_MS = 5_000;
+/** Keep at most this much of each git output stream (caps a noisy stderr). */
+const GIT_OUTPUT_LIMIT = 1024 * 1024;
+const timeoutOf = (opts) => opts?.timeoutMs ?? GIT_TIMEOUT_MS;
+class GitTimeoutError extends Error {
+}
+/**
+ * Run git and resolve with its stdout. A timeout ends git's whole process
+ * tree before rejecting: killing git alone leaves its hooks running, and on
+ * Windows a hook whose cwd is the new worktree keeps that directory busy.
+ */
+function git(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        // On POSIX git leads its own process group, so one signal reaches its hooks too.
+        const child = spawn("git", args, {
+            detached: process.platform !== "win32",
+            stdio: ["ignore", "pipe", "pipe"],
+            windowsHide: true,
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8").on("data", (chunk) => {
+            if (stdout.length < GIT_OUTPUT_LIMIT)
+                stdout += chunk;
+        });
+        child.stderr.setEncoding("utf8").on("data", (chunk) => {
+            if (stderr.length < GIT_OUTPUT_LIMIT)
+                stderr += chunk;
+        });
+        let treeEnded;
+        const timer = timeoutMs > 0
+            ? setTimeout(() => {
+                treeEnded = endProcessTree(child);
+            }, timeoutMs)
+            : undefined;
+        child.on("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+        child.on("close", (code, signal) => {
+            clearTimeout(timer);
+            if (treeEnded) {
+                void treeEnded.then(() => reject(new GitTimeoutError(`git ${args.join(" ")} timed out after ${timeoutMs}ms`)));
+            }
+            else if (code === 0) {
+                resolve(stdout);
+            }
+            else {
+                const status = signal ? `signal ${signal}` : `exit code ${code}`;
+                reject(new Error(`git ${args.join(" ")} failed (${status}): ${stderr.trim()}`));
+            }
+        });
+    });
+}
+/** End a running child and every process it started; resolves once the kill was delivered. */
+function endProcessTree(child) {
+    // A descendant that inherited git's output pipes must not hold "close" open.
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    const pid = child.pid;
+    if (pid === undefined || child.exitCode !== null || child.signalCode !== null)
+        return Promise.resolve();
+    if (process.platform !== "win32") {
+        try {
+            process.kill(-pid, "SIGTERM");
+        }
+        catch {
+            child.kill("SIGTERM");
+        }
+        return Promise.resolve();
+    }
+    // TerminateProcess (child.kill) would end git.exe alone. taskkill /T finds
+    // the descendants through their parent, so it must run while git is alive.
+    return new Promise((resolve) => {
+        execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { timeout: CLEANUP_TIMEOUT_MS, windowsHide: true }, () => {
+            child.kill();
+            resolve();
+        });
+    });
+}
 function slug(name) {
     return (name
         .toLowerCase()
@@ -24,25 +103,30 @@ function slug(name) {
         .slice(0, 32) || "agent");
 }
 /**
- * Create an isolated worktree under `<repoRoot>/.pi/worktrees/<name>` on branch
- * `pi/wf/<name>`. A unique suffix gives each live execution its own ownership;
- * retained results from earlier executions are never reused or overwritten.
- * Journal identity is independent of this path. Returns a failed Worktree on error.
+ * Create an isolated worktree at `<repoRoot>/.pi/worktrees/<id>` on branch
+ * `pi/wf/<name slug>-<id>`. Each live execution owns a fresh id, so retained
+ * results from earlier executions are never reused or overwritten. Journal
+ * identity is independent of this path. Returns a failed Worktree on error.
  */
 export async function createWorktree(baseCwd, name, execOptions) {
-    const id = `${slug(name)}-${randomUUID()}`;
+    const timeoutMs = timeoutOf(execOptions);
     let repoRoot;
     try {
-        const { stdout } = await exec("git", ["-C", baseCwd, "rev-parse", "--show-toplevel"], gitOptions(execOptions));
-        repoRoot = stdout.trim();
+        repoRoot = (await git(["-C", baseCwd, "rev-parse", "--show-toplevel"], timeoutMs)).trim();
     }
     catch (error) {
         return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, "not a git repository") };
     }
-    const path = join(repoRoot, ".pi", "worktrees", id);
-    const branch = `pi/wf/${id}`;
+    let path;
+    let branch;
     try {
-        await exec("git", ["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"], gitOptions(execOptions));
+        ({ path, branch } = await reserveWorktree(repoRoot, name, timeoutMs));
+    }
+    catch (error) {
+        return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
+    }
+    try {
+        await git(["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"], timeoutMs);
         return { isolated: true, cwd: path, branch, repoRoot };
     }
     catch (error) {
@@ -53,33 +137,70 @@ export async function createWorktree(baseCwd, name, execOptions) {
         return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
     }
 }
+/** Random worktree id length in bytes; two hex characters each. */
+const WORKTREE_ID_BYTES = 4;
+/** Collisions are practically impossible; this only bounds a broken environment. */
+const WORKTREE_ID_ATTEMPTS = 8;
+/**
+ * Claim a fresh worktree path and branch. The id stays short because every
+ * checked-out path grows by the worktree location's length, and Git for
+ * Windows cannot create paths beyond MAX_PATH unless core.longpaths is set.
+ * Creating the empty directory is atomic, so no concurrent execution can
+ * claim the same id; skipping an id whose branch survives (its tree deleted by
+ * hand) means failure cleanup only ever removes what this execution created.
+ */
+async function reserveWorktree(repoRoot, name, timeoutMs) {
+    const parent = join(repoRoot, ".pi", "worktrees");
+    await mkdir(parent, { recursive: true });
+    for (let attempt = 0; attempt < WORKTREE_ID_ATTEMPTS; attempt++) {
+        const id = randomBytes(WORKTREE_ID_BYTES).toString("hex");
+        const path = join(parent, id);
+        try {
+            await mkdir(path);
+        }
+        catch (error) {
+            if (error.code === "EEXIST")
+                continue;
+            throw error;
+        }
+        const branch = `pi/wf/${slug(name)}-${id}`;
+        let free = false;
+        try {
+            free = !(await git(["-C", repoRoot, "for-each-ref", "--format=%(refname)", `refs/heads/${branch}`], timeoutMs)).trim();
+        }
+        finally {
+            if (!free)
+                await rmdir(path);
+        }
+        if (free)
+            return { path, branch };
+    }
+    throw new Error(`no free worktree id under ${parent}`);
+}
 /** Honest failure text: a killed (timed-out) git is not "not a git repository". */
 function describeGitFailure(error, fallback) {
-    if (typeof error === "object" && error !== null && error.killed) {
+    if (error instanceof GitTimeoutError)
         return "git timed out (slow or hung filesystem?)";
-    }
     return error instanceof Error ? error.message : fallback;
 }
 /** Best-effort cleanup after a failed `worktree add`: drop the half-created
  * branch and any partial checkout left by a killed git. All steps short-timeout
  * and failure-tolerant — the spawn path must not hang on cleanup. */
 async function cleanupFailedWorktreeAdd(repoRoot, path, branch) {
-    const quick = { timeout: 5_000, maxBuffer: 1024 * 1024 };
     // Order matters (r3 MAJOR): if the killed `worktree add` had already
     // REGISTERED the worktree, `branch -D` is refused ("used by worktree")
     // until the registration is gone. Deregister first, then delete the branch.
     try {
         // Registered case: removes the tree AND the registration in one step.
-        await exec("git", ["-C", repoRoot, "worktree", "remove", "--force", path], quick);
+        await git(["-C", repoRoot, "worktree", "remove", "--force", path], CLEANUP_TIMEOUT_MS);
     }
     catch {
         // best-effort — unregistered partial tree falls through to rm + targeted retry
     }
     try {
-        // maxRetries: a SIGTERM'd git can keep writing for a few hundred ms after
-        // the exec rejects — an unretried recursive rm aborts on the first
-        // ENOTEMPTY and leaves the partial tree behind (r2 MINOR).
-        await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 150 });
+        // git and its hooks have ended by now; the retries only absorb Windows
+        // releasing a file handle a moment after its process exits.
+        await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
     catch {
         // best-effort
@@ -88,13 +209,13 @@ async function cleanupFailedWorktreeAdd(repoRoot, path, branch) {
         // If manual removal left THIS tree registered, retry its removal now that
         // the path is gone. Do not run `git worktree prune`: that mutates unrelated
         // stale registrations elsewhere in the repository.
-        await exec("git", ["-C", repoRoot, "worktree", "remove", "--force", path], quick);
+        await git(["-C", repoRoot, "worktree", "remove", "--force", path], CLEANUP_TIMEOUT_MS);
     }
     catch {
         // best-effort
     }
     try {
-        await exec("git", ["-C", repoRoot, "branch", "-D", branch], quick);
+        await git(["-C", repoRoot, "branch", "-D", branch], CLEANUP_TIMEOUT_MS);
     }
     catch {
         // best-effort
@@ -105,7 +226,7 @@ export async function removeWorktree(wt, execOptions) {
     if (!wt.isolated || !wt.repoRoot)
         return;
     try {
-        await exec("git", ["-C", wt.repoRoot, "worktree", "remove", "--force", wt.cwd], gitOptions(execOptions));
+        await git(["-C", wt.repoRoot, "worktree", "remove", "--force", wt.cwd], timeoutOf(execOptions));
     }
     catch {
         // A failed removal (e.g. a locked tree) does not authorize deleting its branch.
@@ -113,7 +234,7 @@ export async function removeWorktree(wt, execOptions) {
     }
     if (wt.branch) {
         try {
-            await exec("git", ["-C", wt.repoRoot, "branch", "-D", wt.branch], gitOptions(execOptions));
+            await git(["-C", wt.repoRoot, "branch", "-D", wt.branch], timeoutOf(execOptions));
         }
         catch {
             // branch already deleted

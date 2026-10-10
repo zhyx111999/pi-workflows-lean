@@ -19,5 +19,11 @@ export interface WorkflowProjectPaths {
 }
 export declare function workflowHomeDir(): string;
 export declare function workflowUserSavedDir(): string;
+/**
+ * Storage key of the project at `cwd`: its folder name and a hash of its path.
+ * Windows paths are case-insensitive, so one directory has many spellings
+ * (drive letter and name case, 8.3 names); the hash uses the spelling stored
+ * on disk, which is also how Windows normally reports the path.
+ */
 export declare function workflowProjectKey(cwd: string): string;
 export declare function workflowProjectPaths(cwd: string): WorkflowProjectPaths;

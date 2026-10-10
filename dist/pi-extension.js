@@ -13,6 +13,7 @@ import { createWebTools } from "./web-tools.js";
 import { registerWorkflowCommands } from "./workflow-commands.js";
 import { installParentPromptHook, registerWorkflowProgressCommands } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
+import { workflowProjectKey } from "./workflow-paths.js";
 import { createWorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
@@ -207,7 +208,9 @@ export default function extension(pi) {
         // launching directory across /resume into another project; ctx.cwd is
         // the session header's project path.
         const sessionCwd = resolve(ctx.cwd || process.cwd());
-        if (sessionCwd !== resolve(manager.getCwd())) {
+        // Compare project keys, not path text: on Windows one directory has many
+        // spellings, and a false mismatch would pause live runs for nothing.
+        if (workflowProjectKey(sessionCwd) !== workflowProjectKey(manager.getCwd())) {
             // Cross-project: the live manager is for the wrong tree. Pause anything
             // still on it, then rebuild against the real session project.
             const stranded = {

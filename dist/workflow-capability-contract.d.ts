@@ -111,6 +111,8 @@ export interface WorkflowCapabilityContract {
     projectStaticReferenceFacts(): readonly StaticCapabilityFact[];
     diagnoseAlignment(evidence: AlignmentEvidence): readonly CapabilityDiagnostic[];
 }
+/** The complete set of agent() options; the runtime rejects any other key. */
+export declare const AGENT_OPTIONS: OptionShape;
 /** Authoritative versioned inventory used by runtime assembly and every static projection. */
 export declare const WORKFLOW_CAPABILITY_DEFINITION: WorkflowCapabilityDefinition;
 /** Validate and freeze a definition, throwing with diagnostics when its identities or references conflict. */

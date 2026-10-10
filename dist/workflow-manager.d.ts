@@ -327,6 +327,8 @@ export declare class WorkflowManager extends EventEmitter {
     private maxTerminalRunsInMemory;
     /** Executions by managed run, so pause/resume can wait for settlement before overlapping. */
     private readonly executions;
+    /** Runs deleted here or by another process; an execution still winding down finishes their deletion. */
+    private readonly deletedRuns;
     private persistence;
     private cwd;
     private concurrency;
@@ -378,6 +380,15 @@ export declare class WorkflowManager extends EventEmitter {
      * another session's undelivered work. No-op when `sessionId` is undefined.
      */
     adoptLiveRunsToSession(sessionId: string | undefined, previousSessionId?: string): number;
+    /**
+     * Re-home one in-memory run; false when it turned out to be deleted. The
+     * execution holding the lease owns the record and rewrites it. A settled copy
+     * only caches a record that another process may have resumed, finished, or
+     * deleted since, so it moves the owner field alone.
+     */
+    private moveRunToSession;
+    /** Point a record at another delivery session, leaving the rest as written. False when it is gone. */
+    private rehomeRecord;
     /**
      * On startup, any persisted run still marked "running" belongs to a process
      * that died mid-run (this fresh manager has it nowhere in memory). Reconcile it
@@ -545,19 +556,25 @@ export declare class WorkflowManager extends EventEmitter {
      */
     resume(runId: string, opts?: WorkflowResumeOptions): Promise<boolean>;
     /**
-     * Stop a running workflow.
+     * Stop a running or paused workflow.
      *
-     * Fast path: the run is live in this process (`this.runs`) — abort its
-     * controller and persist "aborted" as before. Fallback: the run is not in
-     * memory but is persisted as "running" or "paused" — e.g. it belongs to a
-     * prior pi session that this process's recoverStaleRuns() flipped to
-     * "paused" on disk without repopulating this.runs (see subagents-control-tool's
-     * findRun(), which resolves candidates from disk via listAllRuns()). There is no
-     * live controller to abort in that case — the run simply isn't executing in
-     * this process — so mark it aborted on disk directly, mirroring resume()'s
-     * persisted-fallback lease handling.
+     * Only the execution that holds the run's lease owns it: abort it and persist
+     * "aborted". Like pause(), it keeps the lease: the execution may drain for a
+     * while and its executeRun() tail writes the run once more, so releasing now
+     * would let another process resume the run and then lose that record to the
+     * tail. The tail releases the lease and makes the run eviction-eligible. Any
+     * other run is stopped through its record under a fresh lease (see stopRecord()).
      */
     stop(runId: string): boolean;
+    /**
+     * Stop a run that no execution in this process owns: one from an earlier
+     * session, or one whose execution here has settled. A settled local copy only
+     * caches the record, which another process may since have resumed (and still
+     * be running), finished, or deleted, so the record decides. It is re-read
+     * under the lease; a run another live process executes cannot be leased.
+     */
+    private stopRecord;
+    private markStopped;
     /**
      * Queue an instruction into every running agent of a live run that has this
      * label. Resolves to the number of sessions that received it: 0 when the run
@@ -579,6 +596,19 @@ export declare class WorkflowManager extends EventEmitter {
     listRuns(): PersistedRunState[];
     /** All persisted runs regardless of session (used by cross-session recovery). */
     listAllRuns(): PersistedRunState[];
+    /**
+     * One run's record, read now rather than from the list cache, in any session;
+     * undefined when it does not exist. A settled local copy of a run that another
+     * process deleted is dropped here, so every caller agrees the run is gone.
+     */
+    findRun(runId: string): PersistedRunState | undefined;
+    private readRecordPreview;
+    /**
+     * Drop a settled local copy whose record another process deleted. A copy
+     * still executing holds the lease, and its next write detects the deletion;
+     * a record that exists but fails validation is damaged, not deleted.
+     */
+    private dropIfDeleted;
     /**
      * Get snapshot of a run.
      */

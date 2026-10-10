@@ -5,9 +5,10 @@
 /**
  * Generate a deep-research workflow that uses the real web_search/web_fetch tools.
  *
- * The script is static and reads its inputs from `args` (question/angles/minSupport),
+ * The script is static and reads its inputs from `args` (question/angles),
  * so the question is never string-interpolated into source — no escaping hazards.
- * Inject the web tools at run time via the agent's `tools` option.
+ * The run supplies the web tools (see builtin-workflows.ts). Every gathered source
+ * goes back to the parent model, which checks the claims itself.
  */
 export function generateDeepResearchWorkflow() {
     return `export const meta = {
@@ -21,7 +22,6 @@ export function generateDeepResearchWorkflow() {
 
 const question = (args && args.question) || ''
 const angles = (args && args.angles) || 4
-const minSupport = (args && args.minSupport) || 2
 
 phase('Queries')
 const plan = await agent(
@@ -48,5 +48,5 @@ const gathered = await parallel(queries.map((q, i) => () =>
 ))
 const allSources = gathered.filter(Boolean).flatMap((g) => (g && g.sources) || [])
 
-return { question, queries, minSupport, sources: allSources }`;
+return { question, queries, sources: allSources }`;
 }
