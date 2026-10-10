@@ -159,6 +159,7 @@ export const AGENT_OPTIONS: OptionShape = {
       "non-empty absolute existing directory; resolved to its real path",
       "coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host",
       "cannot combine with worktree isolation",
+      "on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory",
     ]),
     option("thread", "string", true, null, ["non-empty name; same-name calls must be sequential"]),
     option("agentType", "string", true, null, ["must come from provided context"], "agent-types"),

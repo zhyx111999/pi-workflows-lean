@@ -728,6 +728,63 @@ describe("workflow extension - tool availability", () => {
     }
   });
 
+  it("keeps the manager when session_start spells the same project differently (Windows)", {
+    skip: process.platform !== "win32" && "only Windows has case-insensitive spellings of one directory",
+  }, async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-samecwd-"));
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        discardWorkflowRuntime(process.cwd());
+        const piFor = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
+          ({
+            registerTool: () => {},
+            registerCommand: () => {},
+            getCommands: () => [],
+            on: (event: string, handler: (...args: any[]) => any) => {
+              if (!handlers[event]) handlers[event] = [];
+              handlers[event].push(handler);
+            },
+            getActiveTools: () => [],
+            setActiveTools: () => {},
+            sendMessage: () => {},
+          }) as unknown as ExtensionAPI;
+        const { default: installExtension } = await import("../src/pi-extension.js");
+        const first: Record<string, Array<(...args: any[]) => any>> = {};
+        installExtension(piFor(first));
+        first.session_shutdown?.[0]?.({ reason: "reload" });
+        const factoryRuntime = takeWorkflowRuntime(process.cwd());
+        assert.ok(factoryRuntime);
+        handoffWorkflowRuntime(factoryRuntime);
+
+        const second: Record<string, Array<(...args: any[]) => any>> = {};
+        installExtension(piFor(second));
+        const cwd = resolve(process.cwd());
+        const otherSpelling = cwd === cwd.toUpperCase() ? cwd.toLowerCase() : cwd.toUpperCase();
+        second.session_start?.[0]?.(
+          { reason: "reload" },
+          {
+            cwd: otherSpelling,
+            model: undefined,
+            modelRegistry: {},
+            sessionManager: { getSessionId: () => "same-project-session" },
+            ui: { setWidget: () => {}, notify: () => {} },
+          },
+        );
+        second.session_shutdown?.[0]?.({ reason: "reload" });
+        const kept = claimWorkflowRuntime(process.cwd()).compatible;
+        assert.equal(
+          kept?.manager,
+          factoryRuntime.manager,
+          "another spelling of the same project is not a project switch",
+        );
+        if (kept) handoffWorkflowRuntime(kept);
+        discardWorkflowRuntime(process.cwd());
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   it("rebuilds the manager when session_start ctx.cwd differs from factory cwd", async () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-crosscwd-"));
     const otherProject = mkdtempSync(join(tmpdir(), "pi-dw-other-project-"));
