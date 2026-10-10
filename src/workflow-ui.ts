@@ -1,16 +1,22 @@
 /**
- * Interactive `/workflows` navigator, modeled on Claude Code's view:
+ * Interactive `/workflows` navigator:
  *
- *   runs ──enter──▶ phases ──enter──▶ agents ──enter──▶ agent detail
- *        ◀──esc───        ◀──esc────         ◀──esc────
+ *   runs ──enter──▶ phases ──enter──▶ agents ──enter──▶ agent detail ──enter──▶ full pager
+ *        ◀──esc───        ◀──esc────         ◀──esc────              ◀──esc────
  *        ◀── (saved items in runs view) ──enter──▶ saved detail
  *
  * Keys: ↑/↓ (or j/k) select · enter/→ drill in · esc/← back (esc at top closes)
- *       On runs: p pause · x stop · r restart · s save · q quit
- *       On saved: x delete · q quit
+ *       On runs: / filter · p pause · x stop · r restart · s save · q quit
+ *       On saved: r rename · x delete · q quit
  *
- * The state machine and line rendering are pure and unit-tested; the pi-tui
- * Component shell (openWorkflowNavigator) wires them to live manager events.
+ * How the pieces fit:
+ * - NavigatorModel reads runs and saved workflows, preferring live snapshots.
+ * - NavigatorState is the view stack, selection, input mode, and pending
+ *   confirmation; it never touches the terminal.
+ * - renderNavigator draws one frame from the two (views live in ./navigator/).
+ * - keyToAction maps a key to an action; ./navigator/key-input.ts applies it.
+ * - openWorkflowNavigator wires them into a pi-tui overlay that redraws on
+ *   manager events.
  */
 
 import {
@@ -19,8 +25,8 @@ import {
   getMarkdownTheme,
   type Theme,
 } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
-import { parseKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component, Focusable, MarkdownTheme, OverlayAnchor, TUI } from "@earendil-works/pi-tui";
+import { parseKey } from "@earendil-works/pi-tui";
 import type { ThemeLike, WorkflowAgentSnapshot } from "./display.js";
 import { asText } from "./navigator/as-text.js";
 import {
@@ -41,6 +47,9 @@ import {
   type VisibleNavigatorItem,
   visibleItems,
 } from "./navigator/items.js";
+import { handleConfirmKey, handleTextInput, runBrowseAction } from "./navigator/key-input.js";
+import { subscribeToRunUpdates } from "./navigator/live-updates.js";
+import { boxOverlayLines, overlayContentRows, overlayInnerWidth, overlayOptions } from "./navigator/overlay-box.js";
 import { persistedToSnapshot } from "./navigator/persisted-snapshot.js";
 import { NavigatorTextRenderCache } from "./navigator/render-cache.js";
 import { renderNavigatorFrame } from "./navigator/render-frame.js";
@@ -54,20 +63,10 @@ import {
   type RunSnapshot,
   runRow,
 } from "./navigator/rows.js";
+import { currentSnapshot, type NavigatorSession } from "./navigator/session.js";
 import type { PersistedRunState } from "./run-persistence.js";
-import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
-import {
-  isSafeSavedWorkflowName,
-  type SavedWorkflow,
-  type SavedWorkflowMutationResult,
-  type WorkflowStorage,
-} from "./workflow-saved.js";
-
-// Border characters for the overlay box
-const BOX_BORDER_LEFT = "│ ";
-const BOX_BORDER_RIGHT = " │";
-const BOX_BORDER_OVERHEAD = BOX_BORDER_LEFT.length + BOX_BORDER_RIGHT.length;
+import type { SavedWorkflow, SavedWorkflowMutationResult, WorkflowStorage } from "./workflow-saved.js";
 
 export type ViewKind = "runs" | "phases" | "agents" | "detail" | "savedDetail";
 export type NavigatorInputMode = "browse" | "filter" | "rename" | "confirm";
@@ -561,7 +560,7 @@ export function renderNavigator(
   );
 }
 
-/** What a key press should do. Pure mapping from a parsed key id to an action. */
+/** What a key press should do. */
 export type NavAction =
   | { type: "move"; delta: number }
   | { type: "page"; direction: -1 | 1 }
@@ -581,14 +580,13 @@ export type NavAction =
   | { type: "rename" }
   | { type: "none" };
 
+/** Pure mapping from a parsed key id to an action; a key's meaning depends on the view and the selected item's kind. */
 export function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?: "run" | "saved"): NavAction {
   switch (keyId) {
     case "up":
-      return { type: "move", delta: -1 };
-    case "down":
-      return { type: "move", delta: 1 };
     case "k":
       return { type: "move", delta: -1 };
+    case "down":
     case "j":
       return { type: "move", delta: 1 };
     case "pageUp":
@@ -642,15 +640,6 @@ export function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?
   }
 }
 
-function currentCount(state: NavigatorState, model: NavigatorModel): number {
-  if (state.kind === "runs") return model.visible(state.filter).items.length;
-  if (state.kind === "phases" && state.runId) return model.phases(state.runId).length;
-  if (state.kind === "agents" && state.runId && state.phase) return model.agents(state.runId, state.phase).length;
-  return 0;
-}
-
-import type { OverlayAnchor } from "@earendil-works/pi-tui";
-
 export interface NavigatorOptions {
   storage?: WorkflowStorage;
   /** Live storage accessor when the extension may replace storage after session_start. */
@@ -680,296 +669,28 @@ export function openWorkflowNavigator(
 ): Promise<void> {
   const model = new NavigatorModel(manager, () => opts.getStorage?.() ?? opts.storage);
   const state = new NavigatorState();
+  const session: NavigatorSession = { pi, manager, ui, options: opts, model, state };
 
   return ui.custom<void>(
     (tui: TUI, theme: Theme, _keybindings, done: (r: undefined) => void) => {
       const rerender = () => tui.requestRender();
       const markdownTheme = getMarkdownTheme();
       const renderCache = new NavigatorTextRenderCache();
-      const events = [
-        "agentStart",
-        "agentModel",
-        "agentEnd",
-        "phase",
-        "log",
-        "tokenUsage",
-        "complete",
-        "error",
-        "stopped",
-        "paused",
-        "resumed",
-      ];
-      const onEvent = () => {
-        // No eager model.visible() here (audit2 #23): each call rebuilds the
-        // entire visible model (storage.list() + a SHA-256 per saved script +
-        // runs aggregation), and events fire at ~4/s per streaming agent. The
-        // render frame computes model.visible() and reconciles selection
-        // itself, so the rebuild is coalesced into the frame.
-        rerender();
-      };
-      for (const ev of events) manager.on(ev, onEvent);
-
-      // Histories can update several times per second for every parallel agent.
-      // Only agent detail consumes those updates, so ignore unrelated agents and
-      // coalesce matching updates into a modest trailing redraw cadence.
-      let historyRenderTimer: ReturnType<typeof setTimeout> | undefined;
-      let historyRenderTarget: { runId: string; agentId: number } | undefined;
-      const onAgentHistory = (event: { runId: string; agentId?: number }) => {
-        if (
-          state.kind !== "detail" ||
-          event.runId !== state.runId ||
-          event.agentId === undefined ||
-          event.agentId !== state.agentId
-        ) {
-          return;
-        }
-        // Keep the newest matching target even while a redraw is already
-        // scheduled. If navigation switches agents inside the coalescing window,
-        // the pending redraw should follow the new agent rather than the event
-        // that originally created the shared timer.
-        historyRenderTarget = { runId: event.runId, agentId: event.agentId };
-        if (historyRenderTimer) return;
-        historyRenderTimer = setTimeout(() => {
-          historyRenderTimer = undefined;
-          const target = historyRenderTarget;
-          historyRenderTarget = undefined;
-          if (target && state.kind === "detail" && target.runId === state.runId && target.agentId === state.agentId) {
-            rerender();
-          }
-        }, 125);
-        (historyRenderTimer as { unref?: () => void }).unref?.();
-      };
-      manager.on("agentHistory", onAgentHistory);
-
-      const cleanup = () => {
-        for (const ev of events) manager.off(ev, onEvent);
-        manager.off("agentHistory", onAgentHistory);
-        if (historyRenderTimer) clearTimeout(historyRenderTimer);
-        historyRenderTimer = undefined;
-        historyRenderTarget = undefined;
+      const unsubscribe = subscribeToRunUpdates(manager, state, rerender);
+      const close = () => {
+        unsubscribe();
+        done(undefined);
       };
 
+      // Route each key by input mode; every handled key ends in one redraw.
       const act = (data: string) => {
         const key = parseKey(data);
-        const snapshot = () => model.visible(state.effectiveFilter());
-        const notifyMutation = (verb: string, result: SavedWorkflowMutationResult) => {
-          if (result.ok) ui.notify(verb, "info");
-          else ui.notify(result.message, "error");
-        };
-        const executeConfirmed = (action: ConfirmKind, target: ItemIdentity) => {
-          if (target.kind === "run") {
-            const item = model.runs().find((candidate) => candidate.runId === target.runId);
-            if (!item) return;
-            const status = item.status;
-            if (action === "pause") {
-              if (status !== "running") {
-                ui.notify(`Cannot pause ${target.runId}`, "warning");
-                return;
-              }
-              ui.notify(
-                manager.pause(target.runId) ? `Paused ${target.runId}` : `Cannot pause ${target.runId}`,
-                "info",
-              );
-            } else if (action === "stop") {
-              if (status !== "running" && status !== "paused") {
-                ui.notify(`Cannot stop ${target.runId}`, "warning");
-                return;
-              }
-              ui.notify(manager.stop(target.runId) ? `Stopped ${target.runId}` : `Cannot stop ${target.runId}`, "info");
-            }
-            return;
-          }
-          if (action !== "deleteSaved") return;
-          const workflow = model.saved().find((candidate) => sameIdentity(target, savedIdentity(candidate)));
-          if (!workflow) {
-            ui.notify("Saved workflow no longer exists.", "warning");
-            return;
-          }
-          const result = model.deleteSaved(workflow);
-          notifyMutation(`Deleted /${workflow.name}`, result);
-          if (result.ok && state.kind === "savedDetail") state.back();
-        };
         try {
-          // Text modes own all keystrokes. This prevents pasted text, Unicode, or
-          // control sequences from leaking through to destructive browse bindings.
-          if (state.mode === "filter" || state.mode === "rename") {
-            if (key === "escape" || key === "esc") state.cancelInput();
-            else if (key === "backspace" || data === String.fromCharCode(127) || data === "\b") state.backspaceInput();
-            else if (key === "enter" || key === "return") {
-              if (state.mode === "filter") state.applyFilter(model);
-              else if (!isSafeSavedWorkflowName(state.draft)) {
-                ui.notify(
-                  "Saved workflow name must be a non-empty slash-command-safe name without whitespace, controls, or paths.",
-                  "warning",
-                );
-              } else {
-                const rename = state.takeRename();
-                if (rename) {
-                  const workflow = model
-                    .saved()
-                    .find((candidate) => sameIdentity(rename.target, savedIdentity(candidate)));
-                  if (!workflow) ui.notify("Saved workflow no longer exists.", "warning");
-                  else if (rename.name === workflow.name) ui.notify(`Kept /${workflow.name}`, "info");
-                  else {
-                    const availability = savedWorkflowCommandAvailability(pi, rename.name);
-                    if (!availability.ok) ui.notify(availability.message, "error");
-                    else {
-                      const result = model.renameSaved(workflow, rename.name);
-                      if (!result.ok) ui.notify(result.message, "error");
-                      else if (!result.workflow) ui.notify("Rename did not return a saved workflow.", "error");
-                      else {
-                        const saved = result.workflow;
-                        state.replaceSavedIdentity(rename.target, saved);
-                        const registered = registerSavedWorkflow(
-                          pi,
-                          opts.getCwd ?? (() => opts.cwd ?? process.cwd()),
-                          saved,
-                          opts.getManager ?? (() => manager),
-                          () => (opts.getStorage?.() ?? opts.storage)?.load(saved.name) != null,
-                          () => (opts.getStorage?.() ?? opts.storage)?.load(saved.name),
-                        );
-                        if (!registered.ok)
-                          ui.notify(`Renamed /${workflow.name} to /${saved.name}, but ${registered.message}`, "error");
-                        else ui.notify(`Renamed /${workflow.name} to /${saved.name}`, "info");
-                      }
-                    }
-                  }
-                }
-              }
-            } else state.appendInput(data);
-            rerender();
-            return;
-          }
-          if (state.mode === "confirm") {
-            const pendingAction = state.confirmationAction;
-            const action: ConfirmKind | undefined =
-              (pendingAction === "pause" && key === "p") ||
-              ((pendingAction === "stop" || pendingAction === "deleteSaved") && key === "x")
-                ? pendingAction
-                : undefined;
-            const target = action ? state.confirm(action, snapshot()) : undefined;
-            if (target && action) executeConfirmed(action, target);
-            else state.cancelConfirmation();
-            rerender();
-            return;
-          }
-
-          const item = state.kind === "runs" ? state.currentItem(snapshot()) : undefined;
-          const action = keyToAction(key, state.kind, item?.kind);
-          switch (action.type) {
-            case "move":
-              if (state.kind === "runs") state.moveRuns(action.delta, snapshot());
-              else state.move(action.delta, currentCount(state, model), snapshot());
-              break;
-            case "page":
-              state.movePage(action.direction, currentCount(state, model), snapshot());
-              break;
-            case "jump":
-              state.jump(action.edge, currentCount(state, model), snapshot());
-              break;
-            case "toggleTail":
-              state.toggleTail();
-              break;
-            case "togglePager":
-              state.togglePager();
-              break;
-            case "openPager":
-              state.openPager();
-              break;
-            case "filter":
-              state.beginFilter();
-              break;
-            case "rename": {
-              const workflow = state.activeSaved(snapshot(), model.saved());
-              if (workflow) state.beginRename(workflow);
-              break;
-            }
-            case "drill":
-              state.drill(model, snapshot());
-              break;
-            case "back":
-              if (!state.back()) {
-                cleanup();
-                done(undefined);
-              }
-              break;
-            case "close":
-              cleanup();
-              done(undefined);
-              return;
-            case "deleteSaved": {
-              const workflow = state.activeSaved(snapshot(), model.saved());
-              if (workflow) state.beginConfirmation("deleteSaved", savedIdentity(workflow), snapshot());
-              break;
-            }
-            case "pause": {
-              const runId = state.activeRunId(model, snapshot());
-              if (runId) state.beginConfirmation("pause", { kind: "run", runId }, snapshot());
-              break;
-            }
-            case "stop": {
-              const runId = state.activeRunId(model, snapshot());
-              if (runId) state.beginConfirmation("stop", { kind: "run", runId }, snapshot());
-              break;
-            }
-            case "restart": {
-              const id = state.activeRunId(model, snapshot());
-              const run = id ? manager.listRuns().find((candidate) => candidate.runId === id) : undefined;
-              if (!run?.script)
-                ui.notify(id ? `Cannot restart ${id} (no script saved)` : "No run selected to restart", "warning");
-              else {
-                try {
-                  const { runId: newId } = manager.startInBackground(run.script, run.args);
-                  ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
-                } catch (error) {
-                  ui.notify(
-                    `Failed to restart ${run.workflowName || "workflow"}: ${error instanceof Error ? error.message : error}`,
-                    "error",
-                  );
-                }
-              }
-              break;
-            }
-            case "save": {
-              const id = state.activeRunId(model, snapshot());
-              const run = id ? manager.listRuns().find((candidate) => candidate.runId === id) : undefined;
-              const storage = opts.getStorage?.() ?? opts.storage;
-              if (!run?.script) ui.notify("No saved run script to save", "warning");
-              else if (!storage) ui.notify("Saving is not available (no storage)", "error");
-              else {
-                const name = run.workflowName || "workflow";
-                const availability = savedWorkflowCommandAvailability(pi, name);
-                if (!availability.ok) {
-                  ui.notify(availability.message, "error");
-                  break;
-                }
-                try {
-                  const saved = storage.save({
-                    name,
-                    description: run.workflowName,
-                    script: run.script,
-                    location: "project",
-                  });
-                  const registered = registerSavedWorkflow(
-                    pi,
-                    opts.getCwd ?? (() => opts.cwd ?? process.cwd()),
-                    saved,
-                    opts.getManager ?? (() => manager),
-                    () => (opts.getStorage?.() ?? opts.storage)?.load(saved.name) != null,
-                    () => (opts.getStorage?.() ?? opts.storage)?.load(saved.name),
-                  );
-                  ui.notify(
-                    registered.ok ? `Saved /${name}` : `Saved /${name}, but ${registered.message}`,
-                    registered.ok ? "info" : "error",
-                  );
-                } catch (error) {
-                  ui.notify(error instanceof Error ? error.message : String(error), "error");
-                }
-              }
-              break;
-            }
-            default:
-              return;
+          if (state.mode === "filter" || state.mode === "rename") handleTextInput(session, key, data);
+          else if (state.mode === "confirm") handleConfirmKey(session, key);
+          else {
+            const item = state.kind === "runs" ? state.currentItem(currentSnapshot(session)) : undefined;
+            if (!runBrowseAction(session, keyToAction(key, state.kind, item?.kind), close)) return;
           }
         } catch (error) {
           ui.notify(`Workflow action failed: ${error instanceof Error ? error.message : error}`, "error");
@@ -977,63 +698,27 @@ export function openWorkflowNavigator(
         rerender();
       };
 
-      // Wrap the rendered content inside a visual box border for better
-      // screen-boundary contrast. Follows the same pattern as pi-ask-user:
-      //   top border ──╭───╮
-      //   side borders │ … │
-      //   bottom border╰───╯
-      let _focused = false;
+      let focused = false;
       const component: Component & Focusable & { dispose?(): void } = {
         get focused(): boolean {
-          return _focused;
+          return focused;
         },
         set focused(v: boolean) {
-          _focused = v;
+          focused = v;
         },
         render: (width: number) => {
-          // Brighter border when focused, muted when not
-          const borderColor = (s: string) => (_focused ? theme.fg("accent", s) : theme.fg("borderMuted", s));
-          const titleColor = (s: string) => (_focused ? theme.fg("dim", theme.bold(s)) : theme.fg("muted", s));
-          const bgColor = (s: string) => theme.bg("customMessageBg", s);
-          const innerWidth = Math.max(10, width - BOX_BORDER_OVERHEAD);
-          // Match the navigator's own viewport to the overlay's 92% maxHeight;
-          // otherwise the host truncates the footer and bottom border before the
-          // pager gets a chance to scroll them into view.
-          const terminalRows = tui.terminal?.rows ?? 24;
-          const overlayRows = Math.max(8, Math.floor(terminalRows * 0.92));
-          const contentRows = Math.max(6, overlayRows - 2); // top + bottom box borders
-          const raw = model.withRenderFrame(() =>
-            renderNavigatorFrame(state, model, innerWidth, theme, contentRows, markdownTheme, renderCache),
+          const rows = overlayContentRows(tui.terminal?.rows ?? 24);
+          const lines = model.withRenderFrame(() =>
+            renderNavigatorFrame(state, model, overlayInnerWidth(width), theme, rows, markdownTheme, renderCache),
           );
-          const title = titleColor(" workflows ");
-          const topBorder =
-            borderColor("╭─") + title + borderColor("─".repeat(Math.max(0, innerWidth - 10))) + borderColor("╮");
-          const botBorder = borderColor(`╰${"─".repeat(Math.max(0, innerWidth + 2))}╯`);
-          const wrapAndBg = (line: string) => {
-            const padded = truncateToWidth(line, innerWidth, "", true);
-            const fullLine = borderColor(BOX_BORDER_LEFT) + padded + borderColor(BOX_BORDER_RIGHT);
-            // Fill trailing whitespace for consistent background across the width
-            const trailingPad = width - visibleWidth(fullLine);
-            return bgColor(fullLine + (trailingPad > 0 ? " ".repeat(trailingPad) : ""));
-          };
-          return [bgColor(topBorder), ...raw.map(wrapAndBg), bgColor(botBorder)];
+          return boxOverlayLines(lines, width, theme, focused);
         },
         handleInput: (data: string) => act(data),
         invalidate: () => {},
-        dispose: () => cleanup(),
+        dispose: () => unsubscribe(),
       };
       return component;
     },
-    // A roomy overlay with visual margin so borders stand out from the terminal edge.
-    // Supports sidebar mode via opts.anchor="right-center".
-    {
-      overlay: true,
-      overlayOptions: {
-        width: opts.anchor === "right-center" ? "60%" : "94%",
-        maxHeight: "92%",
-        anchor: opts.anchor ?? "center",
-        margin: 1,
-      },
-    },
+    { overlay: true, overlayOptions: overlayOptions(opts.anchor) },
   );
 }
