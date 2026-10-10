@@ -14,27 +14,42 @@ import {
 import packageJson from "../package.json" with { type: "json" };
 import {
   checkWorkflowContextMeasurement,
+  measuredTools,
   measureWorkflowContextSurfaces,
+  permanentToolPromptLines,
   renderWorkflowContextMeasurement,
   WORKFLOW_CONTEXT_MEASUREMENT_PATH,
 } from "../src/workflow-context-measurement.js";
-import { createWorkflowTool } from "../src/workflow-tool.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 const ROOT = join(import.meta.dirname, "..");
 const CONTEXT_SCRIPT = "scripts/generate-workflow-context-measurement.ts";
 
-test("workflow context measurement reports Pi-rendered prompt and provider tool definition separately", async () => {
+test("workflow context measurement reports the Pi-rendered prompt and each provider tool definition", async () => {
   const artifact = measureWorkflowContextSurfaces(ROOT);
   assert.deepEqual(JSON.parse(renderWorkflowContextMeasurement()), artifact);
 
-  assert.equal(artifact.formatVersion, 3);
+  assert.equal(artifact.formatVersion, 4);
   assert.equal(artifact.encoding, "utf8");
-  assert.deepEqual(artifact.sources, ["src/workflow-tool.ts", "skills/workflow-authoring", "package.json#pi.skills"]);
-  assert.equal(artifact.surfaces.permanentWorkflowPrompt.serialization, "UTF-8 bytes of LF-joined Pi prompt lines");
+  assert.deepEqual(artifact.sources, [
+    "src/subagents-tool.ts",
+    "src/subagents-control-tool.ts",
+    "skills/workflow-authoring",
+    "package.json#pi.skills",
+  ]);
+  assert.equal(artifact.surfaces.permanentToolPrompt.serialization, "UTF-8 bytes of LF-joined Pi prompt lines");
+  const definitions = artifact.surfaces.providerVisibleToolDefinitions;
   assert.equal(
-    artifact.surfaces.providerVisibleWorkflowToolDefinition.serialization,
-    "UTF-8 bytes of JSON.stringify({ name, description, parameters })",
+    definitions.serialization,
+    "sum of UTF-8 bytes of JSON.stringify({ name, description, parameters }) per tool",
+  );
+  assert.deepEqual(
+    definitions.tools.map(({ name }) => name),
+    ["subagents", "subagents_control"],
+  );
+  assert.equal(
+    definitions.bytes,
+    definitions.tools.reduce((sum, tool) => sum + tool.bytes, 0),
   );
   // Every skill in package.json's pi.skills contributes to the always-on
   // discovery tally — not just workflow-authoring — so adding a new skill
@@ -53,6 +68,10 @@ test("workflow context measurement reports Pi-rendered prompt and provider tool 
   for (const skill of artifact.surfaces.registeredSkillsDiscovery.skills) {
     assert.ok(skill.bytes > 0, `${skill.root} should report a positive discovery byte count`);
   }
+  assert.equal(
+    artifact.surfaces.ordinaryWorkflowOwnedAlwaysOn.bytes,
+    artifact.surfaces.permanentToolPrompt.bytes + definitions.bytes + artifact.surfaces.registeredSkillsDiscovery.bytes,
+  );
   assert.equal(artifact.surfaces.workflowAuthoringSkillCorpus.files, 20);
   assert.ok(artifact.surfaces.workflowAuthoringSkillCorpus.bytes > 0);
   assert.equal(artifact.surfaces.representativeAuthoringProfiles.profiles.length, 6);
@@ -69,21 +88,20 @@ test("workflow context measurement reports Pi-rendered prompt and provider tool 
     .sort((a, b) => a - b);
   assert.equal(artifact.surfaces.representativeAuthoringProfiles.medianBytes, (profileBytes[2] + profileBytes[3]) / 2);
 
-  await withRenderedWorkflow(async ({ systemPrompt, promptLines, wrappedWorkflow }) => {
+  await withRenderedTools(async ({ systemPrompt, promptLines, wrappedTools }) => {
     const expectedLines = new Set(promptLines);
     const renderedLines = systemPrompt.split("\n").filter((line) => expectedLines.has(line));
-    assert.deepEqual(renderedLines, promptLines, "Pi should render each workflow prompt line exactly once");
+    assert.deepEqual(renderedLines, promptLines, "Pi should render each tool prompt line exactly once");
+    assert.equal(artifact.surfaces.permanentToolPrompt.bytes, Buffer.byteLength(renderedLines.join("\n"), "utf8"));
 
-    const providerDefinition = JSON.stringify({
-      name: wrappedWorkflow.name,
-      description: wrappedWorkflow.description,
-      parameters: wrappedWorkflow.parameters,
-    });
-    assert.equal(artifact.surfaces.permanentWorkflowPrompt.bytes, Buffer.byteLength(renderedLines.join("\n"), "utf8"));
-    assert.equal(
-      artifact.surfaces.providerVisibleWorkflowToolDefinition.bytes,
-      Buffer.byteLength(providerDefinition, "utf8"),
-    );
+    for (const [index, wrapped] of wrappedTools.entries()) {
+      const providerDefinition = JSON.stringify({
+        name: wrapped.name,
+        description: wrapped.description,
+        parameters: wrapped.parameters,
+      });
+      assert.equal(definitions.tools[index]?.bytes, Buffer.byteLength(providerDefinition, "utf8"));
+    }
   });
 });
 
@@ -99,7 +117,7 @@ test("workflow context measurement generation is deterministic and committed art
   assert.match(packageJson.scripts.test, /npm run context:check/);
 });
 
-test("context freshness command prints both current byte counts", () => {
+test("context freshness command prints every current byte count", () => {
   // Run the script that `npm run context:check` runs through Node itself: spawning
   // `npm` directly fails on Windows, where it is a .cmd shim that needs a shell.
   const output = execFileSync(process.execPath, ["--import", "tsx", CONTEXT_SCRIPT, "--check"], {
@@ -107,8 +125,10 @@ test("context freshness command prints both current byte counts", () => {
     encoding: "utf8",
   });
 
-  assert.match(output, /Permanent workflow prompt: \d+ bytes/);
-  assert.match(output, /Provider-visible workflow tool definition: \d+ bytes/);
+  assert.match(output, /Permanent tool prompt: \d+ bytes/);
+  assert.match(output, /Provider-visible tool definitions: \d+ bytes/);
+  assert.match(output, /- subagents: \d+ bytes/);
+  assert.match(output, /- subagents_control: \d+ bytes/);
   assert.match(output, /Registered skills discovery \(all \d+\): \d+ bytes/);
   assert.match(output, /- skills\/workflow-authoring: \d+ bytes/);
   assert.match(output, /- skills\/workflow-patterns: \d+ bytes/);
@@ -117,11 +137,11 @@ test("context freshness command prints both current byte counts", () => {
   assert.match(output, /measurement is fresh/i);
 });
 
-async function withRenderedWorkflow(
+async function withRenderedTools(
   inspect: (surface: {
     systemPrompt: string;
     promptLines: string[];
-    wrappedWorkflow: { name: string; description: string; parameters: unknown };
+    wrappedTools: Array<{ name: string; description: string; parameters: unknown }>;
   }) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "workflow-context-measurement-"));
@@ -130,7 +150,7 @@ async function withRenderedWorkflow(
   try {
     process.env.PI_CODING_AGENT_DIR = root;
     await withFakeHomeAsync(root, async () => {
-      const workflow = createWorkflowTool({ cwd: root });
+      const tools = measuredTools();
       const loader = new DefaultResourceLoader({
         cwd: root,
         agentDir: root,
@@ -141,23 +161,23 @@ async function withRenderedWorkflow(
       const { session } = await createAgentSession({
         cwd: root,
         agentDir: root,
-        tools: ["workflow"],
-        customTools: [workflow],
+        tools: tools.map((tool) => tool.name),
+        customTools: tools as never,
         resourceLoader: loader,
         sessionManager: SessionManager.inMemory(root),
         settingsManager: SettingsManager.inMemory(),
       });
 
       try {
-        const wrappedWorkflow = session.agent.state.tools.find((tool) => tool.name === "workflow");
-        assert.ok(wrappedWorkflow, "Pi should expose the wrapped workflow tool");
+        const wrappedTools = tools.map((tool) => {
+          const wrapped = session.agent.state.tools.find((candidate) => candidate.name === tool.name);
+          assert.ok(wrapped, `Pi should expose the wrapped ${tool.name} tool`);
+          return wrapped;
+        });
         await inspect({
           systemPrompt: session.systemPrompt,
-          promptLines: [
-            `- workflow: ${workflow.promptSnippet}`,
-            ...(workflow.promptGuidelines ?? []).map((guideline) => `- ${guideline}`),
-          ],
-          wrappedWorkflow,
+          promptLines: permanentToolPromptLines(tools),
+          wrappedTools,
         });
       } finally {
         session.dispose();

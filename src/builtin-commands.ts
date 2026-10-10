@@ -111,7 +111,7 @@ export function registerBuiltinWorkflows(
 
   /**
    * A project/user saved workflow always takes precedence over a built-in of
-   * the same name — on every path, not just the `workflow` tool's `name`
+   * the same name — on every path, not just the `subagents` tool's `name`
    * input. Builtins are registered as commands before saved workflows
    * (registerAllSavedWorkflows skips a name that's already registered), so
    * without this dynamic check a same-named saved workflow would silently
@@ -165,7 +165,7 @@ export function registerBuiltinWorkflows(
         const question = args.trim();
         if (!question) return ctx.ui.notify("Usage: /deep-research <question>", "warning");
         // Resolve through the shared builtin registry (builtin-workflows.ts) so
-        // this command and the workflow tool's `name` input always run the exact
+        // this command and the subagents tool's `name` input always run the exact
         // same generated script and exec context (tools/toolset) for this pattern.
         const resolved = resolveBuiltinOrNotify("deep-research", getCwd(), { question }, ctx);
         if (!resolved) return;

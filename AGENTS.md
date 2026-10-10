@@ -10,7 +10,7 @@ pi-workflows-lean is an independent fork of pi-dynamic-workflows 3.13.0. It does
 
 ## Capability contract and generated docs
 
-- `src/workflow-capability-contract.ts` declares every workflow runtime global and `workflow` tool input; `runWorkflow` assembles the script globals from it. Change it together with the runtime or tool schema.
-- Never hand-edit generated content. Run `npm run docs:generate` after a contract change and `npm run context:generate` after changing the tool prompt, tool schema text, or skill files.
-- Keep detailed authoring guidance in the on-demand `workflow-authoring` skill, not in the always-on prompt or tool description. `tests/workflow-prompt-budget.test.ts` fails when either always-on surface grows; raise its budget only after reviewing the new wording.
+- `src/workflow-capability-contract.ts` declares every workflow runtime global and `subagents` tool input; `runWorkflow` assembles the script globals from it. Change it together with the runtime or tool schema.
+- Never hand-edit generated content. Run `npm run docs:generate` after a contract change and `npm run context:generate` after changing a tool prompt, tool schema text, or skill files.
+- Keep detailed authoring guidance in the on-demand `workflow-authoring` skill, not in the always-on prompt or tool description. `tests/workflow-prompt-budget.test.ts` fails when an always-on surface grows; raise its budget only after reviewing the new wording.
 - Do not copy live model routes or agent-type names into static guidance.

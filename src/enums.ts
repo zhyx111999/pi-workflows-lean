@@ -1,7 +1,7 @@
 /** Classifies a workflow capability by its runtime and documentation role. */
 export enum CapabilityClassification {
   RUNTIME_GLOBAL = "runtime-global",
-  WORKFLOW_TOOL_INPUT = "workflow-tool-input",
+  SUBAGENTS_TOOL_INPUT = "subagents-tool-input",
   SCRIPT_CONTRACT = "script-contract",
   COMPATIBILITY_BEHAVIOR = "compatibility-behavior",
   INTERNAL_SUBSTRATE = "internal-substrate",

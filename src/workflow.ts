@@ -141,8 +141,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   runId?: string;
   /** Resume: cached agent/checkpoint results keyed by lexical call index. */
   resumeJournal?: Map<number, JournalEntry>;
-  /** Resume: the run being resumed (informational; enables resume mode). */
-  resumeFromRunId?: string;
   /**
    * No agent() call depends on another's result (a task-list run), so each
    * journaled call replays on its own hash match instead of only inside the
@@ -317,7 +315,7 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   /**
    * Re-enter a named subagent conversation during this workflow invocation.
    * Calls using the same name must be sequential. Thread state is never resumed
-   * across a later workflow-tool invocation.
+   * across a later run or resume.
    */
   thread?: string;
   /**

@@ -73,8 +73,8 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: consumes one agent slot and no tokens
 - Constraint: journaled answers replay only within an unchanged resume prefix
 - Constraint: accepts an open kind identifier, persists its JSON payload, and pauses the run
-- Constraint: a controller attaches a lossless-JSON response to the run and checkpoint before workflow_control resumes with only the exact run ID and checkpoint ID
-- Constraint: status exposes only checkpoint ID, kind, and status; the durable response never enters model-visible output
+- Constraint: subagents_control resume answers a waiting checkpoint with its exact checkpointId and a lossless-JSON response, attached durably before the run continues
+- Constraint: subagents_control status shows the waiting checkpoint's ID, kind, and a bounded payload preview, never its response
 - Constraint: durable checkpoint responses resume the same run ID, are journaled before continuation, and reject stale or conflicting delivery
 
 <a id="log"></a>
@@ -120,47 +120,43 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `console: { log, info, warn, error }`
 - Constraint: new workflows should use log()
 
-<a id="tool-input-script"></a>
+<a id="subagents-input-tasks"></a>
+## tasks
+
+- Classification: `subagents-tool-input`
+- Support: `supported`
+- Signature: `tasks?: Array<{ label: string; task: string; model?: string }>`
+- Constraint: exactly one of tasks, script, or name per call
+- Constraint: one subagent per task, all in parallel; labels must be unique and non-blank
+- Constraint: returns one text report with a section per label, in task order
+- Constraint: subagents_control resume with an edited list reuses every task whose label, task, and model are unchanged, wherever it moved; edited and new tasks run
+
+<a id="subagents-input-script"></a>
 ## script
 
-- Classification: `workflow-tool-input`
+- Classification: `subagents-tool-input`
 - Support: `supported`
 - Signature: `script?: string`
-- Constraint: required raw JavaScript workflow source unless `name` is given
+- Constraint: exactly one of tasks, script, or name per call
+- Constraint: raw JavaScript workflow source
+- Constraint: subagents_control resume with an edited script replays unchanged positional agent calls until the first changed or inserted call
 
-<a id="tool-input-name"></a>
+<a id="subagents-input-name"></a>
 ## name
 
-- Classification: `workflow-tool-input`
+- Classification: `subagents-tool-input`
 - Support: `supported`
 - Signature: `name?: string`
+- Constraint: exactly one of tasks, script, or name per call
 - Constraint: resolves a project/user saved workflow first, then a built-in pattern
-- Constraint: mutually exclusive with resumeFromRunId
 
-<a id="tool-input-args"></a>
+<a id="subagents-input-args"></a>
 ## args
 
-- Classification: `workflow-tool-input`
+- Classification: `subagents-tool-input`
 - Support: `supported`
-- Signature: `args?: unknown`
-
-<a id="tool-input-background"></a>
-## background
-
-- Classification: `workflow-tool-input`
-- Support: `compatibility`
-- Signature: `background?: boolean`
-- Constraint: ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes
-- Constraint: kept in the schema so calls that still send it are not rejected
-
-<a id="tool-input-resumefromrunid"></a>
-## resumeFromRunId
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `resumeFromRunId?: string`
-- Constraint: resumes a prior incomplete run with an edited script
-- Constraint: unchanged positional agent calls replay from cache until the first changed or inserted call
+- Signature: `args?: object`
+- Constraint: the args global of a script or named workflow; ignored with tasks
 
 <a id="metadata"></a>
 ## export const meta

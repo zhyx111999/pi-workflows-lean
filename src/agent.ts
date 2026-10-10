@@ -740,15 +740,15 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
   : string;
 
 /**
- * Orchestration tools ALWAYS denied to workflow subagents. The `workflow` and
- * `workflow_control` tools are registered globally by the extension, so — unless
- * excluded — a subagent's session sees them and can start its own independent
- * background workflows. Those nested runs recursively fan out and are NOT bounded
+ * Orchestration tools ALWAYS denied to workflow subagents. The `subagents` and
+ * `subagents_control` tools are registered globally by the extension, so — unless
+ * excluded — a subagent's session sees them and can start or steer independent
+ * background runs. Those nested runs recursively fan out and are NOT bounded
  * by the parent run's maxAgents / concurrency / progress / accounting, and can
  * drain a shared provider quota and pile up paused runs (#107). Callers may deny
  * additional tool names via WorkflowAgentOptions.excludeTools.
  */
-export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["workflow", "workflow_control"];
+export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["subagents", "subagents_control"];
 /** Process-global subagent id counter: unique across concurrent workflow runs. */
 let workflowAgentSeq = 0;
 

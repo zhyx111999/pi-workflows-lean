@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
-import { createWorkflowTool } from "./workflow-tool.js";
+import { createSubagentsControlTool } from "./subagents-control-tool.js";
+import { createSubagentsTool } from "./subagents-tool.js";
 
 /** Package-relative generated context-measurement artifact. */
 export const WORKFLOW_CONTEXT_MEASUREMENT_PATH = "docs/workflow-context-surfaces.json";
@@ -87,14 +88,29 @@ export interface SkillDiscoverySurface extends ByteSurface {
   root: string;
 }
 
+/** One registered tool's provider-visible definition bytes. */
+export interface ToolDefinitionSurface {
+  name: string;
+  bytes: number;
+}
+
+const SOURCES = [
+  "src/subagents-tool.ts",
+  "src/subagents-control-tool.ts",
+  "skills/workflow-authoring",
+  "package.json#pi.skills",
+] as const;
+
 /** Versioned byte measurements for always-on, discovery, corpus, and representative authoring surfaces. */
 export interface WorkflowContextMeasurement {
-  formatVersion: 3;
+  formatVersion: 4;
   encoding: "utf8";
-  sources: ["src/workflow-tool.ts", "skills/workflow-authoring", "package.json#pi.skills"];
+  sources: typeof SOURCES;
   surfaces: {
-    permanentWorkflowPrompt: ByteSurface;
-    providerVisibleWorkflowToolDefinition: ByteSurface;
+    /** promptSnippet and promptGuidelines lines Pi adds to the system prompt for the tools. */
+    permanentToolPrompt: ByteSurface;
+    /** Every tool's name, description, and parameters as sent to the provider. */
+    providerVisibleToolDefinitions: ByteSurface & { tools: ToolDefinitionSurface[] };
     /**
      * Every skill this package registers (package.json's `pi.skills` — read
      * from disk, not hardcoded here) contributes an always-on discovery entry
@@ -176,18 +192,41 @@ function median(values: number[]): number {
     : (sorted[Math.floor(middle)] ?? 0);
 }
 
+interface MeasuredTool {
+  name: string;
+  description: string;
+  parameters: unknown;
+  promptSnippet?: string;
+  promptGuidelines?: string[];
+}
+
+/** The registered tools, built without a host because measuring never executes them. */
+export function measuredTools(): MeasuredTool[] {
+  const unused = (): never => {
+    throw new Error("context measurement never executes a tool");
+  };
+  return [
+    createSubagentsTool({ getManager: unused, getStorage: unused, getCwd: unused }),
+    createSubagentsControlTool({ getManager: unused }),
+  ];
+}
+
+/** The lines Pi renders for the tools: one Available-tools entry per snippet, then every guideline. */
+export function permanentToolPromptLines(tools: readonly MeasuredTool[]): string[] {
+  return [
+    ...tools.flatMap((tool) => (tool.promptSnippet ? [`- ${tool.name}: ${tool.promptSnippet}`] : [])),
+    ...tools.flatMap((tool) => (tool.promptGuidelines ?? []).map((guideline) => `- ${guideline}`)),
+  ];
+}
+
 /** Measures permanent, discovery, corpus, and canonical on-demand workflow context surfaces. */
 export function measureWorkflowContextSurfaces(root: string = ROOT): WorkflowContextMeasurement {
-  const tool = createWorkflowTool();
-  const permanentWorkflowPrompt = [
-    `- workflow: ${tool.promptSnippet}`,
-    ...(tool.promptGuidelines ?? []).map((guideline) => `- ${guideline}`),
-  ].join("\n");
-  const providerVisibleWorkflowToolDefinition = JSON.stringify({
+  const tools = measuredTools();
+  const permanentToolPrompt = permanentToolPromptLines(tools).join("\n");
+  const toolDefinitions = tools.map((tool) => ({
     name: tool.name,
-    description: tool.description,
-    parameters: tool.parameters,
-  });
+    bytes: bytes(JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+  }));
   const skillRoots = registeredSkillRoots(root);
   const skillDiscoverySurfaces: SkillDiscoverySurface[] = skillRoots.map((skillRoot) => ({
     root: skillRoot,
@@ -202,21 +241,22 @@ export function measureWorkflowContextSurfaces(root: string = ROOT): WorkflowCon
     files: [...profile.files],
     bytes: profile.files.reduce((sum, path) => sum + fileBytes(root, path), 0),
   }));
-  const promptBytes = bytes(permanentWorkflowPrompt);
-  const toolBytes = bytes(providerVisibleWorkflowToolDefinition);
+  const promptBytes = bytes(permanentToolPrompt);
+  const toolBytes = toolDefinitions.reduce((sum, tool) => sum + tool.bytes, 0);
 
   return {
-    formatVersion: 3,
+    formatVersion: 4,
     encoding: "utf8",
-    sources: ["src/workflow-tool.ts", "skills/workflow-authoring", "package.json#pi.skills"],
+    sources: SOURCES,
     surfaces: {
-      permanentWorkflowPrompt: {
+      permanentToolPrompt: {
         serialization: "UTF-8 bytes of LF-joined Pi prompt lines",
         bytes: promptBytes,
       },
-      providerVisibleWorkflowToolDefinition: {
-        serialization: "UTF-8 bytes of JSON.stringify({ name, description, parameters })",
+      providerVisibleToolDefinitions: {
+        serialization: "sum of UTF-8 bytes of JSON.stringify({ name, description, parameters }) per tool",
         bytes: toolBytes,
+        tools: toolDefinitions,
       },
       registeredSkillsDiscovery: {
         serialization:
@@ -226,7 +266,7 @@ export function measureWorkflowContextSurfaces(root: string = ROOT): WorkflowCon
       },
       ordinaryWorkflowOwnedAlwaysOn: {
         serialization:
-          "sum of permanent prompt, provider-visible tool definition, and every registered skill's discovery bytes",
+          "sum of permanent prompt, provider-visible tool definitions, and every registered skill's discovery bytes",
         bytes: promptBytes + toolBytes + registeredSkillsDiscoveryBytes,
       },
       workflowAuthoringSkillCorpus: {

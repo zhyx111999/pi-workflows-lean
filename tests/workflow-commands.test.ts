@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SUBAGENTS_TOOL_NAME } from "../src/subagents-tool.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
-import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "../src/workflow-editor.js";
+import { buildForcedWorkflowPrompt } from "../src/workflow-editor.js";
 import type { WorkflowManager } from "../src/workflow-manager.js";
 
 type Handler = (args: string, ctx: any) => Promise<void>;
@@ -12,7 +13,7 @@ type Handler = (args: string, ctx: any) => Promise<void>;
 function harness(
   managerOverrides: Record<string, any> = {},
   commandOptions: Record<string, any> = {},
-  initialTools: string[] = [WORKFLOW_TOOL_NAME],
+  initialTools: string[] = [SUBAGENTS_TOOL_NAME],
   sendMessageImpl?: (
     m: { customType?: string; content?: string },
     options?: { triggerTurn?: boolean; deliverAs?: string },
@@ -149,14 +150,14 @@ test("/workflows run <prompt> sends a forced workflow follow-up turn", async () 
   assert.match(h.sent[0].content ?? "", /Call the `workflow` tool now/i, "forces the tool call");
   assert.equal(h.sent[0].options?.triggerTurn, true);
   assert.equal(h.sent[0].options?.deliverAs, "followUp");
-  assert.deepEqual(h.activeTools, [WORKFLOW_TOOL_NAME], "does not duplicate an already-active workflow tool");
+  assert.deepEqual(h.activeTools, [SUBAGENTS_TOOL_NAME], "does not duplicate an already-active subagents tool");
 });
 
 test("/workflows run <prompt> notifies error when sendMessage rejects and does not bubble", async () => {
   const failingSend = async () => {
     throw new Error("send failed");
   };
-  const h = harness({}, {}, [WORKFLOW_TOOL_NAME], failingSend);
+  const h = harness({}, {}, [SUBAGENTS_TOOL_NAME], failingSend);
   await h.run("run audit auth");
   assert.ok(
     h.notified.some((n) => n.message === "Could not start the workflow turn."),
@@ -164,10 +165,10 @@ test("/workflows run <prompt> notifies error when sendMessage rejects and does n
   );
 });
 
-test("/workflows run adds the workflow tool when it is not active", async () => {
+test("/workflows run adds the subagents tool when it is not active", async () => {
   const h = harness({}, {}, ["bash", "read"]);
   await h.run("run summarize the auth module");
-  assert.deepEqual(h.activeTools, ["bash", "read", WORKFLOW_TOOL_NAME]);
+  assert.deepEqual(h.activeTools, ["bash", "read", SUBAGENTS_TOOL_NAME]);
   assert.equal(h.sent[0].content, buildForcedWorkflowPrompt("summarize the auth module"));
 });
 

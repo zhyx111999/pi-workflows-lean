@@ -15,7 +15,8 @@ import {
 import type { PersistedRunState } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
-import { buildForcedWorkflowPrompt, WORKFLOW_TOOL_NAME } from "./workflow-editor.js";
+import { SUBAGENTS_TOOL_NAME } from "./subagents-tool.js";
+import { buildForcedWorkflowPrompt } from "./workflow-editor.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
@@ -167,11 +168,11 @@ export function registerWorkflowCommands(
             return;
           }
 
-          // Best-effort: ensure the workflow tool is active (session_start usually has).
+          // Best-effort: ensure the subagents tool is active (session_start usually has).
           // Add-only so tools enabled by the user or other extensions stay active.
           try {
             const active = pi.getActiveTools?.() ?? [];
-            if (!active.includes(WORKFLOW_TOOL_NAME)) pi.setActiveTools?.([...active, WORKFLOW_TOOL_NAME]);
+            if (!active.includes(SUBAGENTS_TOOL_NAME)) pi.setActiveTools?.([...active, SUBAGENTS_TOOL_NAME]);
           } catch {
             // ignore — the forced directive is the real forcing primitive
           }

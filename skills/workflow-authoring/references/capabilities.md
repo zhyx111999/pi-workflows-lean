@@ -4,7 +4,7 @@
 Contract format: `2.0.0`<br>
 Contract content / skill / extension: `3.13.0-lean.1`
 
-This compact generated index covers supported runtime globals and workflow-tool inputs. For constraints, compatibility behavior, internal boundaries, and dynamic-reference ownership, follow the [exhaustive generated facts](capability-details.md).
+This compact generated index covers supported runtime globals and `subagents` tool inputs. For constraints, compatibility behavior, internal boundaries, and dynamic-reference ownership, follow the [exhaustive generated facts](capability-details.md).
 
 ## Supported capability index
 
@@ -20,8 +20,8 @@ This compact generated index covers supported runtime globals and workflow-tool 
 | args | runtime-global | `args: unknown` | — |
 | cwd | runtime-global | `cwd: string` | — |
 | process | runtime-global | `process: { cwd(): string }` | — |
-| script | workflow-tool-input | `script?: string` | — |
-| name | workflow-tool-input | `name?: string` | — |
-| args | workflow-tool-input | `args?: unknown` | — |
-| resumeFromRunId | workflow-tool-input | `resumeFromRunId?: string` | — |
+| tasks | subagents-tool-input | `tasks?: Array<{ label: string; task: string; model?: string }>` | — |
+| script | subagents-tool-input | `script?: string` | — |
+| name | subagents-tool-input | `name?: string` | — |
+| args | subagents-tool-input | `args?: object` | — |
 <!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->

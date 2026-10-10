@@ -7,7 +7,7 @@ metadata:
 
 # Workflow authoring
 
-Load this skill when workflow JavaScript changes. Running an existing workflow needs no authoring reference.
+Load this skill when workflow JavaScript changes. Scripts run through the `subagents` tool's `script` input. Running an existing workflow needs no authoring reference, and independent one-step tasks need no script: pass them as `tasks`.
 
 ## Choose a branch
 

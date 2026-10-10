@@ -373,7 +373,6 @@ return { before, threaded, after }`,
       runId: "thread-run",
       persistLogs: false,
       resumeJournal: new Map(firstJournal.map((entry) => [entry.index, entry])),
-      resumeFromRunId: "thread-run",
     },
   );
   assert.equal(resumed.state.calls, 2, "the prefix replays, then the threaded call and all later calls run live");
@@ -1967,7 +1966,6 @@ return main`;
     persistLogs: false,
     runId: "prior-run",
     resumeJournal: journalEntries,
-    resumeFromRunId: "prior-run",
   });
   assert.equal(second.result, "main-done");
   // Resume replays BOTH cached calls (including the un-awaited 'stray') from

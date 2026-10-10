@@ -20,8 +20,8 @@ import { _registerBoundSessionSendForTests, _resetDeliveryRegistriesForTests } f
 import { getWorkflowSettingsPath } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
-describe("workflow extension - control tool availability", () => {
-  it("registers both control tools and hands the live runtime across reload", async () => {
+describe("workflow extension - tool availability", () => {
+  it("registers exactly the two subagents tools and hands the live runtime across reload", async () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
@@ -48,7 +48,7 @@ describe("workflow extension - control tool availability", () => {
 
         installExtension(pi);
 
-        assert.deepEqual(registeredTools.slice(0, 2), ["workflow", "workflow_control"]);
+        assert.deepEqual(registeredTools, ["subagents", "subagents_control"]);
         assert.deepEqual(registeredCommands.sort(), [
           "deep-research",
           "workflows",
@@ -73,8 +73,7 @@ describe("workflow extension - control tool availability", () => {
           },
         );
 
-        assert.ok(activeTools.includes("workflow"));
-        assert.ok(activeTools.includes("workflow_control"));
+        assert.deepEqual(activeTools, ["bash", "read", "subagents", "subagents_control"]);
         assert.equal(handlers.input.length, 1, "session_start does not add another input hook");
 
         handlers.session_shutdown?.[0]?.({ reason: "reload" });

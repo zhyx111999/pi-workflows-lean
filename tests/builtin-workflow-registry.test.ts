@@ -1,8 +1,8 @@
 /**
  * Tests for the shared builtin-workflow registry (src/builtin-workflows.ts) —
  * the single resolution path the `/deep-research`-style slash commands
- * (builtin-commands.ts) and the `workflow` tool's `name` input
- * (workflow-tool.ts) both consult, so a pattern's generator script is written
+ * (builtin-commands.ts) and the `subagents` tool's `name` input
+ * (subagents-tool.ts) both consult, so a pattern's generator script is written
  * exactly once and both entry points can never drift apart.
  */
 

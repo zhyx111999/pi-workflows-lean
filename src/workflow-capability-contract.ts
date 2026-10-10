@@ -189,24 +189,21 @@ const runtimeGlobal = (name: string, options: RuntimeDescriptorOptions = {}): Ca
   dynamicReference: null,
 });
 
-const toolInput = (
-  name: string,
-  signature: string,
-  constraints: readonly string[] = NONE,
-  support: CapabilitySupport = CapabilitySupport.SUPPORTED,
-): CapabilityDescriptor => ({
-  id: `workflow.tool-input.${name}`,
+const subagentsInput = (name: string, signature: string, constraints: readonly string[]): CapabilityDescriptor => ({
+  id: `workflow.subagents-input.${name}`,
   label: name,
-  classification: CapabilityClassification.WORKFLOW_TOOL_INPUT,
-  support,
+  classification: CapabilityClassification.SUBAGENTS_TOOL_INPUT,
+  support: CapabilitySupport.SUPPORTED,
   origin: CapabilityOrigin.TOOL_ADAPTER,
   signature,
   optionShape: null,
   constraints,
   runtimeBinding: null,
-  detailsAnchor: `tool-input-${name.toLowerCase()}`,
+  detailsAnchor: `subagents-input-${name.toLowerCase()}`,
   dynamicReference: null,
 });
+
+const ONE_START_MODE = "exactly one of tasks, script, or name per call";
 
 const capabilities: readonly CapabilityDescriptor[] = [
   runtimeGlobal("agent", {
@@ -256,8 +253,8 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "consumes one agent slot and no tokens",
       "journaled answers replay only within an unchanged resume prefix",
       "accepts an open kind identifier, persists its JSON payload, and pauses the run",
-      "a controller attaches a lossless-JSON response to the run and checkpoint before workflow_control resumes with only the exact run ID and checkpoint ID",
-      "status exposes only checkpoint ID, kind, and status; the durable response never enters model-visible output",
+      "subagents_control resume answers a waiting checkpoint with its exact checkpointId and a lossless-JSON response, attached durably before the run continues",
+      "subagents_control status shows the waiting checkpoint's ID, kind, and a bounded payload preview, never its response",
       "durable checkpoint responses resume the same run ID, are journaled before continuation, and reject stale or conflicting delivery",
     ],
   }),
@@ -271,25 +268,22 @@ const capabilities: readonly CapabilityDescriptor[] = [
     support: CapabilitySupport.COMPATIBILITY,
     constraints: ["new workflows should use log()"],
   }),
-  toolInput("script", "script?: string", ["required raw JavaScript workflow source unless `name` is given"]),
-  toolInput("name", "name?: string", [
+  subagentsInput("tasks", "tasks?: Array<{ label: string; task: string; model?: string }>", [
+    ONE_START_MODE,
+    "one subagent per task, all in parallel; labels must be unique and non-blank",
+    "returns one text report with a section per label, in task order",
+    "subagents_control resume with an edited list reuses every task whose label, task, and model are unchanged, wherever it moved; edited and new tasks run",
+  ]),
+  subagentsInput("script", "script?: string", [
+    ONE_START_MODE,
+    "raw JavaScript workflow source",
+    "subagents_control resume with an edited script replays unchanged positional agent calls until the first changed or inserted call",
+  ]),
+  subagentsInput("name", "name?: string", [
+    ONE_START_MODE,
     "resolves a project/user saved workflow first, then a built-in pattern",
-    "mutually exclusive with resumeFromRunId",
   ]),
-  toolInput("args", "args?: unknown"),
-  toolInput(
-    "background",
-    "background?: boolean",
-    [
-      "ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes",
-      "kept in the schema so calls that still send it are not rejected",
-    ],
-    CapabilitySupport.COMPATIBILITY,
-  ),
-  toolInput("resumeFromRunId", "resumeFromRunId?: string", [
-    "resumes a prior incomplete run with an edited script",
-    "unchanged positional agent calls replay from cache until the first changed or inserted call",
-  ]),
+  subagentsInput("args", "args?: object", ["the args global of a script or named workflow; ignored with tasks"]),
   {
     id: "workflow.script.metadata",
     label: "export const meta",

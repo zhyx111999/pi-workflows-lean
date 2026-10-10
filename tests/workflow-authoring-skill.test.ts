@@ -12,7 +12,7 @@ import {
   renderWorkflowCapabilityReference,
 } from "../src/workflow-authoring-reference.js";
 import { CapabilityClassification, WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
-import { createWorkflowTool } from "../src/workflow-tool.js";
+import { measuredTools, permanentToolPromptLines } from "../src/workflow-context-measurement.js";
 
 const ROOT = join(import.meta.dirname, "..");
 const SKILL_ROOT = "skills/workflow-authoring";
@@ -56,7 +56,7 @@ function requiredSchemaFields(schema?: Record<string, unknown>): unknown[] {
 
 test("workflow-authoring skill links resolve and every skill file is reachable from SKILL.md", () => {
   // workflow-patterns (argument shapes for the built-in workflows reachable by
-  // the `workflow` tool's `name` input) is a separate, smaller skill.
+  // the `subagents` tool's `name` input) is a separate, smaller skill.
   assert.deepEqual(packageJson.pi.skills, [SKILL_ROOT, "skills/workflow-patterns"]);
   const versionLine = new RegExp(`^  version: ["']?${packageJson.version.replaceAll(".", "\\.")}["']?$`, "m");
   for (const root of packageJson.pi.skills) {
@@ -201,10 +201,12 @@ test("generated capability index and exhaustive details are fresh and absent fro
     assert.equal(fact.reference?.split("#")[0], `${SKILL_ROOT}/references/capability-details.md`);
   }
 
-  const tool = createWorkflowTool({ cwd: ROOT });
-  const permanentPrompt = JSON.stringify({ snippet: tool.promptSnippet, guidelines: tool.promptGuidelines });
-  const providerVisibleDefinition = JSON.stringify({ description: tool.description, parameters: tool.parameters });
-  for (const surface of [permanentPrompt, providerVisibleDefinition]) {
+  const tools = measuredTools();
+  const permanentPrompt = permanentToolPromptLines(tools).join("\n");
+  const providerVisibleDefinitions = JSON.stringify(
+    tools.map(({ name, description, parameters }) => ({ name, description, parameters })),
+  );
+  for (const surface of [permanentPrompt, providerVisibleDefinitions]) {
     assert.doesNotMatch(surface, /generated from WORKFLOW_CAPABILITY_CONTRACT/i);
     assert.doesNotMatch(surface, /Workflow capability reference|Supported capability index/i);
     assert.doesNotMatch(surface, /skills\/workflow-authoring|references\/capabilities\.md/i);
@@ -242,7 +244,7 @@ test("generated facts and skill references agree on result and failure contracts
   const pipeline = facts.get("workflow.runtime.pipeline");
   const agent = facts.get("workflow.runtime.agent");
   const checkpoint = facts.get("workflow.runtime.checkpoint");
-  const background = facts.get("workflow.tool-input.background");
+  const tasks = facts.get("workflow.subagents-input.tasks");
   const metadata = facts.get("workflow.script.metadata");
 
   assert.match(pipeline?.constraints.join(" ") ?? "", /null.*next stage/i);
@@ -251,13 +253,14 @@ test("generated facts and skill references agree on result and failure contracts
   assert.match(agent?.constraints.join(" ") ?? "", /implicit default medium tier.*session default when unavailable/i);
   assert.match(agent?.constraints.join(" ") ?? "", /worktree isolation fails closed.*never falls back/i);
   assert.match(checkpoint?.constraints.join(" ") ?? "", /persists its JSON payload, and pauses the run/i);
-  assert.match(background?.constraints.join(" ") ?? "", /ignored/i);
+  assert.match(tasks?.constraints.join(" ") ?? "", /one subagent per task/i);
   assert.match(metadata?.signature ?? "", /phases\?: Array<\{ title: string; detail\?: string; model\?: string \}>/);
   assert.match(metadata?.constraints.join(" ") ?? "", /only legal export/i);
   assert.match(metadata?.constraints.join(" ") ?? "", /literal.*string concatenation.*template interpolation/i);
 
   const checkpointReference = readFileSync(join(ROOT, SKILL_ROOT, "references/checkpoint.md"), "utf8");
   assert.match(checkpointReference, /attachCheckpointResponse\(runId, checkpointId, response\).*before.*resume/i);
+  assert.match(checkpointReference, /`subagents_control` `status`.*`resume`.*`checkpointId`.*`response`/);
   const runtime = readFileSync(join(ROOT, SKILL_ROOT, "references/runtime.md"), "utf8");
   assert.match(runtime, /pipeline.*null.*next stage/i);
   assert.match(runtime, /schema noncompliance.*throw/i);
@@ -266,7 +269,8 @@ test("generated facts and skill references agree on result and failure contracts
   assert.match(runtime, /export default.*other exports.*invalid/i);
   assert.match(runtime, /agent\(prompt.*label.*schema/i);
   const lifecycle = readFileSync(join(ROOT, SKILL_ROOT, "references/lifecycle.md"), "utf8");
-  assert.match(lifecycle, /every workflow run starts in the background.*ignores `background`/i);
+  assert.match(lifecycle, /every run starts in the background/i);
+  assert.match(lifecycle, /`subagents_control` with `action: "resume"`.*edited `script`/);
   assert.doesNotMatch(lifecycle, /checkpoint\(prompt|headless/i);
   assert.match(lifecycle, /agent execution retries do not add slots/i);
   assert.match(lifecycle, /run limits come only from the workflow settings/i);

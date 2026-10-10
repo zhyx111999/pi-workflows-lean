@@ -6,7 +6,7 @@ Bound loops, fan-out, and semantic retries inside the script. Run limits come on
 
 ## Checkpoints
 
-A checkpoint consumes an agent slot but no tokens. Every workflow run starts in the background and the `workflow` tool ignores `background`, so nothing prompts a human mid-run. `checkpoint({ kind, checkpointId, payload })` pauses the run until a controller persists a response and resumes the exact checkpoint ID; it displays no UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
+A checkpoint consumes an agent slot but no tokens. Every run starts in the background, so nothing prompts a human mid-run. `checkpoint({ kind, checkpointId, payload })` pauses the run until a response is stored for that exact checkpoint ID and the run resumes; it displays no UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
 
 Checkpoint answers are journaled and can replay during an unchanged resume prefix. Do not describe checkpoints as guaranteed arbitrary forms or as remote steering.
 
@@ -21,6 +21,8 @@ Always retain `{ id, status, result }` or an equivalent ledger for each intended
 ## Resume
 
 Resume replays only the longest unchanged prefix of journaled calls. Once one call is new, changed, or unusable, that call and all later calls execute live. Stable lexical call ordering, prompts, labels, routing options, and inputs therefore matter. Semantic retry loops can cascade after an upstream miss.
+
+To revise a paused or failed run, call `subagents_control` with `action: "resume"`, its `runId`, and the edited `script`; the run keeps its ID and its result is delivered when it finishes. Completed and stopped runs do not resume.
 
 Only a call that finishes with a real result is journaled. A call whose every attempt was recoverable (including one that only ever produced `AGENT_EMPTY_OUTPUT`) contributes no journal entry, so resuming that run reruns exactly that call and everything lexically after it live; the earlier, already-succeeded prefix still replays from cache.
 

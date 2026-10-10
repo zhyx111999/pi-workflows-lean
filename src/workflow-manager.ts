@@ -269,7 +269,6 @@ export interface ExecOptions {
 export interface WorkflowResumeOptions {
   /** Edited script: journaled calls replay only within the unchanged prefix. */
   script?: string;
-  args?: unknown;
   /** Edited task list for a task-list run: every unchanged task replays wherever it moved. */
   tasks?: SubagentTask[];
   checkpointId?: string;
@@ -317,7 +316,7 @@ export interface WorkflowManagerOptions {
   toolsets?: Record<string, () => ToolDefinition[]>;
   /**
    * Extra tool NAMES to deny in every subagent session, on top of the always-on
-   * `workflow`/`workflow_control` defaults (see DEFAULT_EXCLUDED_SUBAGENT_TOOLS).
+   * `subagents`/`subagents_control` defaults (see DEFAULT_EXCLUDED_SUBAGENT_TOOLS).
    * Host wiring passes settings.excludeSubagentTools here so users can also block
    * other recursive-orchestration tools (#107).
    */
@@ -540,7 +539,7 @@ export class WorkflowManager extends EventEmitter {
   /**
    * After an in-process session replacement keeps this manager, re-home work
    * that still needs this conversation onto `sessionId`:
-   *  - still-running / paused-in-memory runs (panel, workflow_control, stranded-pause)
+   *  - still-running / paused-in-memory runs (panel, subagents_control, stranded-pause)
    *  - any run (live or disk-only) with an undelivered `pendingDelivery` marker
    *
    * Terminal runs *without* pending keep their original sessionId so history
@@ -760,7 +759,7 @@ export class WorkflowManager extends EventEmitter {
    * Execute a workflow synchronously (blocking) while still tracking it like a
    * background run, so the `/workflows` navigator and the live task panel see it.
    * `onProgress` fires on every progress event with the current snapshot, letting
-   * a caller (e.g. the workflow tool) drive its own inline display.
+   * a caller drive its own inline display.
    */
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const managed = this.createManaged(script, args);
@@ -889,7 +888,6 @@ export class WorkflowManager extends EventEmitter {
         excludeTools: this.excludeSubagentTools,
         providerMiddlewareExtensions: this.providerMiddlewareExtensions,
         resumeJournal,
-        resumeFromRunId: resumeJournal ? managed.runId : undefined,
         independentCalls: isTaskListScript(script),
         resumeCheckpoint,
         onWorkflowCheckpoint: (checkpoint) => {
@@ -1772,11 +1770,9 @@ export class WorkflowManager extends EventEmitter {
    * (cached-prefix reuse / iteration): unchanged agent() calls whose content
    * hash still matches the journal entry at their call index replay from
    * cache, while the first changed or newly inserted call and everything after
-   * it re-runs live. When `opts.script` is omitted, resume behaves
-   * exactly as before and uses the persisted script (auto-resume, TUI resume);
-   * this keeps the existing single-arg `resume(runId)` callers (e.g. the
-   * UsageLimitScheduler) unchanged. `opts.args` overrides the persisted args
-   * only when provided; otherwise the persisted args are kept.
+   * it re-runs live. `opts.tasks` does the same for a task-list run, where
+   * every unchanged task replays wherever it moved. Without either, resume
+   * uses the persisted script and args (auto-resume, TUI resume).
    */
   async resume(runId: string, opts?: WorkflowResumeOptions): Promise<boolean> {
     const active = this.runs.get(runId);
@@ -1829,7 +1825,7 @@ export class WorkflowManager extends EventEmitter {
       return false;
     }
     const script = opts?.script ?? persisted.script;
-    const args = opts?.tasks ?? (opts?.args !== undefined ? opts.args : persisted.args);
+    const args = opts?.tasks ?? persisted.args;
     const recordedAgents = Array.isArray(persisted.agents) ? persisted.agents : [];
     const persistedAgents = taskMoves
       ? recordedAgents.map((agent) => retargetAgentRow(agent, taskMoves))
@@ -2054,8 +2050,8 @@ export class WorkflowManager extends EventEmitter {
    * controller and persist "aborted" as before. Fallback: the run is not in
    * memory but is persisted as "running" or "paused" — e.g. it belongs to a
    * prior pi session that this process's recoverStaleRuns() flipped to
-   * "paused" on disk without repopulating this.runs (see workflow-control-tool's
-   * findRun(), which resolves candidates from disk via listRuns()). There is no
+   * "paused" on disk without repopulating this.runs (see subagents-control-tool's
+   * findRun(), which resolves candidates from disk via listAllRuns()). There is no
    * live controller to abort in that case — the run simply isn't executing in
    * this process — so mark it aborted on disk directly, mirroring resume()'s
    * persisted-fallback lease handling.

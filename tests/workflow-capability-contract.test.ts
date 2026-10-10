@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { createSubagentsTool } from "../src/subagents-tool.js";
 import { runWorkflow } from "../src/workflow.js";
 import {
   CapabilityClassification,
@@ -11,7 +12,6 @@ import {
   WORKFLOW_CAPABILITY_DEFINITION,
   WorkflowCapabilityContractError,
 } from "../src/workflow-capability-contract.js";
-import { createWorkflowTool } from "../src/workflow-tool.js";
 
 const EXPECTED_RUNTIME_GLOBALS = [
   "agent",
@@ -26,7 +26,7 @@ const EXPECTED_RUNTIME_GLOBALS = [
   "process",
 ] as const;
 
-const EXPECTED_TOOL_INPUTS = ["args", "background", "name", "resumeFromRunId", "script"] as const;
+const EXPECTED_TOOL_INPUTS = ["args", "name", "script", "tasks"] as const;
 
 function implementations(): Record<string, unknown> {
   return Object.fromEntries(EXPECTED_RUNTIME_GLOBALS.map((name) => [name, { name }]));
@@ -38,7 +38,7 @@ test("capability definition inventories the settled runtime and invocation contr
     .map((capability) => capability.runtimeBinding?.global)
     .sort();
   const toolInputs = WORKFLOW_CAPABILITY_DEFINITION.capabilities
-    .filter((capability) => capability.classification === CapabilityClassification.WORKFLOW_TOOL_INPUT)
+    .filter((capability) => capability.classification === CapabilityClassification.SUBAGENTS_TOOL_INPUT)
     .map((capability) => capability.label)
     .sort();
 
@@ -92,23 +92,37 @@ test("run limits are agent facts sourced from settings, not tool inputs or agent
   );
 });
 
-test("declared tool inputs match the provider-visible workflow tool schema", () => {
-  const { parameters } = createWorkflowTool();
+test("declared tool inputs match the provider-visible subagents tool schema", () => {
+  const unused = (): never => {
+    throw new Error("schema only");
+  };
+  const { parameters } = createSubagentsTool({ getManager: unused, getStorage: unused, getCwd: unused });
   const properties = (parameters as { properties: Record<string, { description?: string }> }).properties;
   assert.deepEqual(Object.keys(properties).sort(), [...EXPECTED_TOOL_INPUTS]);
 });
 
-test("background is an ignored compatibility input and no fact offers a foreground run", () => {
-  const background = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
-    ({ id }) => id === "workflow.tool-input.background",
+test("subagents inputs state the one-mode rule and how resume reuses work; no fact offers a foreground run", () => {
+  const inputs = new Map(
+    WORKFLOW_CAPABILITY_DEFINITION.capabilities
+      .filter(({ classification }) => classification === CapabilityClassification.SUBAGENTS_TOOL_INPUT)
+      .map((capability) => [capability.label, capability]),
   );
-  assert.equal(background?.support, CapabilitySupport.COMPATIBILITY);
-  assert.match(background?.constraints.join(" ") ?? "", /ignored.*every run starts in the background/);
+  for (const mode of ["tasks", "script", "name"]) {
+    assert.equal(inputs.get(mode)?.support, CapabilitySupport.SUPPORTED);
+    assert.match(inputs.get(mode)?.constraints.join(" ") ?? "", /exactly one of tasks, script, or name per call/);
+  }
+  assert.match(
+    inputs.get("tasks")?.constraints.join(" ") ?? "",
+    /resume.*label, task, and model are unchanged, wherever it moved/,
+  );
+  assert.match(inputs.get("script")?.constraints.join(" ") ?? "", /resume.*until the first changed or inserted call/);
 
   const checkpoint = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(({ id }) => id === "workflow.runtime.checkpoint");
   assert.equal(checkpoint?.signature, "checkpoint({ kind, checkpointId, payload }) => Promise<unknown>");
   assert.equal(checkpoint?.optionShape, null);
   assert.match(checkpoint?.constraints.join(" ") ?? "", /pauses the run/);
+  assert.match(checkpoint?.constraints.join(" ") ?? "", /subagents_control resume answers a waiting checkpoint/);
+  assert.doesNotMatch(JSON.stringify(WORKFLOW_CAPABILITY_DEFINITION), /workflow_control|resumeFromRunId/);
 
   const allFacts = JSON.stringify(WORKFLOW_CAPABILITY_DEFINITION);
   assert.doesNotMatch(allFacts, /background:? false|foreground/i);

@@ -9,64 +9,58 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { createWorkflowTool } from "../src/workflow-tool.js";
+import { measuredTools, permanentToolPromptLines } from "../src/workflow-context-measurement.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 // Each budget is the measured size of the currently accepted wording, so any growth
 // fails here and must be reviewed before the budget is raised. The prompt is measured
 // with an empty agentType registry so user configuration cannot alter it.
-// docs/workflow-context-surfaces.json records the same two sizes.
+// docs/workflow-context-surfaces.json records the same sizes.
 //
-// Always-on prompt (336 bytes): the workflow promptSnippet plus the single gate
+// Always-on prompt (157 bytes): the subagents promptSnippet plus the single gate
 // guideline that defers the call decision to the note appended to user messages.
-const RENDERED_PROMPT_BUDGET_BYTES = 336;
-// Provider-visible tool definition (2,782 bytes): the `script` description spells
-// out agent() routing options inline and forbids cross-check subagents, so authors
-// need not load the skill for routine scripts; run limits are settings, not inputs;
-// `background` is documented as ignored.
-const TOOL_DEFINITION_BUDGET_BYTES = 2_782;
+// subagents_control adds no prompt lines.
+const RENDERED_PROMPT_BUDGET_BYTES = 157;
+// Provider-visible tool definitions (1,919 bytes for both tools): `subagents`
+// names its three start modes and points script authors at the skill in one line;
+// `subagents_control` documents each action's fields in its description so most
+// parameters need no description of their own.
+const TOOL_DEFINITIONS_BUDGET_BYTES = 1_919;
 
-test("rendered workflow prompt contribution stays within its accepted size", async () => {
-  await withRenderedWorkflow(async ({ systemPrompt, promptLines }) => {
+test("rendered tool prompt contribution stays within its accepted size", async () => {
+  await withRenderedTools(async ({ systemPrompt, promptLines }) => {
     const expectedLines = new Set(promptLines);
     const renderedLines = systemPrompt.split("\n").filter((line) => expectedLines.has(line));
-    assert.deepEqual(renderedLines, promptLines, "Pi should render each workflow prompt line exactly once");
+    assert.deepEqual(renderedLines, promptLines, "Pi should render each tool prompt line exactly once");
 
     const renderedContribution = renderedLines.join("\n");
     const actualBytes = Buffer.byteLength(renderedContribution, "utf8");
     assert.ok(
       actualBytes <= RENDERED_PROMPT_BUDGET_BYTES,
-      `Rendered workflow prompt is ${actualBytes} bytes; budget is ${RENDERED_PROMPT_BUDGET_BYTES}.\n${renderedContribution}`,
+      `Rendered tool prompt is ${actualBytes} bytes; budget is ${RENDERED_PROMPT_BUDGET_BYTES}.\n${renderedContribution}`,
     );
   });
 });
 
-test("provider-visible workflow tool definition stays within its accepted size", async () => {
-  await withRenderedWorkflow(async ({ wrappedWorkflow }) => {
-    const definitionJson = JSON.stringify({
-      name: wrappedWorkflow.name,
-      description: wrappedWorkflow.description,
-      parameters: wrappedWorkflow.parameters,
-    });
-    const actualBytes = Buffer.byteLength(definitionJson, "utf8");
-    const parameterBytes = Buffer.byteLength(JSON.stringify(wrappedWorkflow.parameters), "utf8");
+test("provider-visible tool definitions stay within their accepted size", async () => {
+  await withRenderedTools(async ({ wrappedTools }) => {
+    const definitions = wrappedTools.map((tool) =>
+      JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }),
+    );
+    const actualBytes = definitions.reduce((sum, definition) => sum + Buffer.byteLength(definition, "utf8"), 0);
 
     assert.ok(
-      actualBytes <= TOOL_DEFINITION_BUDGET_BYTES,
-      `Workflow tool definition is ${actualBytes} bytes; budget is ${TOOL_DEFINITION_BUDGET_BYTES} (parameters: ${parameterBytes} bytes).\n${definitionJson}`,
+      actualBytes <= TOOL_DEFINITIONS_BUDGET_BYTES,
+      `Tool definitions are ${actualBytes} bytes; budget is ${TOOL_DEFINITIONS_BUDGET_BYTES}.\n${definitions.join("\n")}`,
     );
   });
 });
 
-async function withRenderedWorkflow(
+async function withRenderedTools(
   inspect: (surface: {
     systemPrompt: string;
     promptLines: string[];
-    wrappedWorkflow: {
-      name: string;
-      description: string;
-      parameters: unknown;
-    };
+    wrappedTools: Array<{ name: string; description: string; parameters: unknown }>;
   }) => Promise<void>,
 ): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "workflow-prompt-budget-"));
@@ -75,7 +69,7 @@ async function withRenderedWorkflow(
   try {
     process.env.PI_CODING_AGENT_DIR = root;
     await withFakeHomeAsync(root, async () => {
-      const workflow = createWorkflowTool({ cwd: root });
+      const tools = measuredTools();
       const loader = new DefaultResourceLoader({
         cwd: root,
         agentDir: root,
@@ -86,24 +80,23 @@ async function withRenderedWorkflow(
       const { session } = await createAgentSession({
         cwd: root,
         agentDir: root,
-        tools: ["workflow"],
-        customTools: [workflow],
+        tools: tools.map((tool) => tool.name),
+        customTools: tools as never,
         resourceLoader: loader,
         sessionManager: SessionManager.inMemory(root),
         settingsManager: SettingsManager.inMemory(),
       });
 
       try {
-        const wrappedWorkflow = session.agent.state.tools.find((tool) => tool.name === "workflow");
-        assert.ok(wrappedWorkflow, "Pi should expose the wrapped workflow tool");
-
+        const wrappedTools = tools.map((tool) => {
+          const wrapped = session.agent.state.tools.find((candidate) => candidate.name === tool.name);
+          assert.ok(wrapped, `Pi should expose the wrapped ${tool.name} tool`);
+          return wrapped;
+        });
         await inspect({
           systemPrompt: session.systemPrompt,
-          promptLines: [
-            `- workflow: ${workflow.promptSnippet}`,
-            ...workflow.promptGuidelines.map((guideline) => `- ${guideline}`),
-          ],
-          wrappedWorkflow,
+          promptLines: permanentToolPromptLines(tools),
+          wrappedTools,
         });
       } finally {
         session.dispose();

@@ -1,6 +1,6 @@
 ---
 name: workflow-patterns
-description: Argument shape for the built-in deep-research workflow, runnable via the workflow tool's name input. Not for authoring a new workflow script — see workflow-authoring.
+description: Argument shape for the built-in deep-research workflow, runnable via the subagents tool's name input. Not for authoring a new workflow script — see workflow-authoring.
 metadata:
   version: "3.13.0-lean.1"
 ---
@@ -8,7 +8,7 @@ metadata:
 # Built-in workflow patterns
 
 This fork ships one built-in workflow pattern, `/deep-research`. It is also
-reachable from the `workflow` tool: call it with `name` set to `deep-research`
+reachable from the `subagents` tool: call it with `name` set to `deep-research`
 and `args` matching the shape below, instead of writing an equivalent script.
 
 A project or user saved workflow of the same name always takes precedence
@@ -29,11 +29,11 @@ workflow) through the tool's top-level `name` input.
 { "name": "deep-research", "args": { "question": "What are the tradeoffs of X vs Y?" } }
 ```
 
-This is a `workflow` tool call, not a script — omit `script` entirely. The run
+This is a `subagents` tool call, not a script — omit `script` entirely. The run
 starts in the background exactly like the slash-command form; run limits come
 from the workflow settings, as for any run.
 
 ## Writing a new workflow instead
 
-If the request is not deep-research, author a script with
-`script` as usual — see the workflow-authoring skill.
+If the request is not deep-research, pass independent work as `tasks`, or
+author a `script` for multi-step work — see the workflow-authoring skill.
