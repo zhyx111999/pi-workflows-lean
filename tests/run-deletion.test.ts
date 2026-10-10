@@ -419,3 +419,31 @@ test(
     assert.equal((await controlTool(owner, { action: "status", runId })).error, "run not found");
   }),
 );
+
+for (const variant of ["catches", "swallows"] as const) {
+  test(
+    `deleting a running run whose script ${variant} the abort leaves no run log behind`,
+    withTempProject(async (cwd) => {
+      const source =
+        variant === "catches"
+          ? `export const meta = { name: 'catching_demo', description: 'logs after its agent ends' }
+try { await agent('do it', { label: 'a' }) } catch (error) { log('agent ended: ' + error.message) }
+return 'done'`
+          : `export const meta = { name: 'swallowing_demo', description: 'ignores its agent failing' }
+return await agent('do it', { label: 'a' }).catch(() => null)`;
+      const manager = new WorkflowManager({ cwd, agent: waitingAgent() });
+      const { runId, promise } = manager.startInBackground(source);
+      const outcome = promise.then(
+        () => "resolved",
+        () => "rejected",
+      );
+      const agentRunning = () => manager.getRun(runId)?.snapshot.agents.some((agent) => agent.status === "running");
+      for (let i = 0; i < 200 && !agentRunning(); i++) await pause(5);
+      assert.ok(agentRunning(), "the agent is running");
+
+      assert.equal(manager.deleteRun(runId), true);
+      assert.equal(await outcome, "resolved", "the script outlived its abort");
+      assert.deepEqual(runFiles(manager.getPersistence(), runId), [], "the run log is not recreated");
+    }),
+  );
+}

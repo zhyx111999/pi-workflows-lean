@@ -460,6 +460,8 @@ export class WorkflowManager extends EventEmitter {
 
   /** Executions by managed run, so pause/resume can wait for settlement before overlapping. */
   private readonly executions = new WeakMap<ManagedRun, Promise<WorkflowRunResult>>();
+  /** Runs deleted here or by another process; an execution still winding down finishes their deletion. */
+  private readonly deletedRuns = new WeakSet<ManagedRun>();
   private persistence: RunPersistence;
   private cwd: string;
   private concurrency: number;
@@ -1335,6 +1337,16 @@ export class WorkflowManager extends EventEmitter {
           console.warn("[workflow-manager] Failed to remove external abort listener:", error);
         }
       }
+      // Deletion aborts the execution, but a script that catches the abort keeps
+      // running, and its run log recreates <runId>.log after the files were
+      // removed. Nothing writes for this execution any more, so remove it again.
+      if (this.deletedRuns.has(managed)) {
+        try {
+          this.persistence.delete(managed.runId);
+        } catch {
+          // Best-effort: a leftover log never resurrects the run.
+        }
+      }
     }
   }
 
@@ -1672,6 +1684,7 @@ export class WorkflowManager extends EventEmitter {
       this.persistTimers.delete(managed.runId);
     }
     this.runs.delete(managed.runId);
+    this.deletedRuns.add(managed);
     this.releaseRunLease(managed);
     this.emit("deleted", { runId: managed.runId });
   }
@@ -2285,6 +2298,7 @@ export class WorkflowManager extends EventEmitter {
       if (!heldLease) return false;
     }
     this.runs.delete(runId);
+    if (managed) this.deletedRuns.add(managed);
     // Cancel any pending throttled write so a deferred persist can't fire after
     // deletion and resurrect the run's file on disk.
     const timer = this.persistTimers.get(runId);
