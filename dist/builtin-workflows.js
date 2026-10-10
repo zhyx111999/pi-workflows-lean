@@ -1,0 +1,62 @@
+/**
+ * Shared registry of the built-in workflow patterns
+ * (`deep-research`). Review and audit patterns are not registered.
+ *
+ * This is the single place that turns a pattern's name + caller-supplied args
+ * into a runnable script (and, where a pattern needs it, an exec context such
+ * as web tools). Both entry points a model or user can reach a built-in
+ * through — the `/deep-research`-style slash commands (builtin-commands.ts)
+ * and the `workflow` tool's `name` input (workflow-tool.ts) — resolve through
+ * this one registry, so the two paths can never drift apart and the
+ * per-pattern generator scripts are written exactly once.
+ */
+import { createCodingTools } from "@earendil-works/pi-coding-agent";
+import { generateDeepResearchWorkflow } from "./deep-research.js";
+import { createWebTools } from "./web-tools.js";
+function asRecord(args) {
+    return args && typeof args === "object" ? args : {};
+}
+function requireNonEmptyString(value, argName, patternName) {
+    if (typeof value !== "string" || !value.trim()) {
+        throw new Error(`Built-in workflow "${patternName}" requires args.${argName} to be a non-empty string.`);
+    }
+    return value;
+}
+/** Built-in workflow patterns, keyed by their stable name. */
+export const BUILTIN_WORKFLOWS = [
+    {
+        name: "deep-research",
+        description: "Research a question across the web and return sourced claims. args: { question: string }.",
+        resolve(cwd, args) {
+            requireNonEmptyString(asRecord(args).question, "question", "deep-research");
+            return {
+                script: generateDeepResearchWorkflow(),
+                // Research agents need real web access on top of the coding tools; the
+                // "web-research" tag is what a resumed run re-resolves (see
+                // WorkflowManagerOptions.toolsets).
+                tools: [...createCodingTools(cwd), ...createWebTools()],
+                toolset: "web-research",
+            };
+        },
+    },
+];
+/** Stable list of built-in workflow pattern names, in registry order. */
+export const BUILTIN_WORKFLOW_NAMES = BUILTIN_WORKFLOWS.map((w) => w.name);
+export function findBuiltinWorkflow(name) {
+    return BUILTIN_WORKFLOWS.find((w) => w.name === name);
+}
+/**
+ * Resolve a name to a runnable invocation, checking project/user saved
+ * workflows first and falling back to the built-in patterns — the same
+ * precedence `workflow-saved.ts` already uses internally (project > user), one
+ * level up: saved workflows (of either scope) beat a built-in of the same name.
+ */
+export function resolveWorkflowInvocation(name, args, ctx) {
+    const saved = ctx.storage.load(name);
+    if (saved)
+        return { script: saved.script };
+    const builtin = findBuiltinWorkflow(name);
+    if (builtin)
+        return builtin.resolve(ctx.cwd, args);
+    return undefined;
+}

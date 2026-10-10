@@ -24,3 +24,7 @@ jobs:
         run: npm ci
       - name: Lint, build, and test
         run: npm test
+      # Pi installs git packages with `npm install --omit=dev` and never builds,
+      # so the committed dist/ is what users run.
+      - name: Committed dist matches the source
+        run: npm run check:dist
