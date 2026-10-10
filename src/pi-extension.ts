@@ -25,11 +25,11 @@ import { UsageLimitScheduler } from "./usage-limit-scheduler.js";
 import { createWebTools } from "./web-tools.js";
 import { registerWorkflowCommands } from "./workflow-commands.js";
 import { createWorkflowControlTool } from "./workflow-control-tool.js";
-import { createWorkflowTailTool, WORKFLOW_TAIL_TOOL_NAME } from "./workflow-tail-tool.js";
 import { installWorkflowKeywordArming } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettingsForCwd } from "./workflow-settings.js";
+import { createWorkflowTailTool, WORKFLOW_TAIL_TOOL_NAME } from "./workflow-tail-tool.js";
 import { createWorkflowTool } from "./workflow-tool.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 

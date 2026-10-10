@@ -703,55 +703,16 @@ export async function runWorkflow<T = unknown>(
     remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - shared.spent)),
   });
 
-  const agentLimitError = (requiredSlots = 1, helper?: string) => {
-    const remainingSlots = Math.max(0, maxAgents - shared.agentCount);
-    const preflight =
-      helper === undefined
-        ? ""
-        : ` ${helper} requires ${requiredSlots} logical agent slot${requiredSlots === 1 ? "" : "s"}, but only ${remainingSlots} remain.`;
-    return new WorkflowError(
-      `Agent limit exceeded (${shared.agentCount}/${maxAgents}).${preflight} Re-call workflow with resumeFromRunId="${runId}", the same script, and maxAgents: N (N>${maxAgents}) — journaled prefix replays free. /workflows resume alone cannot raise the cap.`,
+  const agentLimitError = () =>
+    new WorkflowError(
+      `Agent limit exceeded (${shared.agentCount}/${maxAgents}). Re-call workflow with resumeFromRunId="${runId}", the same script, and maxAgents: N (N>${maxAgents}) — journaled prefix replays free. /workflows resume alone cannot raise the cap.`,
       WorkflowErrorCode.AGENT_LIMIT_EXCEEDED,
       { recoverable: false },
     );
-  };
 
-  /**
-   * Check capacity for one or more logical agent() calls before a helper begins
-   * its known fan-out. This intentionally does not mutate agentCount: the
-   * helper's immediate synchronous agent() calls retain their existing stable
-   * call order, journaling, and per-fan-out cancellation behavior. JavaScript
-   * executes that expansion without yielding, so after this check passes each
-   * logical slot is reserved by agent() before another workflow expression can
-   * observe the shared counter.
-   */
-  const ensureAgentCapacity = (requiredSlots = 1, helper?: string) => {
-    if (requiredSlots > maxAgents - shared.agentCount) {
-      throw agentLimitError(requiredSlots, helper);
-    }
-  };
-
-  /** Normalize every helper fan-out option once so preflight and execution cannot diverge. */
-  const normalizeQualityFanout = (value: unknown, fallback: number, optionName: string) => {
-    const count = value === undefined ? fallback : value;
-    if (typeof count !== "number" || !Number.isFinite(count) || !Number.isInteger(count) || count < 1) {
-      throw new TypeError(`${optionName} must be a finite integer greater than or equal to 1`);
-    }
-    return count;
-  };
-
-  /**
-   * Normalize panel candidates once for both capacity and execution. Sparse holes
-   * are absent candidates (and therefore consume no slots); populated entries
-   * retain their original input index for the documented stable tie-break.
-   */
-  const normalizeJudgeCandidates = (attempts: unknown) => {
-    if (!Array.isArray(attempts)) return [] as Array<{ attempt: unknown; index: number }>;
-    const candidates: Array<{ attempt: unknown; index: number }> = [];
-    for (let index = 0; index < attempts.length; index++) {
-      if (Object.hasOwn(attempts, index)) candidates.push({ attempt: attempts[index], index });
-    }
-    return candidates;
+  /** Every logical agent() call and checkpoint consumes one slot of the run's maxAgents cap. */
+  const ensureAgentCapacity = () => {
+    if (shared.agentCount >= maxAgents) throw agentLimitError();
   };
 
   // True on an intentional external abort (pause/stop/Esc, via options.signal)
@@ -1091,7 +1052,7 @@ export async function runWorkflow<T = unknown>(
                 : `workflow:${runId} ${label}`,
               schema: agentOptions.schema,
               signal: agentController.signal,
-              instructions: buildAgentInstructions(assignedPhase, agentOptions, agentDef, resolvedIsolation),
+              instructions: buildAgentInstructions(assignedPhase, agentDef, resolvedIsolation),
               model: modelSpec,
               thinking: agentOptions.thinking ?? agentDef?.thinking,
               tier: agentOptions.tier,
@@ -1456,91 +1417,9 @@ export async function runWorkflow<T = unknown>(
     }
   };
 
-  // ── Quality-pattern stdlib: reusable, deterministic helpers built purely on
-  // agent()/parallel() (so callSeq ordering stays stable and resume keeps working).
-  // Injected as globals so workflow scripts compose them directly. ──
-
-  const VERIFY_SCHEMA = {
-    type: "object",
-    properties: { real: { type: "boolean" }, reason: { type: "string" } },
-    required: ["real"],
-  };
-  const verify = async (
-    item: unknown,
-    opts: { reviewers?: number; threshold?: number; lens?: string | string[] } = {},
-  ) => {
-    throwIfAborted();
-    const reviewerSlots = normalizeQualityFanout(opts.reviewers, 2, "verify() reviewers");
-    ensureAgentCapacity(reviewerSlots, "verify()");
-    options.onRuntimeEvent?.({ type: "quality", stage: "start", helper: "verify" });
-    const threshold = opts.threshold ?? 0.5;
-    const lenses = opts.lens ? (Array.isArray(opts.lens) ? opts.lens : [opts.lens]) : [];
-    const claim = typeof item === "string" ? item : JSON.stringify(item);
-    const votes = (
-      await parallel(
-        Array.from(
-          { length: reviewerSlots },
-          (_v, i) => () =>
-            agent(
-              `Adversarially review whether the following is REAL/correct. Try to refute it; default to real=false if unsure.${lenses.length ? ` Focus lens: ${lenses[i % lenses.length]}.` : ""}\n\n${claim}`,
-              { label: `verify ${i + 1}`, schema: VERIFY_SCHEMA },
-            ),
-        ),
-      )
-    ).filter(Boolean) as Array<{ real?: boolean; reason?: string }>;
-    const realCount = votes.filter((v) => v?.real).length;
-    const verdict = {
-      real: votes.length > 0 && realCount / votes.length >= threshold,
-      realCount,
-      total: votes.length,
-      votes,
-    };
-    options.onRuntimeEvent?.({ type: "quality", stage: "end", helper: "verify" });
-    return verdict;
-  };
-
-  const JUDGE_SCHEMA = {
-    type: "object",
-    properties: { score: { type: "number" }, reason: { type: "string" } },
-    required: ["score"],
-  };
-  const judgePanel = async (attempts: unknown[], opts: { judges?: number; rubric?: string } = {}) => {
-    throwIfAborted();
-    const judgeSlots = normalizeQualityFanout(opts.judges, 3, "judgePanel() judges");
-    const candidates = normalizeJudgeCandidates(attempts);
-    ensureAgentCapacity(candidates.length * judgeSlots, "judgePanel()");
-    options.onRuntimeEvent?.({ type: "quality", stage: "start", helper: "judgePanel" });
-    const rubric = opts.rubric ?? "overall quality and correctness";
-    const scored = (
-      await parallel(
-        candidates.map(({ attempt: att, index }) => async () => {
-          const text = typeof att === "string" ? att : JSON.stringify(att);
-          const js = (
-            await parallel(
-              Array.from(
-                { length: judgeSlots },
-                (_v, j) => () =>
-                  agent(
-                    `Score this candidate from 0 to 1 on: ${rubric}. Reply with the score.\n\nCandidate:\n${text}`,
-                    {
-                      label: `judge ${index + 1}.${j + 1}`,
-                      schema: JUDGE_SCHEMA,
-                    },
-                  ),
-              ),
-            )
-          ).filter(Boolean) as Array<{ score?: number }>;
-          const score = js.length ? js.reduce((s, v) => s + (Number(v?.score) || 0), 0) / js.length : 0;
-          return { index, attempt: att, score, judgments: js };
-        }),
-      )
-    ).filter(Boolean) as Array<{ index: number; attempt: unknown; score: number; judgments: unknown[] }>;
-    // Highest mean score; stable tie-break by input index.
-    let best = scored[0];
-    for (const s of scored) if (s.score > best.score || (s.score === best.score && s.index < best.index)) best = s;
-    options.onRuntimeEvent?.({ type: "quality", stage: "end", helper: "judgePanel" });
-    return best;
-  };
+  // ── Control helpers: deterministic sugar injected as script globals. Each one
+  // is built purely on agent(), so callSeq ordering stays stable and resume
+  // keeps working. ──
 
   const loopUntilDry = async (opts: {
     round: (roundIndex: number) => Promise<unknown[]> | unknown[];
@@ -1578,23 +1457,6 @@ export async function runWorkflow<T = unknown>(
       }
     }
     return all;
-  };
-
-  const COMPLETENESS_SCHEMA = {
-    type: "object",
-    properties: { complete: { type: "boolean" }, missing: { type: "array", items: { type: "string" } } },
-    required: ["complete"],
-  };
-  const completenessCheck = async (taskArgs: unknown, results: unknown) => {
-    throwIfAborted();
-    ensureAgentCapacity(1, "completenessCheck()");
-    options.onRuntimeEvent?.({ type: "quality", stage: "start", helper: "completenessCheck" });
-    const verdict = await agent(
-      `Given the task and the results gathered so far, list what is still MISSING (modalities not covered, claims unverified, gaps). Be specific and concise.\n\nTask:\n${JSON.stringify(taskArgs)}\n\nResults so far:\n${JSON.stringify(results).slice(0, 4000)}`,
-      { label: "completeness critic", schema: COMPLETENESS_SCHEMA },
-    );
-    options.onRuntimeEvent?.({ type: "quality", stage: "end", helper: "completenessCheck" });
-    return verdict;
   };
 
   // Thin bounded-retry / validation-gate combinators. Sugar over the for-loop +
@@ -2323,7 +2185,6 @@ function resolveAgentCwd(value: unknown): string | undefined {
 
 function buildAgentInstructions(
   phase: string | undefined,
-  options: AgentOptions,
   def: AgentDefinition | undefined,
   resolvedIsolation?: "worktree",
 ): string | undefined {

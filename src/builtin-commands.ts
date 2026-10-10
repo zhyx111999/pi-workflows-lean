@@ -184,5 +184,4 @@ export function registerBuiltinWorkflows(
     });
     claimCommand(pi, "deep-research", "builtin");
   }
-
 }

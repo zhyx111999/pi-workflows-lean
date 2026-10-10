@@ -89,9 +89,7 @@ function asTailAgent(agent: WorkflowAgentSnapshot | PersistedAgentState): TailAg
   };
 }
 
-export function createWorkflowTailTool(
-  options: WorkflowTailToolOptions,
-): ToolDefinition<typeof workflowTailSchema> {
+export function createWorkflowTailTool(options: WorkflowTailToolOptions): ToolDefinition<typeof workflowTailSchema> {
   return defineTool({
     name: WORKFLOW_TAIL_TOOL_NAME,
     label: "Workflow tail",
@@ -108,11 +106,16 @@ export function createWorkflowTailTool(
         chars?: number;
       } = { found: false };
       const manager = options.getManager();
-      const runs = manager.listRuns().slice().sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+      const runs = manager
+        .listRuns()
+        .slice()
+        .sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
       const run = params.runId ? runs.find((item) => item.runId === params.runId) : runs[0];
       if (!run) {
         return {
-          content: [{ type: "text" as const, text: params.runId ? `No workflow run ${params.runId}.` : "No workflow runs." }],
+          content: [
+            { type: "text" as const, text: params.runId ? `No workflow run ${params.runId}.` : "No workflow runs." },
+          ],
           details,
         };
       }

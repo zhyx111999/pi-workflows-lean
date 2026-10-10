@@ -541,8 +541,3 @@ function normalizeWorkflowScript(script: string): string {
   if (fence) text = fence[1].trim();
   return text;
 }
-
-function _isAbortError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /\babort(?:ed)?\b/i.test(error.message);
-}
