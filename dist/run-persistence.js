@@ -1,0 +1,537 @@
+/**
+ * Workflow run state persistence for pause/resume support.
+ */
+import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
+import { ensureDir as ensureDirFs, listJsonFilesSafe, resolvePersistenceFs, unlinkIfExistsSafe, } from "./fs-persistence.js";
+import { settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
+import { createRunRecordStore } from "./run-record-store.js";
+export { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents, } from "./run-agent-settlement.js";
+import { workflowProjectPaths } from "./workflow-paths.js";
+/**
+ * Sanitize a persisted/incoming auto-resume attempt counter: corrupt or
+ * foreign values (non-number, NaN, Infinity, negative, non-integer) become
+ * undefined — a NaN/negative counter would defeat the scheduler's give-up
+ * cap and produce NaN timer delays (#207).
+ */
+export function sanitizeAutoResumeAttempts(value) {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+/**
+ * Retention policy for terminal (completed/failed/aborted) runs kept on
+ * disk. Bounded so a long-lived project directory can't accumulate an
+ * unbounded number of run files (each polled/listed on every list() call).
+ * A run in "running" or "paused" status is NEVER counted against this cap
+ * or evicted by it — only genuinely finished runs age out, oldest (by
+ * updatedAt) first, once the terminal-run count exceeds the cap. 300 is
+ * generous enough to cover weeks of typical usage while keeping list()'s
+ * per-call directory scan bounded.
+ */
+export const DEFAULT_MAX_TERMINAL_RUNS_ON_DISK = 300;
+export const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "aborted"]);
+const PERSISTED_AGENT_STATUSES = [
+    "queued",
+    "running",
+    "done",
+    "error",
+    "skipped",
+];
+/** Every status a persisted agent row may validly carry — exhaustively
+ * checked against PersistedAgentState["status"] by the assertion above.
+ * Forward-compat note: resume seeding DROPS rows with out-of-union statuses
+ * (e.g. written by a newer release) — deliberate garbage-vs-unknown tradeoff:
+ * an unknown status cannot be ghost-settled or displayed safely, so the row
+ * is treated as corrupt rather than re-persisted as a lie. */
+export const VALID_PERSISTED_AGENT_STATUSES = new Set(PERSISTED_AGENT_STATUSES);
+/** Cause stamped onto leftover in-flight agents when a run reaches a terminal status. */
+export function terminalRunInterruptCause(status, error) {
+    if (status === "aborted") {
+        return { error: "aborted", errorCode: error?.code ?? WorkflowErrorCode.WORKFLOW_ABORTED };
+    }
+    if (status === "failed") {
+        return {
+            error: error?.message ?? "run failed",
+            errorCode: error?.code ?? WorkflowErrorCode.UNKNOWN,
+        };
+    }
+    return { error: "run completed" };
+}
+/**
+ * Fail-closed rewrite of leftover queued/running agents on a terminal run.
+ * Completed/failed/aborted must never persist a still-`running` agent.
+ */
+export function settleNonTerminalPersistedAgents(agents, status, error, endedAt) {
+    if (!TERMINAL_RUN_STATUSES.has(status))
+        return agents;
+    return settleInterruptedPersistedAgents(agents, terminalRunInterruptCause(status, error), endedAt);
+}
+/**
+ * Absorb same-tick list reads before checking directory stamps and reconciling
+ * lightweight per-file views. Full histories are hydrated only on demand.
+ */
+const LIST_CACHE_TTL_MS = 300;
+export function createRunPersistence(cwd, fsOverride, options) {
+    const fs = resolvePersistenceFs(fsOverride);
+    const records = createRunRecordStore(fs);
+    const _existsSync = fs.existsSync;
+    const _readFileSync = fs.readFileSync;
+    const _statSync = fs.statSync;
+    const _unlinkSync = fs.unlinkSync;
+    const _writeFileSync = fs.writeFileSync;
+    const maxTerminalRunsOnDisk = options?.maxTerminalRunsOnDisk ?? DEFAULT_MAX_TERMINAL_RUNS_ON_DISK;
+    const paths = workflowProjectPaths(cwd);
+    const runsDir = paths.runsDir;
+    const legacyRunsDir = paths.legacyRunsDir;
+    const ensureDir = () => ensureDirFs(fs, runsDir);
+    const runPath = (dir, runId) => join(dir, `${runId}.json`);
+    const primaryRunPath = (runId) => runPath(runsDir, runId);
+    const legacyRunPath = (runId) => runPath(legacyRunsDir, runId);
+    const lockPath = (dir, runId) => join(dir, `${runId}.lock`);
+    const primaryLockPath = (runId) => lockPath(runsDir, runId);
+    const legacyLockPath = (runId) => lockPath(legacyRunsDir, runId);
+    const candidateRunPaths = (runId) => [primaryRunPath(runId), legacyRunPath(runId)];
+    const recordExists = (runId) => candidateRunPaths(runId).some((path) => _existsSync(path) || _existsSync(`${path}.bak`));
+    // Runs this instance has written or read. Every write path re-saves a state it
+    // obtained that way, so a known run whose record is now absent was deleted by
+    // another writer; recreating it would resurrect the deleted run. A run this
+    // instance has never seen is still created normally.
+    const knownRunIds = new Set();
+    const pidIsAlive = (pid) => {
+        if (!Number.isInteger(pid) || pid <= 0)
+            return false;
+        try {
+            process.kill(pid, 0);
+            return true;
+        }
+        catch (err) {
+            if (err.code === "EPERM")
+                return true;
+            return false;
+        }
+    };
+    const readLockAt = (path) => {
+        try {
+            return JSON.parse(_readFileSync(path, "utf-8"));
+        }
+        catch {
+            return null;
+        }
+    };
+    const readLock = (runId) => readLockAt(primaryLockPath(runId));
+    // Short writer mutex serializes append + head commit, including metadata
+    // writes while a long-lived execution lease is held. Never busy-wait.
+    const mutate = (runId, fn) => {
+        ensureDir();
+        const path = `${primaryRunPath(runId)}.write-lock`;
+        const token = `${process.pid}-${Date.now()}-${Math.random()}`;
+        const ownerFile = `${path}.${randomUUID()}.owner`;
+        const release = (target) => {
+            if (readLockAt(target)?.token === token)
+                unlinkIfExistsSafe(fs, target);
+        };
+        const claim = (target, depth = 0) => {
+            if (depth > 8)
+                throw new Error("Run writer recovery chain is too deep");
+            for (let attempt = 0;; attempt++) {
+                try {
+                    fs.linkSync(ownerFile, target);
+                    return;
+                }
+                catch (error) {
+                    if (error.code !== "EEXIST" || attempt > 0)
+                        throw error;
+                    const existing = readLockAt(target);
+                    if (!existing ||
+                        typeof existing.token !== "string" ||
+                        !Number.isInteger(existing.pid) ||
+                        existing.pid <= 0 ||
+                        pidIsAlive(existing.pid))
+                        throw error;
+                    // Serialize reapers of this exact dead-owner incarnation. Without
+                    // this guard, a second reaper could unlink a new live mutex after
+                    // both had observed the same stale owner.
+                    const key = createHash("sha256").update(`${target}\0${existing.token}`).digest("hex");
+                    const guard = `${path}.reap-${key}`;
+                    claim(guard, depth + 1);
+                    try {
+                        if (readLockAt(target)?.token === existing.token)
+                            _unlinkSync(target);
+                    }
+                    finally {
+                        release(guard);
+                    }
+                }
+            }
+        };
+        // Publish a fully written owner atomically. A process dying between open
+        // and write can leave only an unlinked candidate, never an empty mutex.
+        try {
+            _writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, token }), { flag: "wx" });
+            claim(path);
+        }
+        finally {
+            unlinkIfExistsSafe(fs, ownerFile);
+        }
+        try {
+            return fn();
+        }
+        finally {
+            release(path);
+            invalidateListCache();
+        }
+    };
+    // list() cache: recomputed lazily, invalidated synchronously by every
+    // mutation this instance performs (save()/delete()) so a stale read can
+    // never outlive a mutation this process made. A read from another process
+    // (or a direct fs write bypassing this instance) is picked up once the TTL
+    // elapses, same as before this cache existed on the next un-cached call.
+    let listCache;
+    let listCacheAt = 0;
+    let directoryStamp = "";
+    let reconciledAt = 0;
+    const directoryVersion = () => [runsDir, legacyRunsDir]
+        .map((dir) => {
+        try {
+            const s = fs.statSync(dir);
+            return `${s.ino}:${s.mtimeMs}:${s.ctimeMs}`;
+        }
+        catch {
+            return "missing";
+        }
+    })
+        .join("|");
+    const invalidateListCache = () => {
+        listCache = undefined;
+    };
+    // Per-file mtime+size+ino cache, keyed by absolute path: even once the
+    // TTL-level listCache above expires (the active panel polls roughly every
+    // 300ms, i.e. faster than or comparable to the TTL), most run files on
+    // disk haven't changed since the last recompute. Re-stat is cheap; re-read
+    // + re-JSON.parse is not, and scales with total lifetime run history, not
+    // with what actually changed. A file whose (mtimeMs, size, ino) all match
+    // what we last parsed is reused as-is instead of being re-read; entries
+    // for files that vanished between recomputes are pruned so this cache
+    // can't grow unbounded independent of what's actually on disk.
+    //
+    // ino is load-bearing, not redundant with mtime+size: save() writes via
+    // tmp-write + rename (writeJsonAtomicWithBackup), and a rename onto an
+    // existing path allocates a NEW inode for the replacement file. Two
+    // consecutive saves landing in the same mtime tick (400ms-throttled
+    // progress persists vs. 1-2s mtime granularity on HFS+/many network
+    // mounts/some Docker volume drivers is entirely realistic) with
+    // coincidentally equal byte length (e.g. "paused" and "failed" are the
+    // same length) would otherwise be indistinguishable from "unchanged" by
+    // (mtimeMs, size) alone — serving stale, previously-cached content
+    // forever until something ELSE about the file changes. The inode always
+    // changes on such a rename, so adding it closes that hole for free.
+    const fileStateCache = new Map();
+    const removeStaleLegacyLock = (runId) => {
+        const lock = legacyLockPath(runId);
+        const existing = readLockAt(lock);
+        if (existing?.runId === runId && pidIsAlive(existing.pid))
+            return false;
+        try {
+            if (_existsSync(lock))
+                _unlinkSync(lock);
+        }
+        catch {
+            return false;
+        }
+        return true;
+    };
+    const computeList = () => {
+        const byRunId = new Map();
+        const seenPaths = new Set();
+        for (const dir of [runsDir, legacyRunsDir]) {
+            for (const file of listJsonFilesSafe(fs, dir)) {
+                const path = join(dir, file);
+                seenPaths.add(path);
+                try {
+                    const stat = _statSync(path);
+                    const cached = fileStateCache.get(path);
+                    // Reuse the last parse when the file is byte-identical (same
+                    // mtime + size + inode) to what produced it — the dominant case
+                    // on every poll tick once a run goes terminal and stops changing.
+                    // ino is what actually rules out a false "unchanged" match on a
+                    // coarse-mtime filesystem (see the field doc comment above).
+                    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.ino === stat.ino) {
+                        if (!byRunId.has(cached.state.runId))
+                            byRunId.set(cached.state.runId, cached.state);
+                        continue;
+                    }
+                    const record = JSON.parse(_readFileSync(path, "utf-8"));
+                    const state = records.preview(path, record);
+                    knownRunIds.add(state.runId);
+                    fileStateCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, state });
+                    if (!byRunId.has(state.runId))
+                        byRunId.set(state.runId, state);
+                }
+                catch {
+                    // Skip corrupted/unreadable files; don't let a stale cache entry
+                    // for a file that's now failing to read linger either.
+                    fileStateCache.delete(path);
+                }
+            }
+        }
+        // Prune cache entries for files that no longer exist (deleted runs) so
+        // this map's size tracks what's actually on disk, not lifetime history.
+        for (const path of fileStateCache.keys()) {
+            if (!seenPaths.has(path))
+                fileStateCache.delete(path);
+        }
+        return [...byRunId.values()].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    };
+    // Bound the number of terminal (completed/failed/aborted) runs kept on
+    // disk (see DEFAULT_MAX_TERMINAL_RUNS_ON_DISK) — called after every save()
+    // whose state is terminal, since that's the only time the terminal count
+    // can grow. Running/paused and undelivered runs are never candidates: they're
+    // filtered out before the cap is even considered.
+    const enforceRetention = () => {
+        const terminal = computeList()
+            .filter((r) => TERMINAL_RUN_STATUSES.has(r.status) && !r.pendingDelivery)
+            .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
+        const excess = terminal.length - maxTerminalRunsOnDisk;
+        if (excess <= 0)
+            return;
+        for (const run of terminal.slice(0, excess)) {
+            try {
+                mutate(run.runId, () => {
+                    if ([primaryLockPath(run.runId), legacyLockPath(run.runId)].some((path) => {
+                        const lock = readLockAt(path);
+                        return lock && pidIsAlive(lock.pid);
+                    }))
+                        return;
+                    const fresh = records.peek(primaryRunPath(run.runId)) ?? records.peek(legacyRunPath(run.runId));
+                    if (fresh && TERMINAL_RUN_STATUSES.has(fresh.status) && !fresh.pendingDelivery)
+                        deleteRunFiles(run.runId);
+                });
+            }
+            catch {
+                // Contended or unreadable records remain available for the next pass.
+            }
+        }
+        invalidateListCache();
+    };
+    const deleteRunFiles = (runId) => {
+        let deleted = false;
+        const unlinkData = (path) => {
+            try {
+                _unlinkSync(path);
+                return true;
+            }
+            catch (error) {
+                if (error.code === "ENOENT")
+                    return false;
+                throw error;
+            }
+        };
+        for (const path of candidateRunPaths(runId)) {
+            // Delete every readable recovery candidate before releasing either lock:
+            // a foreign resume that acquires between those operations must never find
+            // a surviving primary, backup, or legacy record to resurrect.
+            for (const sidecar of [`${path}.bak`, `${path}.tmp`, records.logPath(path)]) {
+                unlinkData(sidecar);
+                fileStateCache.delete(sidecar);
+            }
+            if (unlinkData(path))
+                deleted = true;
+            fileStateCache.delete(path);
+            records.forget(path);
+        }
+        for (const dir of [runsDir, legacyRunsDir]) {
+            if (!_existsSync(dir))
+                continue;
+            for (const name of fs.readdirSync(dir)) {
+                if (name === `${runId}.log` ||
+                    name.startsWith(`${runId}.json.result-`) ||
+                    (name.startsWith(`${runId}.json.write-lock.`) && (name.endsWith(".owner") || name.includes(".reap-"))))
+                    unlinkData(join(dir, name));
+            }
+        }
+        // Locks come LAST, after both primary and legacy data/recovery candidates
+        // have been removed. deleteRun() deliberately holds its acquired lease
+        // across this sequence, so opening this final release window sooner would
+        // let another process resume a record that is about to be deleted.
+        for (const lock of [primaryLockPath(runId), legacyLockPath(runId)]) {
+            unlinkIfExistsSafe(fs, lock);
+            fileStateCache.delete(lock);
+        }
+        return deleted;
+    };
+    return {
+        exportResult(runId, result) {
+            return mutate(runId, () => {
+                if (!candidateRunPaths(runId).some((path) => _existsSync(path)))
+                    throw new Error("Run disappeared before result export");
+                const json = JSON.stringify({ runId, result }, null, 2);
+                const hash = createHash("sha256").update(json).digest("hex");
+                const path = `${primaryRunPath(runId)}.result-${hash}`;
+                if (_existsSync(path))
+                    return path;
+                const temporary = `${path}.${randomUUID()}.tmp`;
+                try {
+                    _writeFileSync(temporary, json, { flush: true });
+                    fs.renameSync(temporary, path);
+                }
+                finally {
+                    unlinkIfExistsSafe(fs, temporary);
+                }
+                return path;
+            });
+        },
+        save(state) {
+            ensureDir();
+            state.updatedAt = new Date().toISOString();
+            const path = primaryRunPath(state.runId);
+            // Atomic write: a crash mid-write can't corrupt the live file (tmp+rename is
+            // atomic on the same filesystem). A .bak from the previous good save is the
+            // recovery fallback if the primary is somehow truncated.
+            mutate(state.runId, () => {
+                if (knownRunIds.has(state.runId) && !recordExists(state.runId))
+                    throw new RunRecordDeletedError(state.runId);
+                records.save(path, state);
+                knownRunIds.add(state.runId);
+            });
+            invalidateListCache();
+            // Only a terminal write can grow the terminal-run count, so only check
+            // the cap then — a "running"/"paused" save is on the hot path (every
+            // progress tick) and must not pay for a retention scan.
+            if (TERMINAL_RUN_STATUSES.has(state.status))
+                enforceRetention();
+        },
+        loadPreview(runId) {
+            for (const path of candidateRunPaths(runId)) {
+                const record = records.peek(path);
+                if (record) {
+                    knownRunIds.add(runId);
+                    return record;
+                }
+            }
+            return null;
+        },
+        recoverInterrupted(runId) {
+            return mutate(runId, () => {
+                for (const path of candidateRunPaths(runId)) {
+                    if (_existsSync(path) || _existsSync(`${path}.bak`))
+                        return records.recoverInterrupted(path);
+                }
+                return false;
+            });
+        },
+        updateMetadata(runId, patch, expectedDeliveryId) {
+            return mutate(runId, () => {
+                for (const path of candidateRunPaths(runId)) {
+                    if (_existsSync(path) || _existsSync(`${path}.bak`))
+                        return records.updateMetadata(path, patch, expectedDeliveryId);
+                }
+                return false;
+            });
+        },
+        load(runId) {
+            // Try the primary, then the .bak — so a corrupt primary doesn't lose the run.
+            for (const path of candidateRunPaths(runId)) {
+                let state;
+                try {
+                    state = records.read(path);
+                }
+                catch {
+                    return null;
+                }
+                if (state) {
+                    knownRunIds.add(runId);
+                    return state;
+                }
+            }
+            return null;
+        },
+        list() {
+            const now = Date.now();
+            // Return a fresh array on every call (a cheap ref-copy) so a caller that
+            // sorts/reverses/mutates the result in place can't corrupt the cache — the
+            // pre-cache code re-parsed into a new array each call, preserve that.
+            if (listCache && now - listCacheAt < LIST_CACHE_TTL_MS) {
+                return [...listCache];
+            }
+            // Cooperative writers replace heads atomically, changing the directory
+            // stamp. Reconcile in-place external edits at most every five seconds.
+            const stamp = directoryVersion();
+            if (listCache && stamp === directoryStamp && now - reconciledAt < 5000) {
+                listCacheAt = now;
+                return [...listCache];
+            }
+            const result = computeList();
+            listCache = result;
+            listCacheAt = now;
+            reconciledAt = now;
+            directoryStamp = stamp;
+            return [...result];
+        },
+        delete(runId) {
+            try {
+                return mutate(runId, () => deleteRunFiles(runId));
+            }
+            finally {
+                invalidateListCache();
+            }
+        },
+        acquireRunLease(runId) {
+            ensureDir();
+            const path = primaryRunPath(runId);
+            const lock = primaryLockPath(runId);
+            if (!removeStaleLegacyLock(runId))
+                return null;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+                const payload = {
+                    runId,
+                    runPath: path,
+                    pid: process.pid,
+                    startedAt: new Date().toISOString(),
+                    token,
+                };
+                try {
+                    _writeFileSync(lock, JSON.stringify(payload, null, 2), { flag: "wx" });
+                    return { runId, token };
+                }
+                catch (err) {
+                    const code = err.code;
+                    if (code !== "EEXIST")
+                        throw err;
+                    const existing = readLock(runId);
+                    if (existing && existing.runPath === path && pidIsAlive(existing.pid)) {
+                        return null;
+                    }
+                    try {
+                        _unlinkSync(lock);
+                    }
+                    catch {
+                        return null;
+                    }
+                }
+            }
+            return null;
+        },
+        releaseRunLease(lease) {
+            try {
+                const existing = readLock(lease.runId);
+                if (existing?.token === lease.token)
+                    _unlinkSync(primaryLockPath(lease.runId));
+            }
+            catch {
+                // Best-effort cleanup only.
+            }
+        },
+        getRunsDir() {
+            return runsDir;
+        },
+    };
+}
+/**
+ * Generate a unique run ID.
+ */
+export function generateRunId() {
+    const timestamp = Date.now().toString(36);
+    const random = Math.random().toString(36).slice(2, 8);
+    return `${timestamp}-${random}`;
+}

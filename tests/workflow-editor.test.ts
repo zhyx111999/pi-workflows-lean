@@ -1,14 +1,35 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendParentWorkflowPrompt, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
+import { type Context, createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import {
+  createAgentSession,
+  DefaultResourceLoader,
+  type ExtensionAPI,
+  ModelRuntime,
+  SessionManager,
+  SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
 import {
   buildForcedWorkflowPrompt,
   installParentPromptHook,
   registerWorkflowProgressCommands,
 } from "../src/workflow-editor.js";
 
-type InputHandler = (event: { source?: string; text?: string }) => { action: string; text?: string };
+type InputEvent = {
+  source: "interactive" | "rpc" | "extension";
+  text: string;
+  streamingBehavior?: "steer" | "followUp";
+};
+type InputHandler = (event: InputEvent) => unknown;
+type BeforeAgentStartHandler = (event: { prompt: string }) => unknown;
+
+const HIDDEN_PARENT_PROMPT = {
+  message: { customType: PARENT_PROMPT_MESSAGE_TYPE, content: PARENT_WORKFLOW_PROMPT, display: false },
+};
 
 /** Capture every `pi.on` registration and any attempt to change the active tools. */
 function hookHarness() {
@@ -26,42 +47,196 @@ function hookHarness() {
   } as unknown as ExtensionAPI;
   installParentPromptHook(pi);
   const input = handlers.input?.[0] as InputHandler | undefined;
+  const beforeAgentStart = handlers.before_agent_start?.[0] as BeforeAgentStartHandler | undefined;
   assert.ok(input, "input handler should be registered");
-  return { handlers, input, setActiveToolsCalls: () => setActiveToolsCalls };
+  assert.ok(beforeAgentStart, "before_agent_start handler should be registered");
+  /** Pi's order for a prompt that starts a run: `input`, then `before_agent_start` with the expanded text. */
+  const submit = (event: InputEvent, prompt = event.text) => {
+    const inputResult = input(event);
+    return { inputResult, startResult: beforeAgentStart({ prompt }) };
+  };
+  return { handlers, input, beforeAgentStart, submit, setActiveToolsCalls: () => setActiveToolsCalls };
 }
 
 describe("installParentPromptHook", () => {
-  it("registers exactly one input hook and nothing else", () => {
+  it("registers one input and one before_agent_start hook and nothing else", () => {
     const { handlers, setActiveToolsCalls } = hookHarness();
-    assert.deepEqual(Object.keys(handlers), ["input"]);
+    assert.deepEqual(Object.keys(handlers).sort(), ["before_agent_start", "input"]);
     assert.equal(handlers.input.length, 1);
+    assert.equal(handlers.before_agent_start.length, 1);
     assert.equal(setActiveToolsCalls(), 0, "installing the hook does not touch active tools");
   });
 
-  it("appends the parent prompt verbatim to an interactive message", () => {
-    const { input, setActiveToolsCalls } = hookHarness();
+  it("adds the parent prompt as a hidden message after a typed message and leaves the text unchanged", () => {
+    const { submit, setActiveToolsCalls } = hookHarness();
     for (const text of ["hello", "please run a workflow over src/", "WORKFLOWS are great"]) {
-      const result = input({ source: "interactive", text });
-      assert.deepEqual(result, { action: "transform", text: `${text}\n\n---\n${PARENT_WORKFLOW_PROMPT}` });
-      assert.equal(result.text, appendParentWorkflowPrompt(text));
+      const { inputResult, startResult } = submit({ source: "interactive", text });
+      assert.equal(inputResult, undefined, "the user message is never transformed");
+      assert.deepEqual(startResult, HIDDEN_PARENT_PROMPT, text);
     }
     assert.equal(setActiveToolsCalls(), 0, "the hook never changes the active tool set");
   });
 
-  it("leaves slash commands, empty input, and already-tagged text unchanged", () => {
-    const { input } = hookHarness();
-    for (const text of ["/workflows list", "  /deep-research what is pi?", "", "   "]) {
-      assert.deepEqual(input({ source: "interactive", text }), { action: "continue" }, JSON.stringify(text));
+  it("does not add it for slash commands", () => {
+    const { submit } = hookHarness();
+    for (const text of ["/workflows list", "  /deep-research what is pi?", "/skill:review src"]) {
+      const { inputResult, startResult } = submit({ source: "interactive", text });
+      assert.equal(inputResult, undefined);
+      assert.equal(startResult, undefined, text);
     }
-    const tagged = appendParentWorkflowPrompt("hello");
-    assert.deepEqual(input({ source: "interactive", text: tagged }), { action: "continue" });
+    // A prompt template expands before before_agent_start; the expansion must not match either.
+    assert.equal(submit({ source: "interactive", text: "/fix-bug 42" }, "Fix bug 42").startResult, undefined);
   });
 
-  it("ignores input that is not typed interactively", () => {
-    const { input } = hookHarness();
-    for (const source of ["rpc", "extension", undefined]) {
-      assert.deepEqual(input({ source, text: "run a workflow" }), { action: "continue" }, String(source));
+  it("does not add it for input from RPC or other extensions", () => {
+    const { submit } = hookHarness();
+    for (const source of ["rpc", "extension"] as const) {
+      assert.equal(submit({ source, text: "run a workflow" }).startResult, undefined, source);
     }
+  });
+
+  it("does not add it for steer or follow-up messages typed during a run", () => {
+    const { input, beforeAgentStart, submit } = hookHarness();
+    assert.deepEqual(submit({ source: "interactive", text: "start" }).startResult, HIDDEN_PARENT_PROMPT);
+    for (const streamingBehavior of ["steer", "followUp"] as const) {
+      // Pi queues these into the running turn; before_agent_start does not fire for them.
+      assert.equal(input({ source: "interactive", text: "also check tests", streamingBehavior }), undefined);
+      assert.equal(beforeAgentStart({ prompt: "also check tests" }), undefined, streamingBehavior);
+    }
+  });
+
+  it("does not carry a recorded message into a later run", () => {
+    const { input, beforeAgentStart, submit } = hookHarness();
+
+    // Typed text that never started a run (another extension handled it, or the submit failed),
+    // followed by the same text sent by an extension: the stale record must not match.
+    input({ source: "interactive", text: "hello" });
+    assert.equal(submit({ source: "extension", text: "hello" }).startResult, undefined);
+
+    // Another extension transformed the typed text after this hook recorded it.
+    input({ source: "interactive", text: "hello" });
+    assert.equal(beforeAgentStart({ prompt: "hello (rewritten)" }), undefined);
+    assert.equal(beforeAgentStart({ prompt: "hello" }), undefined, "a mismatch still consumes the record");
+
+    // A matched record is used once.
+    assert.deepEqual(submit({ source: "interactive", text: "hello" }).startResult, HIDDEN_PARENT_PROMPT);
+    assert.equal(beforeAgentStart({ prompt: "hello" }), undefined);
+  });
+
+  it("leaves earlier messages that already carry the old appended prompt alone", () => {
+    const { handlers, submit } = hookHarness();
+    const legacyText = `hello\n\n---\n${PARENT_WORKFLOW_PROMPT}`;
+    // Only input and before_agent_start are hooked, so stored history is never rewritten.
+    assert.equal(handlers.context, undefined);
+    // Re-sending such text passes through as typed; the prompt still travels separately.
+    const { inputResult, startResult } = submit({ source: "interactive", text: legacyText });
+    assert.equal(inputResult, undefined);
+    assert.deepEqual(startResult, HIDDEN_PARENT_PROMPT);
+  });
+});
+
+describe("installParentPromptHook in a real Pi session", () => {
+  /** Run `drive` against a faux-model session with only the parent-prompt hook installed. */
+  async function withHookedSession(
+    drive: (session: Awaited<ReturnType<typeof createAgentSession>>["session"]) => Promise<void>,
+  ): Promise<Context[]> {
+    const root = await mkdtemp(join(tmpdir(), "pi-dw-parent-prompt-"));
+    const provider = "fauxtest-parent-prompt";
+    const core = createFauxCore({ provider, models: [{ id: "faux-model" }] });
+    const contexts: Context[] = [];
+    try {
+      const modelRuntime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null });
+      modelRuntime.registerProvider(provider, {
+        name: "Faux parent prompt",
+        baseUrl: "http://127.0.0.1:9/faux",
+        apiKey: "faux-dummy-key-not-used",
+        api: core.api,
+        streamSimple: (model, context, options) => {
+          contexts.push(structuredClone(context));
+          return core.streamSimple(model, context, options);
+        },
+        models: core.models.map((model) => ({
+          ...model,
+          input: ["text"] as ("text" | "image")[],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128000,
+          maxTokens: 4096,
+        })),
+      });
+      core.setResponses(Array.from({ length: 8 }, () => fauxAssistantMessage("ok", { stopReason: "stop" })));
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: root,
+        agentDir: root,
+        extensionFactories: [(pi) => installParentPromptHook(pi)],
+        noSkills: true,
+        noPromptTemplates: true,
+        noContextFiles: true,
+      });
+      await resourceLoader.reload();
+      const { session } = await createAgentSession({
+        cwd: root,
+        agentDir: root,
+        modelRuntime,
+        model: core.getModel(),
+        tools: [],
+        resourceLoader,
+        sessionManager: SessionManager.inMemory(root),
+        settingsManager: SettingsManager.inMemory(),
+      });
+      try {
+        await drive(session);
+      } finally {
+        session.dispose();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+    return contexts;
+  }
+
+  const lastTurnTexts = (context: Context | undefined) =>
+    (context?.messages ?? []).slice(-3).map((message) => {
+      const content = message.content;
+      return typeof content === "string" ? content : content.map((part) => ("text" in part ? part.text : "")).join("");
+    });
+
+  it("sends the prompt to the model after the typed text and stores it as a hidden message", async () => {
+    let stored: unknown[] = [];
+    const contexts = await withHookedSession(async (session) => {
+      await session.prompt("audit src/");
+      stored = session.messages.slice();
+    });
+    assert.equal(contexts.length, 1);
+    const sent = contexts[0].messages;
+    assert.deepEqual(
+      sent.map((message) => message.role),
+      ["user", "user"],
+    );
+    assert.deepEqual(lastTurnTexts(contexts[0]).slice(-2), ["audit src/", PARENT_WORKFLOW_PROMPT]);
+    assert.deepEqual(
+      stored.slice(0, 2).map((message) => {
+        const { role, content, customType, display } = message as Record<string, unknown>;
+        return { role, content, customType, display };
+      }),
+      [
+        { role: "user", content: [{ type: "text", text: "audit src/" }], customType: undefined, display: undefined },
+        { role: "custom", content: PARENT_WORKFLOW_PROMPT, customType: PARENT_PROMPT_MESSAGE_TYPE, display: false },
+      ],
+    );
+  });
+
+  it("skips slash text and extension messages, and leaves earlier turns untouched", async () => {
+    const contexts = await withHookedSession(async (session) => {
+      await session.prompt("/not-a-command keep this literal");
+      await session.sendUserMessage("queued by another extension");
+      await session.prompt("next typed message");
+    });
+    assert.equal(contexts.length, 3);
+    assert.deepEqual(lastTurnTexts(contexts[0]).slice(-1), ["/not-a-command keep this literal"]);
+    assert.deepEqual(lastTurnTexts(contexts[1]).slice(-2), ["ok", "queued by another extension"]);
+    assert.deepEqual(lastTurnTexts(contexts[2]).slice(-2), ["next typed message", PARENT_WORKFLOW_PROMPT]);
+    // Earlier turns reach the model exactly as they were first sent.
+    assert.deepEqual(contexts[2].messages.slice(0, contexts[1].messages.length), contexts[1].messages);
   });
 });
 

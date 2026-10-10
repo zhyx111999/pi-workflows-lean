@@ -132,6 +132,7 @@ test("context freshness command prints every current byte count", () => {
   assert.match(output, /Registered skills discovery \(all \d+\): \d+ bytes/);
   assert.match(output, /- skills\/workflow-authoring: \d+ bytes/);
   assert.match(output, /- skills\/workflow-patterns: \d+ bytes/);
+  assert.match(output, /- skills\/subagents-setup: \d+ bytes/);
   assert.match(output, /Workflow-authoring skill corpus: \d+ bytes across \d+ files/);
   assert.match(output, /Representative authoring profile median: \d+(?:\.5)? bytes/);
   assert.match(output, /measurement is fresh/i);

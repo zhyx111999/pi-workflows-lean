@@ -1,0 +1,220 @@
+import { defineTool } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
+import { aggregateAgentUsage, tokenFigures } from "./display.js";
+import { runSummary } from "./run-record-store.js";
+// A tool's top-level parameter schema must be a JSON Schema object (`type:
+// "object"`). A discriminated Type.Union of two objects serializes to a
+// top-level `anyOf` with no `type`, which strict providers (e.g. DeepSeek)
+// reject with "schema must be type object, got type: null". So the schema is a
+// single object: `action` is the full set of verbs and `runId` is optional at
+// the schema level. The per-action requirement (runId is mandatory for every
+// action except `list`, which ignores it) is enforced at runtime in
+// normalizeInput() and guarded again in execute().
+const workflowControlSchema = Type.Object({
+    action: Type.Union([
+        Type.Literal("list"),
+        Type.Literal("status"),
+        Type.Literal("pause"),
+        Type.Literal("resume"),
+        Type.Literal("stop"),
+    ], { description: "list = all runs (no runId); status/pause/resume/stop act on one run and require runId." }),
+    runId: Type.Optional(Type.String({
+        minLength: 1,
+        description: "Canonical workflow run ID. Required for status, pause, resume, and stop; ignored for list.",
+    })),
+    checkpointId: Type.Optional(Type.String({
+        minLength: 1,
+        description: "Exact durable checkpoint ID with an attached controller response. Used only by resume; ignored for other actions.",
+    })),
+}, { additionalProperties: false });
+export function createWorkflowControlTool(options) {
+    const getManager = () => {
+        const m = options.getManager?.() ?? options.manager;
+        if (!m)
+            throw new Error("workflow_control: no WorkflowManager configured");
+        return m;
+    };
+    return defineTool({
+        name: "workflow_control",
+        label: "Workflow Control",
+        description: "List and inspect workflow runs, or pause, resume, and stop them without asking the user to run slash commands.",
+        promptSnippet: "Inspect and manage workflow runs directly by canonical run ID.",
+        promptGuidelines: [
+            "Use workflow_control for workflow lifecycle management; do not ask the user to type /workflows when this tool can perform the action.",
+            "Use stop to terminate or quit a run. Closing the navigator does not stop a run.",
+        ],
+        parameters: workflowControlSchema,
+        prepareArguments: normalizeInput,
+        async execute(_toolCallId, params) {
+            const manager = getManager();
+            if (params.action === "list") {
+                const runs = manager.listRuns();
+                const summaries = runs.map((run) => summarizeRun(run, manager.getSnapshot(run.runId)));
+                return result(summaries.length
+                    ? `action=list result=ok runs=${summaries.length}\n${summaries.map(formatRun).join("\n")}`
+                    : "action=list result=ok runs=0", { action: "list", result: "ok", runs: summaries });
+            }
+            // runId is optional in the schema (see workflowControlSchema) but required
+            // for every non-list action; normalizeInput already enforces this, and this
+            // guard both narrows the type and returns a structured error if a model
+            // somehow calls a run action without one.
+            if (!params.runId)
+                return controlError(params.action, "", "runId is required for this action", ["list"]);
+            const run = findRun(manager, params.runId);
+            if (!run)
+                return controlError(params.action, params.runId, "run not found", ["list"]);
+            try {
+                switch (params.action) {
+                    case "status": {
+                        const summary = summarizeRun(run, manager.getSnapshot(run.runId));
+                        return result(`action=status result=ok ${formatRun(summary)}`, {
+                            action: "status",
+                            result: "ok",
+                            run: summary,
+                        });
+                    }
+                    case "pause":
+                        if (!manager.pause(run.runId))
+                            return invalidTransition("pause", run);
+                        return actionSuccess("pause", "paused", currentSummary(manager, run));
+                    case "resume": {
+                        const resumeOptions = params.checkpointId === undefined ? undefined : { checkpointId: params.checkpointId };
+                        if (!(await manager.resume(run.runId, resumeOptions)))
+                            return invalidTransition("resume", run);
+                        return actionSuccess("resume", "resumed", currentSummary(manager, run));
+                    }
+                    case "stop":
+                        if (!manager.stop(run.runId))
+                            return invalidTransition("stop", run);
+                        return actionSuccess("stop", "stopped", currentSummary(manager, run));
+                }
+            }
+            catch (err) {
+                // A transient persistence I/O error (or any unexpected throw from the
+                // manager) shouldn't surface as a raw stack trace to the model — report
+                // it via the tool's normal structured error shape instead.
+                const message = err instanceof Error ? err.message : String(err);
+                return controlError(params.action, run.runId, message, allowedActions(run.status));
+            }
+        },
+    });
+}
+const CONTROL_ACTIONS = new Set(["list", "status", "pause", "resume", "stop"]);
+const CONTROL_FIELDS = new Set(["action", "runId", "checkpointId"]);
+/**
+ * Validate one control request. Providers can materialize every optional schema
+ * field, so a declared field that does not apply to the action is dropped rather
+ * than rejected: list ignores runId and checkpointId, and only resume keeps a
+ * checkpointId. Unknown fields, a missing runId, and an invalid resume
+ * checkpointId remain errors.
+ */
+function normalizeInput(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error("workflow_control requires an object argument");
+    }
+    const input = value;
+    const { action, runId, checkpointId } = input;
+    if (typeof action !== "string" || !CONTROL_ACTIONS.has(action)) {
+        throw new Error("workflow_control requires action: list|status|pause|resume|stop");
+    }
+    const extraKey = Object.keys(input).find((key) => !CONTROL_FIELDS.has(key));
+    if (extraKey)
+        throw new Error(`workflow_control action "${action}" does not accept ${extraKey}`);
+    if (action === "list")
+        return { action };
+    if (typeof runId !== "string" || !runId.trim()) {
+        throw new Error(`workflow_control action "${action}" requires runId`);
+    }
+    const control = { action, runId };
+    if (action !== "resume" || !Object.hasOwn(input, "checkpointId"))
+        return control;
+    if (typeof checkpointId !== "string" || !checkpointId.trim()) {
+        throw new Error('workflow_control action "resume" requires a non-empty checkpointId');
+    }
+    return { ...control, checkpointId };
+}
+function result(text, details) {
+    return { content: [{ type: "text", text }], details };
+}
+function findRun(manager, runId) {
+    return manager.listAllRuns().find((candidate) => candidate.runId === runId);
+}
+function currentSummary(manager, fallback) {
+    const current = findRun(manager, fallback.runId) ?? fallback;
+    return summarizeRun(current, manager.getSnapshot(current.runId));
+}
+function actionSuccess(action, actionResult, run) {
+    return result(`action=${action} result=${actionResult} ${formatRun(run)}`, {
+        action,
+        result: actionResult,
+        run,
+    });
+}
+function invalidTransition(action, run) {
+    return controlError(action, run.runId, `cannot ${action} run with status ${run.status}`, allowedActions(run.status));
+}
+function controlError(action, runId, message, allowed) {
+    return result(`action=${action} result=error runId=${runId} error=${message} allowed=${allowed.join(",") || "none"}`, { action, result: "error", runId, error: message, allowedActions: allowed });
+}
+function allowedActions(status) {
+    switch (status) {
+        case "running":
+            return ["status", "pause", "stop"];
+        case "paused":
+            return ["status", "resume", "stop"];
+        case "failed":
+        case "pending":
+            return ["status", "resume"];
+        case "completed":
+        case "aborted":
+            return ["status"];
+    }
+}
+function summarizeRun(run, live) {
+    const summary = runSummary(run);
+    const agents = live?.agents ?? [];
+    const counts = live
+        ? countAgents(agents)
+        : {
+            total: summary.total,
+            done: summary.done,
+            running: summary.running,
+            queued: summary.queued,
+            error: summary.error,
+            skipped: summary.skipped,
+        };
+    const liveUsage = tokenFigures(live?.tokenUsage);
+    const persistedUsage = tokenFigures(run.tokenUsage);
+    const agentUsage = live ? aggregateAgentUsage(agents) : summary.usage;
+    return {
+        runId: run.runId,
+        workflowName: live?.name ?? run.workflowName,
+        status: run.status,
+        phase: live?.currentPhase ?? run.currentPhase ?? null,
+        checkpoint: summary.checkpoint,
+        counts,
+        activeLabels: live
+            ? agents.filter((agent) => agent.status === "running").map((agent) => agent.label)
+            : summary.activeLabels,
+        tokenTotal: Math.max(liveUsage.fresh + liveUsage.cacheRead, persistedUsage.fresh + persistedUsage.cacheRead, agentUsage.fresh + agentUsage.cacheRead),
+        tokenTotalEstimated: liveUsage.estimated || persistedUsage.estimated || agentUsage.estimated,
+    };
+}
+function countAgents(agents) {
+    return {
+        total: agents.length,
+        done: agents.filter((agent) => agent.status === "done").length,
+        running: agents.filter((agent) => agent.status === "running").length,
+        queued: agents.filter((agent) => agent.status === "queued").length,
+        error: agents.filter((agent) => agent.status === "error").length,
+        skipped: agents.filter((agent) => agent.status === "skipped").length,
+    };
+}
+function formatRun(run) {
+    const active = run.activeLabels.join(",") || "-";
+    const checkpoint = JSON.stringify(run.checkpoint ?? null);
+    return `runId=${run.runId} name=${quote(run.workflowName)} status=${run.status} phase=${quote(run.phase ?? "-")} checkpoint=${checkpoint} total=${run.counts.total} done=${run.counts.done} running=${run.counts.running} queued=${run.counts.queued} error=${run.counts.error} skipped=${run.counts.skipped} active=${quote(active)} tokens=${run.tokenTotalEstimated ? "~" : ""}${run.tokenTotal}`;
+}
+function quote(value) {
+    return JSON.stringify(value);
+}

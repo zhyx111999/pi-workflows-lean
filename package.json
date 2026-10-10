@@ -20,6 +20,7 @@
     "format": "biome format --write .",
     "lint": "biome lint .",
     "build": "tsc",
+    "check:dist": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && npm run build && git --no-pager diff --exit-code -- dist && node -e \"const out=require('node:child_process').execFileSync('git',['ls-files','--others','--exclude-standard','--','dist'],{encoding:'utf8'});if(out){console.error('Build output missing from git:\\n'+out);process.exit(1)}\"",
     "docs:generate": "tsx scripts/generate-workflow-capabilities.ts",
     "docs:check": "tsx scripts/generate-workflow-capabilities.ts --check",
     "context:generate": "tsx scripts/generate-workflow-context-measurement.ts",
@@ -50,7 +51,8 @@
     ],
     "skills": [
       "skills/workflow-authoring",
-      "skills/workflow-patterns"
+      "skills/workflow-patterns",
+      "skills/subagents-setup"
     ]
   },
   "repository": {

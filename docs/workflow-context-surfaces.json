@@ -28,7 +28,7 @@
     },
     "registeredSkillsDiscovery": {
       "serialization": "sum of UTF-8 bytes of normalized Pi skill XML (name + description + location) across every root in package.json's pi.skills",
-      "bytes": 640,
+      "bytes": 1016,
       "skills": [
         {
           "root": "skills/workflow-authoring",
@@ -39,12 +39,17 @@
           "root": "skills/workflow-patterns",
           "serialization": "UTF-8 bytes of normalized Pi skill XML with package-relative location",
           "bytes": 305
+        },
+        {
+          "root": "skills/subagents-setup",
+          "serialization": "UTF-8 bytes of normalized Pi skill XML with package-relative location",
+          "bytes": 376
         }
       ]
     },
     "ordinaryWorkflowOwnedAlwaysOn": {
       "serialization": "sum of permanent prompt, provider-visible tool definitions, and every registered skill's discovery bytes",
-      "bytes": 2716
+      "bytes": 3092
     },
     "workflowAuthoringSkillCorpus": {
       "serialization": "sum of UTF-8 bytes for every file under skills/workflow-authoring",
