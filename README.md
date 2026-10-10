@@ -1,29 +1,28 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/assets/readme/hero.png" width="100%" alt="pi-dynamic-workflows turns one prompt into a routed, resumable, cross-checked fleet of Pi subagents">
-</p>
+# pi-workflows-lean
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows"><img src="https://img.shields.io/npm/v/@quintinshaw/pi-dynamic-workflows?color=cb3837&logo=npm" alt="npm version"></a>
+<p>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <a href="https://pi.dev"><img src="https://img.shields.io/badge/for-Pi-7c3aed" alt="Built for Pi"></a>
 </p>
 
-<p align="center">
-  <a href="https://quintinshaw.github.io/pi-dynamic-workflows/">Documentation</a> ·
-  <a href="https://www.npmjs.com/package/@quintinshaw/pi-dynamic-workflows">npm</a> ·
-  <a href="https://pi.dev/packages/@quintinshaw/pi-dynamic-workflows">Pi package</a>
-</p>
+An independently maintained lean fork of [pi-dynamic-workflows](https://github.com/QuintinShaw/pi-dynamic-workflows) 3.13.0. It does not follow upstream releases and is not published to npm.
 
 Turn one request into a JavaScript orchestration script that fans work out across isolated subagents, routes each task to the right model, cross-checks the results, and returns one synthesized answer. Intermediate work stays in script variables instead of filling your chat context.
 
 Built for work that is too broad for one agent and one context window. The built-in pattern left in this fork is `/deep-research`.
 
-![A real pi-dynamic-workflows run showing parallel agents and live progress](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/docs/media/demo.gif)
+![A workflow run showing parallel agents and live progress](docs/media/demo.gif)
 
-## Start in 30 seconds
+## Install
+
+`dist/` is not committed, so build before installing from a local clone:
 
 ```bash
-pi install npm:@quintinshaw/pi-dynamic-workflows
+git clone https://github.com/zhyx111999/pi-workflows-lean.git
+cd pi-workflows-lean
+npm install
+npm run build
+pi install /absolute/path/to/pi-workflows-lean
 ```
 
 Run `/reload` in Pi, then ask naturally:
@@ -37,8 +36,6 @@ Pi writes and starts the workflow in the background. A live panel tracks progres
 Keyword triggering is on by default: use the bounded word **workflow** or **workflows** in a message to arm workflow mode — the assistant then handles a request by fanning it out across agents, but still answers plainly if you're only asking *about* workflows (the trigger authorizes the tool, it doesn't force it). Or run `/workflows run <prompt>` explicitly. Identifier-like text and paths such as `myworkflow`, `workflow_name`, and `src/workflow-editor.ts` do not trigger. You can change the keyword with `/workflows-trigger set pi-workflow` or disable it with `/workflows-trigger off`.
 
 ## How it works
-
-![A prompt becomes deterministic orchestration, parallel routed agents, verification, and one result](https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/assets/readme/workflow.png)
 
 1. **Orchestrate** — Pi writes a deterministic JavaScript workflow with `agent()`, `parallel()`, `pipeline()`, and `phase()`.
 2. **Fan out** — fresh subagent sessions run concurrently, optionally on different models or isolated git worktrees.
@@ -193,7 +190,7 @@ function parseOrFlag(text, requiredKeys) {
 
 Prefer `schema` (JSON Schema validation with bounded repair) over ad hoc parsing whenever the result's shape matters downstream.
 
-The [full documentation](https://quintinshaw.github.io/pi-dynamic-workflows/) covers every option, structured output, determinism, saved workflows, and operational control.
+The [workflow authoring guide](docs/workflow-authoring.md) and the packaged `workflow-authoring` skill cover script options, structured output, determinism, and saved workflows.
 
 <details>
 <summary><strong>Model tiers and run controls</strong></summary>
@@ -310,7 +307,7 @@ Two behavior changes to know about:
 An independent Pi extension (or embedder) can register one process-wide policy that runs **after** Dynamic Workflows resolves `model` / `tier` / phase intent and **before** `createAgentSession`. The policy may leave routing unchanged, override the concrete model, or reject the spawn. With no policy registered, routing is unchanged.
 
 ```ts
-import { setPreSpawnModelResolver } from "@quintinshaw/pi-dynamic-workflows";
+import { setPreSpawnModelResolver } from "@zhyx111999/pi-workflows-lean";
 
 export default function (_pi) {
   // Example host policy — not required DW behavior.
@@ -345,7 +342,7 @@ The capability table above and the skill's capability references are generated f
 
 ## Credits
 
-The code-mode orchestration idea comes from [Michael Livs' original pi-dynamic-workflows](https://github.com/Michaelliv/pi-dynamic-workflows) and Anthropic's [dynamic workflows in Claude Code](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). This project adds model routing, journaled resume, worktree isolation, measured usage, an interactive TUI, and built-in research and review workflows.
+The code-mode orchestration idea comes from [Michael Livs' original pi-dynamic-workflows](https://github.com/Michaelliv/pi-dynamic-workflows) and Anthropic's [dynamic workflows in Claude Code](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). [QuintinShaw's pi-dynamic-workflows](https://github.com/QuintinShaw/pi-dynamic-workflows), the base of this fork, added model routing, journaled resume, worktree isolation, measured usage, an interactive TUI, and built-in workflows.
 
 ## License
 

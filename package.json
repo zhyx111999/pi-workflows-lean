@@ -1,27 +1,17 @@
 {
   "name": "@zhyx111999/pi-workflows-lean",
   "version": "3.13.0-lean.1",
+  "private": true,
   "description": "Lean fork of pi-dynamic-workflows 3.13.0. The parent model dispatches subagents; cross-check helpers and foreground runs are removed.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "publishConfig": {
-    "access": "public"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
   },
-  "files": [
-    "dist/",
-    "extensions/",
-    "skills/",
-    "src/",
-    "assets/readme/",
-    "README.md"
-  ],
   "scripts": {
     "test": "npm run check && npm run build && npm run docs:check && npm run context:check && npm run test:unit",
     "test:unit": "tsx --test tests/**/*.test.ts",
@@ -61,16 +51,20 @@
     "skills": [
       "skills/workflow-authoring",
       "skills/workflow-patterns"
-    ],
-    "image": "https://raw.githubusercontent.com/QuintinShaw/pi-dynamic-workflows/main/assets/readme/package-cover.png"
+    ]
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/QuintinShaw/pi-dynamic-workflows.git"
+    "url": "git+https://github.com/zhyx111999/pi-workflows-lean.git"
   },
-  "author": "QuintinShaw",
+  "homepage": "https://github.com/zhyx111999/pi-workflows-lean#readme",
+  "bugs": {
+    "url": "https://github.com/zhyx111999/pi-workflows-lean/issues"
+  },
+  "author": "zhyx111999",
   "contributors": [
-    "michaelliv (original author)"
+    "michaelliv (original author)",
+    "QuintinShaw (pi-dynamic-workflows maintainer)"
   ],
   "license": "MIT",
   "dependencies": {
