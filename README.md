@@ -129,6 +129,8 @@ The installed extension generates this compact index from its executable capabil
 
 Pi can manage background runs directly with the `workflow_control` tool instead of asking you to type a command. It supports `list`, `status`, `pause`, `resume`, and `stop`; run-specific actions use the canonical run ID returned when the workflow starts. Status output includes the run state, current phase, agent counts, active labels, and recorded token total.
 
+`checkpointId` is used only by `resume`. Other actions discard it when a provider includes the optional field, so it cannot block `stop`. Resume still requires an exact checkpoint ID when the run is waiting for a durable checkpoint response.
+
 | Command | Purpose |
 | --- | --- |
 | `/workflows` | Open the interactive run navigator |

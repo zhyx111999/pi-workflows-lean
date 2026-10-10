@@ -34,7 +34,8 @@ const workflowControlSchema = Type.Object(
     checkpointId: Type.Optional(
       Type.String({
         minLength: 1,
-        description: "Exact durable checkpoint ID with an attached controller response. For resume only.",
+        description:
+          "Exact durable checkpoint ID with an attached controller response. Used only by resume; ignored for other actions.",
       }),
     ),
   },
@@ -159,26 +160,25 @@ function normalizeInput(value: unknown): WorkflowControlInput {
     throw new Error("workflow_control requires action: list|status|pause|resume|stop");
   }
 
-  const allowedKeys =
-    input.action === "list"
-      ? new Set(["action"])
-      : input.action === "resume"
-        ? new Set(["action", "runId", "checkpointId"])
-        : new Set(["action", "runId"]);
+  const allowedKeys = new Set(
+    input.action === "list" ? ["action", "checkpointId"] : ["action", "runId", "checkpointId"],
+  );
   const extraKey = Object.keys(input).find((key) => !allowedKeys.has(key));
   if (extraKey) throw new Error(`workflow_control action "${input.action}" does not accept ${extraKey}`);
 
   if (input.action !== "list" && (typeof input.runId !== "string" || !input.runId.trim())) {
     throw new Error(`workflow_control action "${input.action}" requires runId`);
   }
-  if (
-    input.action === "resume" &&
-    Object.hasOwn(input, "checkpointId") &&
-    (typeof input.checkpointId !== "string" || input.checkpointId.length === 0)
-  ) {
-    throw new Error('workflow_control action "resume" requires a non-empty checkpointId');
+  // Providers can materialize optional schema fields for every action. Keep
+  // checkpoint identity strict for resume, but discard it for other actions.
+  const { checkpointId, ...control } = input;
+  if (input.action === "resume" && Object.hasOwn(input, "checkpointId")) {
+    if (typeof checkpointId !== "string" || !checkpointId.trim()) {
+      throw new Error('workflow_control action "resume" requires a non-empty checkpointId');
+    }
+    return { ...control, checkpointId } as WorkflowControlInput;
   }
-  return input as WorkflowControlInput;
+  return control as WorkflowControlInput;
 }
 
 function result(text: string, details: Record<string, unknown>): ControlResult {

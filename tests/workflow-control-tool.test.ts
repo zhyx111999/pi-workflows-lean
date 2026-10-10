@@ -109,6 +109,59 @@ test("workflow_control exposes only list, status, pause, resume, and stop in a s
   assert.throws(() => prepare({ action: "status", runId: "abc", response: {} }), /does not accept response/);
 });
 
+test("non-resume actions discard provider-supplied checkpoint IDs before validation and execution", async () => {
+  for (const action of ["list", "status", "pause", "stop"] as const) {
+    for (const checkpointId of ["unused", "", null]) {
+      const fixture = fakeManager([run()]);
+      const tool = createWorkflowControlTool({ manager: fixture.manager });
+      const prepare = tool.prepareArguments as (value: unknown) => Record<string, unknown>;
+      const expected = action === "list" ? { action } : { action, runId: "audit-abc123" };
+      const input = Object.freeze({ ...expected, checkpointId });
+      const prepared = prepare(input);
+
+      assert.deepEqual(prepared, expected);
+      assert.equal(Check(tool.parameters, prepared), true);
+      assert.equal(input.checkpointId, checkpointId, "normalization does not mutate caller arguments");
+      const response = await execute(fixture.manager, prepared);
+      assert.notEqual(response.details.result, "error");
+      if (action === "pause" || action === "stop") {
+        assert.deepEqual(fixture.calls, [{ action, runId: "audit-abc123" }]);
+      }
+      if (action === "stop") {
+        assert.equal((response.details.run as WorkflowControlRunDetails).status, "aborted");
+      }
+    }
+  }
+});
+
+test("resume still validates checkpoint identity and other actions still require a run ID", () => {
+  const { manager } = fakeManager([]);
+  const tool = createWorkflowControlTool({ manager });
+  const prepare = tool.prepareArguments as (value: unknown) => unknown;
+  for (const checkpointId of [undefined, null, "", "   ", 1]) {
+    assert.throws(
+      () => prepare({ action: "resume", runId: "audit-abc123", checkpointId }),
+      /requires a non-empty checkpointId/,
+    );
+  }
+  for (const action of ["status", "pause", "resume", "stop"]) {
+    assert.throws(() => prepare({ action, checkpointId: "unused" }), /requires runId/);
+    assert.throws(
+      () => prepare({ action, runId: "audit-abc123", checkpointId: "unused", response: {} }),
+      /does not accept response/,
+    );
+  }
+  assert.deepEqual(prepare({ action: "resume", runId: "audit-abc123" }), {
+    action: "resume",
+    runId: "audit-abc123",
+  });
+  assert.deepEqual(prepare({ action: "resume", runId: "audit-abc123", checkpointId: "proposal-1" }), {
+    action: "resume",
+    runId: "audit-abc123",
+    checkpointId: "proposal-1",
+  });
+});
+
 test("list and status return stable lifecycle and observability fields", async () => {
   const { manager } = fakeManager([run()]);
 
@@ -286,7 +339,9 @@ test("stop succeeds via the tool for a run resolved from disk but not tracked in
     },
   } as unknown as WorkflowManager;
 
-  const response = await execute(manager, { action: "stop", runId: "cold-restart-1" });
+  const tool = createWorkflowControlTool({ manager });
+  const prepared = tool.prepareArguments?.({ action: "stop", runId: "cold-restart-1", checkpointId: "unused" });
+  const response = await execute(manager, prepared as Record<string, unknown>);
   assert.match(text(response), /^action=stop result=stopped /);
   assert.equal(response.details.result, "stopped");
   assert.doesNotMatch(text(response), /invalidTransition|cannot stop/);
