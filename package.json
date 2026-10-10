@@ -51,7 +51,8 @@
     ],
     "skills": [
       "skills/workflow-authoring",
-      "skills/workflow-patterns"
+      "skills/workflow-patterns",
+      "skills/subagents-setup"
     ]
   },
   "repository": {

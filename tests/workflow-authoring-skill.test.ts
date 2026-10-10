@@ -56,8 +56,9 @@ function requiredSchemaFields(schema?: Record<string, unknown>): unknown[] {
 
 test("workflow-authoring skill links resolve and every skill file is reachable from SKILL.md", () => {
   // workflow-patterns (argument shapes for the built-in workflows reachable by
-  // the `workflow` tool's `name` input) is a separate, smaller skill.
-  assert.deepEqual(packageJson.pi.skills, [SKILL_ROOT, "skills/workflow-patterns"]);
+  // the `workflow` tool's `name` input) and subagents-setup (configuration
+  // files) are separate, smaller skills.
+  assert.deepEqual(packageJson.pi.skills, [SKILL_ROOT, "skills/workflow-patterns", "skills/subagents-setup"]);
   const versionLine = new RegExp(`^  version: ["']?${packageJson.version.replaceAll(".", "\\.")}["']?$`, "m");
   for (const root of packageJson.pi.skills) {
     const source = readFileSync(join(ROOT, root, "SKILL.md"), "utf8");
