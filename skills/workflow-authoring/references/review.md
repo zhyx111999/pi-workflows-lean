@@ -29,7 +29,7 @@ Review author-visible behavior, not formatting preferences.
 
 - Are runtime retries and semantic retries separately bounded?
 - Are loops, agents, concurrency, and timeout bounded appropriately?
-- Do prompt checkpoints rely only on their headless `default` or `headless: "abort"` behavior?
+- Does every checkpoint use a stable, unique `checkpointId` and a JSON payload?
 - Would lexical call order remain stable under resume?
 
 ## Compatibility and publication

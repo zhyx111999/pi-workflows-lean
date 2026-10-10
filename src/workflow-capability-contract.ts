@@ -23,7 +23,7 @@ export interface OptionDescriptor {
 
 /** Reusable option group referenced by capability descriptors. */
 export interface OptionShape {
-  id: "agent-options" | "checkpoint-options";
+  id: "agent-options";
   options: readonly OptionDescriptor[];
 }
 
@@ -165,17 +165,6 @@ const AGENT_OPTIONS: OptionShape = {
     option("retries", "number", true, "run retry count", ["finite values are floored and clamped to 0..3"]),
   ],
 };
-const CHECKPOINT_OPTIONS: OptionShape = {
-  id: "checkpoint-options",
-  options: [
-    option("default", "unknown", true, "true"),
-    option("headless", '"default" | "abort"', true, '"default"'),
-    option("kind", '"confirm" | "input" | "select"', true, '"confirm"'),
-    option("choices", "string[]", true),
-    option("timeoutMs", "number", true),
-  ],
-};
-
 interface RuntimeDescriptorOptions {
   signature?: string;
   support?: CapabilitySupport;
@@ -263,14 +252,11 @@ const capabilities: readonly CapabilityDescriptor[] = [
     ],
   }),
   runtimeGlobal("checkpoint", {
-    signature: "checkpoint(prompt, options?) | checkpoint({ kind, checkpointId, payload }) => Promise<unknown>",
-    optionShape: "checkpoint-options",
+    signature: "checkpoint({ kind, checkpointId, payload }) => Promise<unknown>",
     constraints: [
-      'every extension entry point starts the run in the background without a human prompt, so a prompt checkpoint returns options.default (true when omitted) or aborts the run when headless is "abort"',
-      "a confirm callback is consulted only when an embedding host passes one to runWorkflow; kind, choices, and timeoutMs are declared-only and affect only resume identity",
       "consumes one agent slot and no tokens",
       "journaled answers replay only within an unchanged resume prefix",
-      "object checkpoints accept an open kind identifier, persist their JSON payload, and pause the run",
+      "accepts an open kind identifier, persists its JSON payload, and pauses the run",
       "a controller attaches a lossless-JSON response to the run and checkpoint before workflow_control resumes with only the exact run ID and checkpoint ID",
       "status exposes only checkpoint ID, kind, and status; the durable response never enters model-visible output",
       "durable checkpoint responses resume the same run ID, are journaled before continuation, and reject stale or conflicting delivery",
@@ -421,7 +407,7 @@ export const WORKFLOW_CAPABILITY_DEFINITION: WorkflowCapabilityDefinition = {
     format: { kind: "present-at", version: "2.0.0" },
     content: { kind: "present-at", version: packageJson.version },
   },
-  optionShapes: [AGENT_OPTIONS, CHECKPOINT_OPTIONS],
+  optionShapes: [AGENT_OPTIONS],
   capabilities,
   dynamicReferences: [
     {

@@ -172,12 +172,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * reported for a resumed run would cover only what THIS execution spent.
    */
   initialTokenUsage?: AgentUsage;
-  /**
-   * Ask the human a checkpoint() question and resolve to their reply. Threaded from
-   * a UI-bearing tool context. Absent => headless: checkpoint() takes its declared
-   * default (and journals it), so a detached/background run never hangs.
-   */
-  confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: {
@@ -330,20 +324,6 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   timeoutMs?: number | null;
   /** Retry attempts after a recoverable failure for this specific agent. */
   retries?: number;
-}
-
-/** Options for a human checkpoint() — a deterministic, journaled, replayable gate. */
-export interface CheckpointOptions {
-  /** Reply used when no UI is available (headless/background) and headless != "abort". */
-  default?: unknown;
-  /** Headless behavior: "default" (take `default`/true) or "abort" (throw). Default "default". */
-  headless?: "default" | "abort";
-  /** Confirm | free-text input | pick-one. Affects the hash and the UI widget. */
-  kind?: "confirm" | "input" | "select";
-  /** For kind "select". */
-  choices?: string[];
-  /** Per-checkpoint timeout in ms for the interactive prompt. */
-  timeoutMs?: number;
 }
 
 interface RuntimeState {
@@ -1120,51 +1100,32 @@ export async function runWorkflow<T = unknown>(
     );
   };
 
-  // Deterministic, journaled checkpoint overloads. String prompts retain the
-  // foreground/headless helper. Object checkpoints suspend the workflow until
-  // WorkflowManager persists and supplies an exact response.
-  const checkpoint = async (
-    promptOrCheckpoint: string | WorkflowCheckpointInput,
-    checkpointOptions: CheckpointOptions = {},
-  ) => {
+  // Deterministic, journaled checkpoint: suspends the workflow until
+  // WorkflowManager persists and supplies a response for this exact ID.
+  const checkpoint = async (input: WorkflowCheckpointInput) => {
     throwIfAborted();
-    if (typeof promptOrCheckpoint !== "string" && !isWorkflowCheckpointInput(promptOrCheckpoint)) {
-      throw new TypeError(
-        "checkpoint(object) needs exactly { kind, checkpointId, payload } with valid string identifiers",
-      );
+    if (!isWorkflowCheckpointInput(input)) {
+      throw new TypeError("checkpoint() needs exactly { kind, checkpointId, payload } with valid string identifiers");
     }
     ensureAgentCapacity();
 
     const callIndex = state.callSeq++;
-    const promptText = typeof promptOrCheckpoint === "string" ? promptOrCheckpoint : null;
-    const durableInput =
-      promptText === null
-        ? {
-            ...(promptOrCheckpoint as WorkflowCheckpointInput),
-            payload: cloneDurableJsonValue(
-              (promptOrCheckpoint as WorkflowCheckpointInput).payload,
-              "checkpoint payload",
-            ),
-          }
-        : null;
-    if (durableInput !== null) {
-      if (state.seenCheckpointIds.has(durableInput.checkpointId)) {
-        throw new WorkflowError(
-          `durable checkpoint ID ${JSON.stringify(durableInput.checkpointId)} must be unique within the run`,
-          WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-          { recoverable: false },
-        );
-      }
-      state.seenCheckpointIds.add(durableInput.checkpointId);
+    const durableInput: WorkflowCheckpointInput = {
+      ...input,
+      payload: cloneDurableJsonValue(input.payload, "checkpoint payload"),
+    };
+    if (state.seenCheckpointIds.has(durableInput.checkpointId)) {
+      throw new WorkflowError(
+        `durable checkpoint ID ${JSON.stringify(durableInput.checkpointId)} must be unique within the run`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
     }
+    state.seenCheckpointIds.add(durableInput.checkpointId);
     const activeResumeCheckpoint = state.activeCheckpointResponse;
-    const callHash =
-      promptText === null
-        ? hashWorkflowCheckpoint(durableInput as WorkflowCheckpointInput)
-        : hashCheckpoint(promptText, checkpointOptions);
+    const callHash = hashWorkflowCheckpoint(durableInput);
     const cached = options.resumeJournal?.get(callIndex);
-    const replayingActiveCheckpoint =
-      durableInput !== null && activeResumeCheckpoint?.checkpointId === durableInput.checkpointId;
+    const replayingActiveCheckpoint = activeResumeCheckpoint?.checkpointId === durableInput.checkpointId;
     if (
       !state.resumeBarrierReached &&
       cached != null &&
@@ -1180,79 +1141,60 @@ export async function runWorkflow<T = unknown>(
     }
     state.agentCount++;
 
-    if (durableInput !== null) {
-      if (activeResumeCheckpoint) {
-        if (state.activeCheckpointId !== durableInput.checkpointId) {
-          throw new WorkflowError(
-            `durable checkpoint ${JSON.stringify(durableInput.checkpointId)} does not own the active reservation`,
-            WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-            { recoverable: false },
-          );
-        }
-      } else if (state.activeCheckpointId !== null) {
+    if (activeResumeCheckpoint) {
+      if (state.activeCheckpointId !== durableInput.checkpointId) {
         throw new WorkflowError(
-          `durable checkpoint ${JSON.stringify(state.activeCheckpointId)} is already active`,
+          `durable checkpoint ${JSON.stringify(durableInput.checkpointId)} does not own the active reservation`,
           WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
           { recoverable: false },
         );
-      } else {
-        state.activeCheckpointId = durableInput.checkpointId;
       }
-      if (activeResumeCheckpoint) {
-        const active = activeResumeCheckpoint;
-        if (
-          active.version !== 1 ||
-          active.status !== "resuming" ||
-          active.checkpointId !== durableInput.checkpointId ||
-          active.kind !== durableInput.kind ||
-          !isDeepStrictEqual(active.payload, durableInput.payload) ||
-          !Object.hasOwn(active, "response")
-        ) {
-          throw new WorkflowError(
-            `durable checkpoint ${JSON.stringify(durableInput.checkpointId)} does not match the persisted response`,
-            WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-            { recoverable: false },
-          );
-        }
-        options.onAgentJournal?.({ index: callIndex, hash: callHash, result: active.response });
-        const consumed: WorkflowCheckpoint = {
-          ...active,
-          status: "consumed",
-          consumedAt: new Date().toISOString(),
-        };
-        options.onWorkflowCheckpoint?.(consumed);
-        state.activeCheckpointResponse = null;
-        state.activeCheckpointId = null;
-        return active.response;
-      }
-
-      const waiting: WorkflowCheckpoint = {
-        version: 1,
-        ...durableInput,
-        status: "waiting",
-        createdAt: new Date().toISOString(),
-      };
-      options.onWorkflowCheckpoint?.(waiting);
-      state.checkpointSuspension = new WorkflowCheckpointSuspensionError(waiting.checkpointId);
-      throw state.checkpointSuspension;
-    }
-
-    if (promptText === null) throw new Error("unreachable durable checkpoint branch");
-    let reply: unknown;
-    if (options.confirm) {
-      reply = await options.confirm(promptText, checkpointOptions);
-    } else if (checkpointOptions.headless === "abort") {
+    } else if (state.activeCheckpointId !== null) {
       throw new WorkflowError(
-        `checkpoint "${promptText}" needs human input but none is available (headless run)`,
-        WorkflowErrorCode.WORKFLOW_ABORTED,
+        `durable checkpoint ${JSON.stringify(state.activeCheckpointId)} is already active`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
         { recoverable: false },
       );
     } else {
-      reply = checkpointOptions.default ?? true;
+      state.activeCheckpointId = durableInput.checkpointId;
     }
-    throwIfAborted();
-    options.onAgentJournal?.({ index: callIndex, hash: callHash, result: reply });
-    return reply;
+    if (activeResumeCheckpoint) {
+      const active = activeResumeCheckpoint;
+      if (
+        active.version !== 1 ||
+        active.status !== "resuming" ||
+        active.checkpointId !== durableInput.checkpointId ||
+        active.kind !== durableInput.kind ||
+        !isDeepStrictEqual(active.payload, durableInput.payload) ||
+        !Object.hasOwn(active, "response")
+      ) {
+        throw new WorkflowError(
+          `durable checkpoint ${JSON.stringify(durableInput.checkpointId)} does not match the persisted response`,
+          WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+          { recoverable: false },
+        );
+      }
+      options.onAgentJournal?.({ index: callIndex, hash: callHash, result: active.response });
+      const consumed: WorkflowCheckpoint = {
+        ...active,
+        status: "consumed",
+        consumedAt: new Date().toISOString(),
+      };
+      options.onWorkflowCheckpoint?.(consumed);
+      state.activeCheckpointResponse = null;
+      state.activeCheckpointId = null;
+      return active.response;
+    }
+
+    const waiting: WorkflowCheckpoint = {
+      version: 1,
+      ...durableInput,
+      status: "waiting",
+      createdAt: new Date().toISOString(),
+    };
+    options.onWorkflowCheckpoint?.(waiting);
+    state.checkpointSuspension = new WorkflowCheckpointSuspensionError(waiting.checkpointId);
+    throw state.checkpointSuspension;
   };
 
   const runtimeImplementations = {
@@ -1619,36 +1561,6 @@ function createLimiter(limit: number) {
 
 function defaultAgentLabel(phase: string | undefined, index: number): string {
   return phase ? `${phase} agent ${index}` : `agent ${index}`;
-}
-
-/**
- * Stable identity hash for a checkpoint() call — a cache miss on resume when
- * anything that could change its outcome changes. Must cover every
- * CheckpointOptions field that participates in the outcome, not just
- * promptText/kind/choices:
- *   - `default` and `headless` decide the reply in the headless (no `confirm`
- *     threaded in) path — a script edited to change either must not resume
- *     with the OLD default/behavior's stale journaled reply.
- *   - `timeoutMs` bounds the interactive prompt; a host `confirm` may itself
- *     fall back to `default` when the human doesn't answer in time, so it can
- *     also affect the outcome and is included for the same reason.
- * NOTE: widening this hash is a one-time invalidation of any checkpoint
- * answers already persisted under the old (narrower) hash — on the first
- * resume after upgrading, those checkpoints will cache-miss and re-prompt (or
- * re-apply the default) once, live. That's intentional: a silently-stale
- * cached decision from before the identity surface was fixed is worse than a
- * one-time re-ask.
- */
-function hashCheckpoint(promptText: string, options: CheckpointOptions): string {
-  const identity = JSON.stringify({
-    promptText,
-    kind: options.kind ?? "confirm",
-    choices: options.choices ?? null,
-    default: options.default ?? null,
-    headless: options.headless ?? "default",
-    timeoutMs: options.timeoutMs ?? null,
-  });
-  return createHash("sha256").update(identity).digest("hex");
 }
 
 function isWorkflowCheckpointInput(value: unknown): value is WorkflowCheckpointInput {

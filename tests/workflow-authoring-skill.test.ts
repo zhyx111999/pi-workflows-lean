@@ -250,7 +250,7 @@ test("generated facts and skill references agree on result and failure contracts
   assert.match(agent?.constraints.join(" ") ?? "", /explicit model.*unavailable.*throws MODEL_NOT_FOUND/i);
   assert.match(agent?.constraints.join(" ") ?? "", /implicit default medium tier.*session default when unavailable/i);
   assert.match(agent?.constraints.join(" ") ?? "", /worktree isolation fails closed.*never falls back/i);
-  assert.match(checkpoint?.constraints.join(" ") ?? "", /background.*returns options\.default/i);
+  assert.match(checkpoint?.constraints.join(" ") ?? "", /persists its JSON payload, and pauses the run/i);
   assert.match(background?.constraints.join(" ") ?? "", /ignored/i);
   assert.match(metadata?.signature ?? "", /phases\?: Array<\{ title: string; detail\?: string; model\?: string \}>/);
   assert.match(metadata?.constraints.join(" ") ?? "", /only legal export/i);
@@ -267,7 +267,7 @@ test("generated facts and skill references agree on result and failure contracts
   assert.match(runtime, /agent\(prompt.*label.*schema/i);
   const lifecycle = readFileSync(join(ROOT, SKILL_ROOT, "references/lifecycle.md"), "utf8");
   assert.match(lifecycle, /every workflow run starts in the background.*ignores `background`/i);
-  assert.match(lifecycle, /checkpoint\(prompt, options\?\)` never reaches a human/i);
+  assert.doesNotMatch(lifecycle, /checkpoint\(prompt|headless/i);
   assert.match(lifecycle, /agent execution retries do not add slots/i);
 });
 

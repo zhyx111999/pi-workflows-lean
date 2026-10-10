@@ -91,7 +91,7 @@ The installed extension generates this compact index from its executable capabil
 | agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional)<br>`timeoutMs`: number \| null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)<br>`retries`: number (optional; default: run retry count) |
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
-| checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
+| checkpoint | runtime-global | `checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | — |
 | log | runtime-global | `log(message) => void` | — |
 | phase | runtime-global | `phase(title) => void` | — |
 | args | runtime-global | `args: unknown` | — |
@@ -145,7 +145,7 @@ Agent details use a compact summary by default: completed agents show their fina
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently and preserve input order |
 | `pipeline(items, ...stages)` | Fan items through sequential stages |
 | `phase(title)` | Group work in the live view |
-| `checkpoint(prompt, opts)` | Journaled pause; background runs use the headless default |
+| `checkpoint({ kind, checkpointId, payload })` | Durable pause until a controller supplies a response |
 
 | Agent option | Description |
 | --- | --- |
@@ -284,10 +284,9 @@ Library API note: the unused `createSharedStoreTools` export was removed — use
 
 ## Upgrading past 3.2
 
-Two behavior changes to know about:
+One behavior change to know about:
 
 - **Subagents no longer load host extensions by default.** Each run now builds one shared, extension-free resource loader for all of its subagents (a memory-leak mitigation). Skills, prompts, and `AGENTS.md` context still load, and the coding tools and any toolset (e.g. `web-research`) you hand a subagent are unaffected. What subagents lose is **host-extension-registered tools** — MCP bridges, browser tools, or anything else another installed extension adds. If an `agentType` names one of those tools in its allowlist, that entry now matches nothing. This also means a subagent can no longer recurse into another orchestration extension, even one not covered by the existing tool denylist.
-- **Checkpoints persisted before this release re-run once.** `checkpoint()`'s resume-identity hash now also covers `default`, `headless`, and `timeoutMs`, so changing any of them between runs correctly invalidates a stale cached answer. This is a one-time effect: any checkpoint cached under the old hash simply re-prompts once and then caches normally again.
 
 ## Host: customize worker model before session creation
 

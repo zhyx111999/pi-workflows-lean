@@ -117,7 +117,7 @@ test("createWorkflowTool keeps script syntax in the parameter schema", () => {
   assert.match(description, /phases.*only when.*named phases.*declare only phases it will use/i);
   assert.match(description, /multiple phases.*phase\('Exact Title'\).*agent options/i);
   assert.doesNotMatch(description, /workflow\(|retry\(|gate\(|loopUntilDry\(/);
-  assert.match(description, /checkpoint\(prompt\)/);
+  assert.doesNotMatch(description, /checkpoint\(prompt\)|headless/);
   assert.match(description, /tier: 'small'\|'medium'\|'big'/);
   assert.doesNotMatch(description, /budget/i);
   assert.match(description, /optional `agentType` option.*named user or project definition/i);

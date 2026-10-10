@@ -20,7 +20,6 @@ const workflowToolSchema = Type.Object({
         "Raw JavaScript workflow script, with no Markdown fences. Required unless `name` is given.",
         "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Add phases: [{ title: 'Phase' }] only when the workflow has named phases, and declare only phases it will use. With multiple phases, call phase('Exact Title') before each phase's work or set `phase` in the agent options.",
         "Subagents only do the task in the agent() prompt. Do not add a follow-up subagent to cross-check results.",
-        "checkpoint(prompt) records a journaled pause; a background run uses the headless default true unless headless is 'abort'.",
         "agent(prompt, { label, tier: 'small'|'medium'|'big', model, thinking, schema, timeoutMs, retries }). Untagged agents use the medium tier. An explicit model overrides tier. thinking is off|minimal|low|medium|high|xhigh|max and is separate from tier.",
         "The optional `agentType` option selects a named user or project definition that can bind tools, a model, and role instructions; use it only when its name and purpose are provided in context. Its bound model overrides `tier`; an explicit `model` overrides both.",
         "Use plain JavaScript only; imports, require(), filesystem modules, Date.now(), Math.random(), and new Date() are unavailable.",
@@ -242,7 +241,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
 
       // Runs never block the tool call: the run ID returns now and
       // installResultDelivery sends the result back when the run finishes.
-      // A background run has no UI, so checkpoint() uses its headless default.
       const { runId } = manager.startInBackground(script, params.args, {
         maxAgents: params.maxAgents,
         concurrency: params.concurrency,

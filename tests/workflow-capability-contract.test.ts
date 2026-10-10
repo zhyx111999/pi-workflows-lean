@@ -54,10 +54,10 @@ test("capability definition inventories the settled runtime and invocation contr
 
   assert.deepEqual(runtimeGlobals, [...EXPECTED_RUNTIME_GLOBALS]);
   assert.deepEqual(toolInputs, [...EXPECTED_TOOL_INPUTS]);
-  assert.deepEqual(WORKFLOW_CAPABILITY_DEFINITION.optionShapes.map((shape) => shape.id).sort(), [
-    "agent-options",
-    "checkpoint-options",
-  ]);
+  assert.deepEqual(
+    WORKFLOW_CAPABILITY_DEFINITION.optionShapes.map((shape) => shape.id),
+    ["agent-options"],
+  );
   assert.ok(
     WORKFLOW_CAPABILITY_DEFINITION.capabilities.some(
       (capability) => capability.support === CapabilitySupport.COMPATIBILITY,
@@ -99,7 +99,9 @@ test("background is an ignored compatibility input and no fact offers a foregrou
   assert.match(background?.constraints.join(" ") ?? "", /ignored.*every run starts in the background/);
 
   const checkpoint = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(({ id }) => id === "workflow.runtime.checkpoint");
-  assert.match(checkpoint?.constraints.join(" ") ?? "", /returns options\.default.*aborts the run when headless/);
+  assert.equal(checkpoint?.signature, "checkpoint({ kind, checkpointId, payload }) => Promise<unknown>");
+  assert.equal(checkpoint?.optionShape, null);
+  assert.match(checkpoint?.constraints.join(" ") ?? "", /pauses the run/);
 
   const allFacts = JSON.stringify(WORKFLOW_CAPABILITY_DEFINITION);
   assert.doesNotMatch(allFacts, /background:? false|foreground/i);

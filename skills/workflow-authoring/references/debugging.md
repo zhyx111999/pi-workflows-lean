@@ -13,7 +13,7 @@ Start from the symptom, then reproduce through the real workflow runtime with de
 | Later calls rerun on resume | An earlier call missed or changed, ending the replayable prefix | [lifecycle](lifecycle.md#resume) |
 | Resume reruns a call that already "succeeded" once before | Its only prior attempt(s) ended in a recoverable failure (e.g. `AGENT_EMPTY_OUTPUT`) and were never journaled | [lifecycle](lifecycle.md#resume) |
 | A field read off `agent()`'s result is `undefined` | No `schema` was set; the prompt asking for JSON does not change that `agent()` returns raw text | [lifecycle](lifecycle.md#serialization) |
-| Checkpoint never asks a human | Runs are always background; a prompt checkpoint takes its `default` or aborts | [lifecycle](lifecycle.md#checkpoints) |
+| Run stays paused at a checkpoint | A checkpoint waits until a controller attaches a response and resumes that exact ID | [checkpoints](checkpoint.md) |
 | Returned result cannot cross boundary | It contains a function, promise, cycle, `BigInt`, or runtime object | [lifecycle](lifecycle.md#serialization) |
 | `Date.now()`/randomness is rejected | Resume requires deterministic call structure | [lifecycle](lifecycle.md#resume) |
 

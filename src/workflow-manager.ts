@@ -276,8 +276,6 @@ export interface ExecOptions {
   concurrency?: number;
   /** Retry attempts after recoverable agent failures for this execution. */
   agentRetries?: number;
-  /** Resolve a checkpoint() question with a human reply (only for UI-bearing runs). */
-  confirm?: (promptText: string, options: unknown) => Promise<unknown>;
   /**
    * Whether this run is eligible for auto-resume when it pauses on a provider
    * usage limit. Default-on: omit or pass true to stay eligible, pass false to
@@ -838,7 +836,6 @@ export class WorkflowManager extends EventEmitter {
       onProgress,
       concurrency,
       agentRetries,
-      confirm,
       tools,
       initialTokenUsage,
       drainAbortGraceMs,
@@ -916,7 +913,6 @@ export class WorkflowManager extends EventEmitter {
         tools: resolvedTools,
         excludeTools: this.excludeSubagentTools,
         providerMiddlewareExtensions: this.providerMiddlewareExtensions,
-        confirm,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
         resumeCheckpoint,

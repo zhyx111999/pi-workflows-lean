@@ -6,9 +6,7 @@ Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agent
 
 ## Checkpoints
 
-A checkpoint consumes an agent slot but no tokens. Every workflow run starts in the background and the `workflow` tool ignores `background`, so the prompt overload `checkpoint(prompt, options?)` never reaches a human: it returns the declared `default` (or `true` when omitted), or aborts the run when `headless: "abort"` is selected. Use it only to record a deliberate default decision. `kind`, `choices`, and `timeoutMs` are declared but have no effect beyond resume identity.
-
-The durable `checkpoint({ kind, checkpointId, payload })` overload instead pauses the run until a host controller persists a response and resumes the exact checkpoint ID. It does not choose a headless default or display UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
+A checkpoint consumes an agent slot but no tokens. Every workflow run starts in the background and the `workflow` tool ignores `background`, so nothing prompts a human mid-run. `checkpoint({ kind, checkpointId, payload })` pauses the run until a controller persists a response and resumes the exact checkpoint ID; it displays no UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
 
 Checkpoint answers are journaled and can replay during an unchanged resume prefix. Do not describe checkpoints as guaranteed arbitrary forms or as remote steering.
 
