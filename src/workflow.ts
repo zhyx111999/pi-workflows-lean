@@ -217,6 +217,12 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   }) => void;
   onAgentHistory?: (event: { id: string; label: string; phase?: string; history: AgentHistoryEntry[] }) => void;
   /**
+   * Called when a live agent's session can take instructions, with `steer`
+   * queueing one into it. Returns the function that unregisters the session
+   * when it ends. `id` is the same per-call id as the onAgent* events.
+   */
+  registerAgentSteer?: (agent: { id: string; label: string; steer: (text: string) => Promise<void> }) => () => void;
+  /**
    * The agent's REAL model, pushed the moment WorkflowAgent resolves it — mid-run,
    * long before onAgentEnd. onAgentStart can only carry the pre-resolution guess
    * (this call's explicit/phase spec, else the session's main model), which is wrong
@@ -838,6 +844,13 @@ export async function runWorkflow<T = unknown>(
               onHistory: (history: AgentHistoryEntry[]) => {
                 if (state.agentCallbacksClosed) return;
                 options.onAgentHistory?.({ id: deltaKey, label, phase: assignedPhase, history });
+              },
+              registerSteer: (steer: (text: string) => Promise<void>) => {
+                // An abandoned execution must not hand a late session to the host.
+                const unregister = state.agentCallbacksClosed
+                  ? undefined
+                  : options.registerAgentSteer?.({ id: deltaKey, label, steer });
+                return unregister ?? (() => {});
               },
               thread: agentOptions.thread,
             });

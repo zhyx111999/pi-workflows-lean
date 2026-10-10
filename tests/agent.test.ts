@@ -262,6 +262,50 @@ test("onSessionCreated reports the effective manager before prompting and preser
   }
 });
 
+test("registerSteer queues host instructions into the live session and unregisters before disposal", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-steer-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-steer-cwd-"));
+  const core = createFauxCore({
+    provider: "fauxtest-steer",
+    models: [{ id: "faux-model", name: "Faux Model", contextWindow: 128000, maxTokens: 4096 }],
+  });
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const registry = await fauxRegistry(home, "fauxtest-steer", core);
+      const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
+      let steer: ((text: string) => Promise<void>) | undefined;
+      let unregistered = 0;
+      core.setResponses([
+        async () => {
+          assert.ok(steer, "the session is steerable before its first provider request");
+          await steer("Also cover the steered detail.");
+          return fauxAssistantMessage("first answer", { stopReason: "stop" });
+        },
+        (context) => {
+          const users = context.messages.filter((message) => message.role === "user");
+          assert.match(JSON.stringify(users.at(-1)?.content), /steered detail/);
+          assert.equal(unregistered, 0, "still registered while the session runs");
+          return fauxAssistantMessage("answer with the steered detail", { stopReason: "stop" });
+        },
+      ]);
+
+      const result = await agent.run("original task", {
+        model: "fauxtest-steer/faux-model",
+        registerSteer: (fn) => {
+          steer = fn;
+          return () => unregistered++;
+        },
+      });
+
+      assert.equal(result, "answer with the steered detail");
+      assert.equal(unregistered, 1, "unregistered exactly once when the session ends");
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("WorkflowAgent retains one session manager per named thread", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" }) as unknown as WorkflowAgentPrivates;
   const first = agent.createSessionManager("implementer");

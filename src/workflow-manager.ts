@@ -209,6 +209,14 @@ export interface ManagedRun {
   seededAgentCount?: number;
   /** Calls whose onAgentStart/onAgentEnd pair was journal replay, not a launch. */
   replayedAgentCalls: Set<string>;
+  /** Sessions of this execution's running agents, keyed by call id, for steerAgent(). */
+  steerable: Map<string, SteerableAgent>;
+}
+
+/** A running agent session that can take an instruction mid-run. */
+interface SteerableAgent {
+  label: string;
+  steer: (text: string) => Promise<void>;
 }
 
 /** Per-execution options shared by sync, background, and resume runs. */
@@ -669,6 +677,7 @@ export class WorkflowManager extends EventEmitter {
       replayedAgentStatesByCallId: new Map(),
       agentTimestampsByCallId: new Map(),
       replayedAgentCalls: new Set(),
+      steerable: new Map(),
     };
 
     this.runs.set(runId, managed);
@@ -776,6 +785,7 @@ export class WorkflowManager extends EventEmitter {
       replayedAgentStatesByCallId: new Map(),
       agentTimestampsByCallId: new Map(),
       replayedAgentCalls: new Set(),
+      steerable: new Map(),
     };
   }
 
@@ -1041,6 +1051,14 @@ export class WorkflowManager extends EventEmitter {
           }
           this.emitLive(managed, "agentHistory", { runId: managed.runId, agentId: agent?.id, ...event });
           progress();
+        },
+        registerAgentSteer: ({ id, label, steer }) => {
+          const entry: SteerableAgent = { label, steer };
+          managed.steerable.set(id, entry);
+          // A retry registers a new session under the same call id; only remove our own.
+          return () => {
+            if (managed.steerable.get(id) === entry) managed.steerable.delete(id);
+          };
         },
         onRunFatal: (error) => {
           // Capture only provider limits that escaped BEFORE a manager lifecycle
@@ -1962,6 +1980,7 @@ export class WorkflowManager extends EventEmitter {
       agentTimestampsByCallId: seededTimestampsByCallId,
       seededAgentCount: seededAgents.length,
       replayedAgentCalls: new Set(),
+      steerable: new Map(),
     };
     this.runs.set(runId, managed);
     // Persist before notifying renderers: listRuns() is their source of truth for
@@ -2063,6 +2082,19 @@ export class WorkflowManager extends EventEmitter {
     }
     this.emit("stopped", { runId });
     return true;
+  }
+
+  /**
+   * Queue an instruction into every running agent of a live run that has this
+   * label. Resolves to the number of sessions that received it: 0 when the run
+   * is not running here or no agent with that label is mid-session.
+   */
+  async steerAgent(runId: string, label: string, text: string): Promise<number> {
+    const managed = this.runs.get(runId);
+    if (managed?.status !== "running") return 0;
+    const targets = [...managed.steerable.values()].filter((agent) => agent.label === label);
+    await Promise.all(targets.map((agent) => agent.steer(text)));
+    return targets.length;
   }
 
   /**
