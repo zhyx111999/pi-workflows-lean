@@ -2095,9 +2095,11 @@ export class WorkflowManager extends EventEmitter {
    * Stop a running or paused workflow.
    *
    * Only the execution that holds the run's lease owns it: abort it and persist
-   * "aborted"; its executeRun() tail, still pending, settles the run and makes it
-   * eviction-eligible. Any other run is stopped through its record under a
-   * fresh lease (see stopRecord()).
+   * "aborted". Like pause(), it keeps the lease: the execution may drain for a
+   * while and its executeRun() tail writes the run once more, so releasing now
+   * would let another process resume the run and then lose that record to the
+   * tail. The tail releases the lease and makes the run eviction-eligible. Any
+   * other run is stopped through its record under a fresh lease (see stopRecord()).
    */
   stop(runId: string): boolean {
     const managed = this.runs.get(runId);
@@ -2107,7 +2109,6 @@ export class WorkflowManager extends EventEmitter {
     this.abortForLifecycleControl(managed, "stop");
     this.emit("stopped", { runId });
     this.persistRun(managed);
-    this.releaseRunLease(managed);
     return true;
   }
 

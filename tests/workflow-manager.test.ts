@@ -3137,6 +3137,28 @@ test(
 );
 
 test(
+  "a stopped run stays leased until its execution settles, so another manager cannot resume it into the tail's write",
+  withTempCwd(async (cwd) => {
+    // The agent ignores the abort for a while, like a provider call slow to cancel.
+    const owner = new WorkflowManager({ cwd, agent: delayedAgent(300) });
+    owner.on("error", () => {});
+    const { runId, promise } = owner.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(owner.stop(runId), true);
+
+    const other = new WorkflowManager({ cwd, agent: deferredAgent().runner });
+    other.on("error", () => {});
+    assert.equal(await other.resume(runId), false, "the stopping execution still owns the run");
+    await promise.catch(() => {});
+    assert.equal(other.getPersistence().load(runId)?.status, "aborted");
+    assert.equal(await other.resume(runId), true, "the run resumes once its execution has settled");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(other.getPersistence().load(runId)?.status, "running");
+    assert.equal(other.stop(runId), true);
+  }),
+);
+
+test(
   "stopping a settled paused copy is refused while another manager runs the resumed run",
   withTempCwd(async (cwd) => {
     const owner = new WorkflowManager({ cwd, agent: deferredAgent().runner });
