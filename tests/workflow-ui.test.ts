@@ -4,6 +4,7 @@ import { type ExtensionAPI, type ExtensionUIContext, initTheme } from "@earendil
 import type { Component } from "@earendil-works/pi-tui";
 import type { WorkflowSnapshot } from "../src/display.js";
 import { WorkflowErrorCode } from "../src/errors.js";
+import { safeInputText } from "../src/navigator/input-text.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import type { ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
@@ -14,7 +15,6 @@ import {
   NavigatorState,
   openWorkflowNavigator,
   renderNavigator,
-  safeInputText,
 } from "../src/workflow-ui.js";
 
 /** Fake manager exposing one running run with two phases. */
