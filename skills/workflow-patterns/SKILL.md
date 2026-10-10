@@ -21,7 +21,7 @@ workflow) through the tool's top-level `name` input.
 
 | `name` | When to reach for it | `args` |
 | --- | --- | --- |
-| `deep-research` | Research a question across the web and return sourced claims | `{ question: string, angles?: number, minSupport?: number }` — `angles` (default 4) is the number of distinct search queries. Results are raw sources; the parent checks them |
+| `deep-research` | Research a question across the web and return sourced claims | `{ question: string, angles?: number }` — `angles` (default 4) is the number of distinct search queries. Results are raw sources; the parent checks them |
 
 ## Example
 
