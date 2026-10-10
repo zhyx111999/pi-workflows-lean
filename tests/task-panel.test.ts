@@ -3694,7 +3694,7 @@ describe("deliverText", () => {
 });
 
 it("sessionFileContainsEntry finds entries before AND after the incremental scan offset (audit2 #29)", async () => {
-  const { sessionFileContainsEntry } = await import("../src/task-panel.js");
+  const { sessionFileContainsEntry } = await import("../src/task-panel/session-file-scan.js");
   const dir = mkdtempSync(join(tmpdir(), "pdw-scan-"));
   const file = join(dir, "session.jsonl");
   const entry1 = { id: "e1", type: "custom_message", customType: "workflow-result", details: { deliveryId: "d1" } };
@@ -3718,7 +3718,7 @@ it("sessionFileContainsEntry finds entries before AND after the incremental scan
 });
 
 it("sessionFileContainsEntry finds a needle that crosses the 64 KiB scan boundary", async () => {
-  const { sessionFileContainsEntry } = await import("../src/task-panel.js");
+  const { sessionFileContainsEntry } = await import("../src/task-panel/session-file-scan.js");
   const dir = mkdtempSync(join(tmpdir(), "pdw-scan-boundary-"));
   const file = join(dir, "session.jsonl");
   const entry = { id: "boundary", type: "custom_message", customType: "workflow-result" };
@@ -3733,7 +3733,7 @@ it("sessionFileContainsEntry finds a needle that crosses the 64 KiB scan boundar
 });
 
 it("sessionFileContainsEntry rescans from the head after a cached file offset becomes stale on truncate", async () => {
-  const { sessionFileContainsEntry } = await import("../src/task-panel.js");
+  const { sessionFileContainsEntry } = await import("../src/task-panel/session-file-scan.js");
   const dir = mkdtempSync(join(tmpdir(), "pdw-scan-truncate-"));
   const file = join(dir, "session.jsonl");
   const entry = { id: "kept-after-truncate", type: "custom_message", customType: "workflow-result" };
@@ -3748,7 +3748,7 @@ it("sessionFileContainsEntry rescans from the head after a cached file offset be
 });
 
 it("sessionFileContainsEntry invalidates a same-path rename replacement", async () => {
-  const { sessionFileContainsEntry } = await import("../src/task-panel.js");
+  const { sessionFileContainsEntry } = await import("../src/task-panel/session-file-scan.js");
   const dir = mkdtempSync(join(tmpdir(), "pdw-scan-rename-"));
   const file = join(dir, "session.jsonl");
   const replacement = join(dir, "session.replacement.jsonl");
@@ -3766,7 +3766,7 @@ it("sessionFileContainsEntry invalidates a same-path rename replacement", async 
 });
 
 it("sessionFileContainsEntry requires the complete record and rejects other substrings", async () => {
-  const { sessionFileContainsEntry } = await import("../src/task-panel.js");
+  const { sessionFileContainsEntry } = await import("../src/task-panel/session-file-scan.js");
   const dir = mkdtempSync(join(tmpdir(), "pdw-scan-record-"));
   const file = join(dir, "session.jsonl");
   const entry = { id: "duplicate-record", type: "custom_message", customType: "workflow-result" };
