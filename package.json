@@ -14,7 +14,7 @@
   },
   "scripts": {
     "test": "npm run check && npm run build && npm run docs:check && npm run context:check && npm run test:unit",
-    "test:unit": "tsx --test tests/**/*.test.ts",
+    "test:unit": "tsx --test --import ./tests/helpers/isolated-home.ts tests/**/*.test.ts",
     "check": "biome check . && npm run check:scripts",
     "check:scripts": "tsc -p tsconfig.scripts.json",
     "format": "biome format --write .",

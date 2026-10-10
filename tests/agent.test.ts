@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import {
@@ -60,6 +60,19 @@ function bashToolResultText(context: unknown): string {
     })
     .map((block) => block.text)
     .join("\n");
+}
+
+/**
+ * Prints the bash tool's working directory. Git Bash's `pwd` prints an MSYS
+ * path (/tmp/...) while `pwd -W` prints the Windows path; other shells reject
+ * `-W` and fall back to plain `pwd`.
+ */
+const PRINT_CWD_COMMAND = "pwd -W 2>/dev/null || pwd";
+
+/** The directory PRINT_CWD_COMMAND reported, as a native path. */
+function bashCwd(context: unknown): string {
+  // Strip only the newline: a trailing space belongs to the directory name.
+  return resolve(bashToolResultText(context).replace(/\n$/, ""));
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -346,7 +359,7 @@ test("WorkflowAgent.run preserves a valid trailing-space cwd", async () => {
       const registry = await fauxRegistry(home, "fauxtest-cwd-space", core);
       const contexts: unknown[] = [];
       core.setResponses([
-        fauxAssistantMessage(fauxToolCall("bash", { command: "pwd" }), { stopReason: "toolUse" }),
+        fauxAssistantMessage(fauxToolCall("bash", { command: PRINT_CWD_COMMAND }), { stopReason: "toolUse" }),
         (context) => {
           contexts.push(context);
           return fauxAssistantMessage("observed cwd", { stopReason: "stop" });
@@ -356,9 +369,9 @@ test("WorkflowAgent.run preserves a valid trailing-space cwd", async () => {
       const agent = new WorkflowAgent({ cwd: root, modelRegistry: registry });
       await agent.run("run pwd", { cwd: trailing, model: "fauxtest-cwd-space/faux-model" });
 
-      assert.match(
-        bashToolResultText(contexts.at(-1)),
-        new RegExp(realpathSync(trailing).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      assert.equal(
+        bashCwd(contexts.at(-1)),
+        realpathSync(trailing),
         "bash must execute in the literal trailing-space directory",
       );
     });
@@ -383,7 +396,7 @@ test("WorkflowAgent.run gives an explicit cwd precedence over an injected sessio
       core.setResponses([
         (context) => {
           contexts.push(context);
-          return fauxAssistantMessage(fauxToolCall("bash", { command: "pwd" }), { stopReason: "toolUse" });
+          return fauxAssistantMessage(fauxToolCall("bash", { command: PRINT_CWD_COMMAND }), { stopReason: "toolUse" });
         },
         (context) => {
           contexts.push(context);
@@ -401,16 +414,10 @@ test("WorkflowAgent.run gives an explicit cwd precedence over an injected sessio
         model: "fauxtest-session-cwd/faux-model",
       });
 
-      const toolResult = bashToolResultText(contexts.at(-1));
-      assert.match(
-        toolResult,
-        new RegExp(realpathSync(targetCwd).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-        "bash must execute in the explicit cwd after session option merging",
-      );
-      assert.doesNotMatch(
-        toolResult,
-        new RegExp(realpathSync(oldCwd).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-        "the injected session cwd must not control bash execution",
+      assert.equal(
+        bashCwd(contexts.at(-1)),
+        realpathSync(targetCwd),
+        "bash must execute in the explicit cwd, not the injected session cwd",
       );
     });
   } finally {
@@ -456,7 +463,7 @@ test("WorkflowAgent.run keeps injected settings and resources while using the ex
       core.setResponses([
         (context) => {
           contexts.push(context);
-          return fauxAssistantMessage(fauxToolCall("bash", { command: "pwd" }), { stopReason: "toolUse" });
+          return fauxAssistantMessage(fauxToolCall("bash", { command: PRINT_CWD_COMMAND }), { stopReason: "toolUse" });
         },
         (context) => {
           contexts.push(context);
@@ -479,9 +486,9 @@ test("WorkflowAgent.run keeps injected settings and resources while using the ex
       assert.match(initialRequest, /INJECTED_HOOK_BOUND/, "injected resource loaders bypass middleware discovery");
       assert.doesNotMatch(initialRequest, /TARGET_RESOURCE_LOADER_MARKER/);
       assert.ok(injectedSettingsReads > 0, "the SDK session must retain the host-injected SettingsManager");
-      assert.match(
-        bashToolResultText(contexts[1]),
-        new RegExp(realpathSync(targetCwd).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      assert.equal(
+        bashCwd(contexts[1]),
+        realpathSync(targetCwd),
         "injected dependencies must not override explicit cwd",
       );
     });

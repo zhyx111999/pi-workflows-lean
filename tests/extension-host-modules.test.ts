@@ -2,15 +2,17 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as hostSdk from "@earendil-works/pi-coding-agent";
 import packageJson from "../package.json" with { type: "json" };
+
+// A native path: URL.pathname would yield "/C:/..." on Windows.
+const extensionEntry = fileURLToPath(new URL(`../${packageJson.pi.extensions[0]}`, import.meta.url));
 
 test("published extension loads through the unbundled host aliases and captures the actual host", () => {
   // Run without tsx/source-runtime hooks: the production Node host uses aliases,
   // not the embedded virtualModules path covered by the test below.
   const sdkEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
-  const entry = new URL(`../${packageJson.pi.extensions[0]}`, import.meta.url).pathname;
   const script = `
     import assert from "node:assert/strict";
     const sdkUrl = ${JSON.stringify(sdkEntry)};
@@ -18,7 +20,7 @@ test("published extension loads through the unbundled host aliases and captures 
     const { loadExtensions, createExtensionRuntime } = await import(new URL("core/extensions/loader.js", sdkUrl));
     const { createEventBus } = await import(new URL("core/event-bus.js", sdkUrl));
     const original = sdk.AgentSession.prototype.sendCustomMessage;
-    const result = await loadExtensions([${JSON.stringify(entry)}], process.cwd(), createEventBus(), createExtensionRuntime());
+    const result = await loadExtensions([${JSON.stringify(extensionEntry)}], process.cwd(), createEventBus(), createExtensionRuntime());
     assert.deepEqual(result.errors, []);
     assert.equal(result.extensions.length, 1);
     assert.notEqual(sdk.AgentSession.prototype.sendCustomMessage, original);
@@ -52,8 +54,7 @@ test("published extension patches the host SDK even when a native sibling peer i
       "@earendil-works/pi-coding-agent": { ...hostSdk, AgentSession: HostSession, ExtensionRunner: HostRunner },
     },
   });
-  const entry = new URL(`../${packageJson.pi.extensions[0]}`, import.meta.url).pathname;
-  const factory = await jiti.import(entry, { default: true });
+  const factory = await jiti.import(extensionEntry, { default: true });
   assert.equal(typeof factory, "function");
   assert.notEqual(HostSession.prototype.sendCustomMessage, originalSend, "host class must receive the capture hook");
   assert.equal(hostSdk.AgentSession.prototype.sendCustomMessage, originalSend, "must not patch the sibling peer");

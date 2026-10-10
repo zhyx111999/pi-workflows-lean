@@ -6,9 +6,9 @@ type HomeEnvKey = (typeof HOME_ENV_KEYS)[number];
 /**
  * Temporarily point Node's os.homedir() at a fake home directory.
  *
- * On Windows, os.homedir() prefers USERPROFILE over HOME. Tests that only set
- * HOME can still write into the real user profile, so set both and restore the
- * complete Windows home env tuple afterwards.
+ * Every test process already runs inside a throwaway home (see
+ * isolated-home.ts); use this when a test needs a home it controls, e.g. to
+ * seed settings files.
  */
 export function withFakeHome<T>(home: string, fn: () => T): T {
   const restore = installFakeHome(home);
@@ -29,7 +29,14 @@ export async function withFakeHomeAsync<T>(home: string, fn: () => Promise<T>): 
   }
 }
 
-function installFakeHome(home: string): () => void {
+/**
+ * Point every home variable at `home` and return a function that restores them.
+ *
+ * On Windows, os.homedir() reads USERPROFILE rather than HOME, and some tools
+ * fall back to HOMEDRIVE+HOMEPATH, so setting HOME alone would still leak into
+ * the real profile.
+ */
+export function installFakeHome(home: string): () => void {
   const original = new Map<HomeEnvKey, string | undefined>();
   for (const key of HOME_ENV_KEYS) original.set(key, process.env[key]);
 
