@@ -1,0 +1,45 @@
+/** The rows under every view: a pending confirm or rename prompt, a blank line, and the key hints. */
+export function footerLines(state, model, theme, snapshot) {
+    const lines = [];
+    if (state.mode === "confirm") {
+        const verb = state.confirmationAction === "pause" ? "pause" : state.confirmationAction === "stop" ? "stop" : "delete";
+        const key = state.confirmationAction === "pause" ? "p" : "x";
+        lines.push(theme.fg("warning", `  Press ${key} again to confirm ${verb}, or Esc to cancel.`));
+    }
+    else if (state.mode === "rename") {
+        lines.push(theme.fg("accent", `  Rename: ${state.draft}`));
+    }
+    lines.push("", keyHints(state, model, theme, snapshot));
+    return lines;
+}
+function keyHints(state, model, theme, snapshot) {
+    const parts = [];
+    switch (state.kind) {
+        case "detail":
+            if (state.pagerOpen) {
+                parts.push("↑/↓ line", "PgUp/PgDn page", "g/G ends", `t tail:${state.tailing ? "on" : "off"}`, "enter summary", "esc back");
+            }
+            else {
+                parts.push("enter open pager", "t tail", "esc back");
+            }
+            break;
+        case "savedDetail":
+            parts.push("↑/↓ line", "PgUp/PgDn page", "g/G ends", "esc back", "r rename", "x delete");
+            break;
+        case "runs": {
+            const item = state.currentItem(snapshot ?? model.visible(state.filter));
+            parts.push("↑/↓ select", "/ filter", "enter open", "esc back");
+            if (item?.kind === "run") {
+                parts.push("p pause", "x stop", "r restart", "s save");
+            }
+            else if (item?.kind === "saved") {
+                parts.push("r rename", "x delete");
+            }
+            parts.push("q quit");
+            break;
+        }
+        default:
+            parts.push("↑/↓ select", "enter open", "esc back", "q quit");
+    }
+    return theme.fg("dim", parts.join(" · "));
+}

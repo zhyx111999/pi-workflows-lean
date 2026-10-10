@@ -16,7 +16,7 @@
  * (the deltas themselves are journaled and replayed faithfully; only the
  * same-key ordering is not reconstructible).
  *
- * Aliasing (#208): values are structured-cloned on write AND on read, so a
+ * Aliasing: values are structured-cloned on write AND on read, so a
  * caller can never mutate store state through a live reference — the journaled
  * delta and any rollback-restored value always match what resume replays.
  * Values must be structured-cloneable (functions/symbols throw at write time)
@@ -36,7 +36,7 @@ export declare class SharedStore {
     /**
      * Drop entries below the topmost untagged (permanent) write: an untagged
      * entry can never be removed by a discard, so everything below it is
-     * unobservable and would otherwise grow the log without bound (#208 M1).
+     * unobservable and would otherwise grow the log without bound.
      */
     private compactHistory;
     /** Recompute a key's visible value as its last surviving write (or absent). */
@@ -54,7 +54,7 @@ export declare class SharedStore {
      * Retrieve a structured CLONE of the value for `key`, or `undefined` when
      * absent. Callers receive their own copy: in-place mutation through the
      * returned reference must never leak into the store, the journaled delta,
-     * or a value a later rollback restores (#208).
+     * or a value a later rollback restores.
      */
     get(key: string): unknown;
     /** Whether `key` is present in the store. */
@@ -82,7 +82,7 @@ export declare class SharedStore {
      * reconstructs from, leaving live execution and replay permanently
      * inconsistent.
      *
-     * Exact undo semantics (#208): the attempt's entries are removed from each
+     * Exact undo semantics: the attempt's entries are removed from each
      * key's write log and the visible value recomputes as the last SURVIVING
      * write — a concurrent sibling's later write (even an Object.is-equal one)
      * survives, an untracked put()/replay applyDelta() survives, and a shadowed

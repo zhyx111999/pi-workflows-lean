@@ -1,9 +1,26 @@
+/**
+ * Runs one workflow script: the entry point of the workflow runtime.
+ *
+ * runWorkflow() parses the script's literal `meta`, prepares the run (limits,
+ * agent registry, logger, shared store), exposes the workflow globals in a vm
+ * context, runs the script, and finally drains every outstanding agent() call.
+ * The parts live in src/runtime/:
+ *   - script-meta.ts, determinism.ts        parse-time checks and the in-realm guard
+ *   - run-limits.ts                         host settings turned into enforced limits
+ *   - run-context.ts                        per-run state and the helpers shared by the globals
+ *   - agent-call.ts                         agent(): validation, slot, journal replay
+ *   - agent-execution.ts, agent-attempt.ts  live runs: worktree, retries, timeout, usage
+ *   - fanout.ts, checkpoint.ts              parallel()/pipeline() and checkpoint()
+ *   - script-vm.ts                          the vm context and script execution
+ *   - run-teardown.ts                       fatal seal, drain, final accounting
+ */
 import type { TSchema } from "typebox";
 import { type AgentRunOptions, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import { type AgentRegistry } from "./agent-registry.js";
-import { type AgentUsage } from "./agent-usage.js";
-import { WorkflowErrorCode } from "./errors.js";
+import type { AgentUsage } from "./agent-usage.js";
+import type { WorkflowErrorCode } from "./errors.js";
+import type { ModelThinkingLevel } from "./model-spec.js";
 export interface WorkflowMetaPhase {
     title: string;
     detail?: string;
@@ -24,17 +41,15 @@ export interface JournalEntry {
     hash: string;
     result: unknown;
     /**
-     * Per-agent write delta (keys set by this agent) for additive replay on resume.
-     * Replaces the former full-map snapshot to fix parallel-agent ordering: applying
-     * deltas in callSeq order accumulates all agents' writes correctly regardless of
-     * which agent finished first. Absent on older journal entries.
+     * Keys this agent set in the shared store. Resume applies the deltas in call
+     * order, which rebuilds every agent's writes no matter which parallel agent
+     * finished first. Absent on older journal entries.
      */
     storeDelta?: Record<string, unknown>;
     /**
-     * The model this call actually ran on, captured post-resolution so a replayed
-     * cache hit displays what really ran instead of the pre-resolution guess.
-     * Absent on journal entries persisted before this field existed (and on
-     * checkpoints, which run no model) — those degrade to the old behavior.
+     * The model this call actually ran on, so a replayed row shows what really
+     * ran instead of the pre-resolution guess. Absent on checkpoints, which run
+     * no model, and on older journal entries.
      */
     model?: string;
 }
@@ -76,20 +91,16 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
     /** Timeout per agent attempt in milliseconds. null/omitted means no hard timeout. */
     agentTimeoutMs?: number | null;
     /**
-     * Grace period (ms) for the terminal drain once this run is ABORT-SIGNALED
-     * (external abort or the run-fatal seal). A durable checkpoint suspension
-     * alone does not abort its paid siblings. Agents are signaled at abort,
-     * but the signal is cooperative — a signal-ignoring runner would otherwise
-     * wedge the drain, and with it the run's terminal transition, forever
-     * (audit2 #3). After the grace expires the drain stops waiting: the store is
-     * disposed below (late writes re-populate a store nobody reads), no journal
-     * can follow (the completion path's abort check precedes journaling), and
-     * the manager's persist/emit paths are staleness-gated.
+     * Grace period (ms) for the final drain once the run is aborted (external
+     * abort or a fatal error). Agents are signaled at abort, but the signal is
+     * cooperative: a runner that ignores it would otherwise keep the run from
+     * ever ending. After the grace the drain stops waiting; the store is
+     * disposed, nothing more is journaled, and the host ignores stale writes.
      *
-     * Does NOT apply to the SUCCESS drain, which waits unbounded — those results
-     * are still wanted. Default 10_000; Infinity restores unbounded waiting for
-     * aborted runs too. Finite values in [1, 2^31-1] are rounded down; invalid
-     * values (including NaN, 0, negatives, and overflow) use the default.
+     * Until the run is aborted the drain waits without limit, also when it
+     * paused at a checkpoint, because those results are wanted. Default 10_000;
+     * Infinity always waits. Finite values in [1, 2^31-1] are rounded down;
+     * anything else (NaN, 0, negatives, overflow) uses the default.
      */
     drainAbortGraceMs?: number;
     /** Whether to persist logs to disk. Default: true */
@@ -191,19 +202,15 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
         steer: (text: string) => Promise<void>;
     }) => () => void;
     /**
-     * The agent's REAL model, pushed the moment WorkflowAgent resolves it — mid-run,
-     * long before onAgentEnd. onAgentStart can only carry the pre-resolution guess
-     * (this call's explicit/phase spec, else the session's main model), which is wrong
-     * for every tier-routed agent: an explicit `tier` deliberately defers the choice to
-     * the agent layer, and an untagged agent is implicitly routed through the "medium"
-     * tier when model-tiers.json exists, or inherits the session's main model when the
-     * inheritMainModel setting is on (see resolveAgentModelSpec). Without this channel
-     * those agents display the main session model for their whole lifetime and only flip
-     * to the truth once they finish — and when the implicit route DEGRADES to the
-     * settings default (unavailable tier or inherited model), no spec resolves at
-     * all, so nothing in this resolution path fires a correction. Fires once per ATTEMPT (and per turn for
-     * a named thread), so treat it as idempotent, not once-per-agent. `id` is the same
-     * per-CALL id as onAgentStart/onAgentEnd/onAgentHistory/onAgentUsage.
+     * The agent's real model, pushed as soon as WorkflowAgent resolves it, long
+     * before onAgentEnd. onAgentStart can only carry a guess (this call's
+     * explicit/phase spec, else the session's main model), which is wrong for
+     * tier-routed agents and for untagged agents that are routed through the
+     * "medium" tier or inherit the main model (see resolveAgentModelSpec). When
+     * that implicit route degrades to the settings default no spec resolves, so
+     * this does not fire. Fires once per attempt (and per turn of a named
+     * thread): treat it as idempotent. `id` is the per-call id of the other
+     * onAgent* events.
      */
     onAgentModel?: (event: {
         id: string;
@@ -218,7 +225,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
         cost: number;
         cacheRead?: number;
         cacheWrite?: number;
-        /** True when the totals include character-heuristic estimates (#209). */
+        /** True when the totals include character-heuristic estimates. */
         estimated?: boolean;
     }) => void;
     /**
@@ -246,7 +253,7 @@ export interface WorkflowRunResult<T = unknown> {
         cost: number;
         cacheRead?: number;
         cacheWrite?: number;
-        /** True when the totals include character-heuristic estimates (#209). */
+        /** True when the totals include character-heuristic estimates. */
         estimated?: boolean;
     };
 }
@@ -256,13 +263,12 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
     schema?: TSchemaDef;
     /**
      * Run this agent on a specific model (`provider/modelId` or a bare `modelId`).
-     * The workflow author chooses per-agent models per the routing policy in the
-     * tool guidelines (e.g. a lighter model for exploration, the main model for
-     * analysis). When omitted, the session's main model is used.
+     * Takes precedence over the agentType model, `tier` and the phase route; with
+     * none of them set, the agent layer picks its default model.
      */
     model?: string;
     /** Pi thinking level. Used when `model` has no `:thinking` suffix. */
-    thinking?: import("./model-spec.js").ModelThinkingLevel;
+    thinking?: ModelThinkingLevel;
     /**
      * Coarse model tier ("small" | "medium" | "big"), resolved from the user's
      * model-tiers config (see /workflows-models). An explicit `model` takes
@@ -295,14 +301,8 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
     agentType?: string;
 }
 export declare function runWorkflow<T = unknown>(script: string, options?: WorkflowRunOptions): Promise<WorkflowRunResult<T>>;
-/**
- * Identity of one agent() call: its store delta key, the id carried by every
- * onAgent* event, and its persisted agent row's callId. Prefixed with the run
- * id so it stays unique when hosts aggregate agents across runs.
- */
-export declare function agentCallId(runId: string, callIndex: number): string;
+/** Split a script into its validated literal `meta` and the body that runs in the vm. */
 export declare function parseWorkflowScript(script: string): {
     meta: WorkflowMeta;
     body: string;
 };
-export declare function cloneDurableJsonValue(value: unknown, label: string): unknown;

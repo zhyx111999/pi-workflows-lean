@@ -1,4 +1,5 @@
-export { DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS, listAvailableModelSpecs, listAvailableModels, WorkflowAgent, } from "./agent.js";
+export { listAvailableModelSpecs, listAvailableModels } from "./agent/available-models.js";
+export { DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS, WorkflowAgent } from "./agent.js";
 export { compactAgentHistory } from "./agent-history.js";
 export { applyToolPolicy, listAgentTypes, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 export { registerBuiltinWorkflows } from "./builtin-commands.js";

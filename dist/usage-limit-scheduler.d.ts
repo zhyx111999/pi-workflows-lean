@@ -2,8 +2,8 @@
  * Auto-resume for runs paused on a provider usage limit.
  *
  * A workflow run pauses (does not fail) when a provider quota/usage limit is hit
- * (see errors.ts PROVIDER_USAGE_LIMIT, workflow-manager.ts executeRun()'s catch
- * block). Left alone, the run just sits there until a human runs /workflows and
+ * (see errors.ts PROVIDER_USAGE_LIMIT and the catch block of executeRun() in
+ * manager/run-execution.ts). Left alone, the run just sits there until a human runs /workflows and
  * hits resume. This module watches the manager's public event stream and, for
  * runs that are auto-resume-eligible, arms a timer to call manager.resume() once
  * the provider's quota is likely to have refilled — with exponential backoff if
@@ -31,7 +31,7 @@ export interface SchedulableWorkflowManager {
     /**
      * Record the auto-resume backoff counter THROUGH the manager so the next
      * manager persist carries it — a raw persistence.save side-channel gets
-     * erased by writeRunToDisk (#207).
+     * erased by writeRunToDisk.
      */
     recordAutoResumeAttempts(runId: string, attempts: number): void;
 }
@@ -55,7 +55,7 @@ export interface UsageLimitSchedulerOptions {
     /**
      * Jitter ratio applied to every armed delay (default 0.1 = ±10%): runs paused
      * by the same quota event would otherwise all auto-resume in the same timer
-     * batch (audit2 #13). Set 0 for deterministic tests.
+     * batch. Set 0 for deterministic tests.
      */
     jitterRatio?: number;
     /** Injectable randomness for jitter (default Math.random). */
@@ -64,7 +64,7 @@ export interface UsageLimitSchedulerOptions {
      * Consecutive refused-resume re-arms before giving up (default 10): a refused
      * resume() isn't a real attempt (lease held elsewhere, structural refusal),
      * but polling it forever re-arms an un-backed-off 60s loop for the run's
-     * lifetime (audit2 #12).
+     * lifetime.
      */
     maxRefusals?: number;
     /** Diagnostics sink; defaults to console.warn. Never throws back into the caller. */
@@ -169,7 +169,7 @@ export declare class UsageLimitScheduler {
      * a crash can approximately resume the backoff sequence instead of restarting
      * it. Goes through the manager, which owns the field: for a live run it sets
      * ManagedRun.autoResumeAttempts so every later writeRunToDisk carries it
-     * (#207); for a disk-only run it merges the persisted record under a lease.
+     *; for a disk-only run it merges the persisted record under a lease.
      * Synchronous is safe: the manager write is atomic in-process, and the
      * pause-settle persist that follows this event reads the live field.
      */

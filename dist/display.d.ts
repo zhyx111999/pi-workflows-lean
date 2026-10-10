@@ -50,7 +50,7 @@ export interface WorkflowSnapshot {
         cost?: number;
         cacheRead?: number;
         cacheWrite?: number;
-        /** True when the totals include character-heuristic estimates (#209). */
+        /** True when the totals include character-heuristic estimates. */
         estimated?: boolean;
     };
     runId?: string;
@@ -106,7 +106,7 @@ export declare function fmtTokenCount(fresh: number, cacheRead: number, fmt: (n:
  * so surfaces omit the segment instead of rendering a false "0 tok" — e.g. for a
  * journal-replayed resume or a run whose agents were all skipped. Every surface
  * should use this rather than re-implementing the zero guard. When
- * `figures.estimated` is set the segment is prefixed with `~` (#209) so a
+ * `figures.estimated` is set the segment is prefixed with `~` so a
  * heuristic-derived total never renders as metered. The marker covers the whole
  * segment (fresh + cached) even when only one component is heuristic —
  * conservative by design.

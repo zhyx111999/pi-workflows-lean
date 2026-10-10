@@ -1,104 +1,44 @@
 /**
- * Interactive `/workflows` navigator, modeled on Claude Code's view:
+ * Interactive `/workflows` navigator:
  *
- *   runs ──enter──▶ phases ──enter──▶ agents ──enter──▶ agent detail
- *        ◀──esc───        ◀──esc────         ◀──esc────
+ *   runs ──enter──▶ phases ──enter──▶ agents ──enter──▶ agent detail ──enter──▶ full pager
+ *        ◀──esc───        ◀──esc────         ◀──esc────              ◀──esc────
  *        ◀── (saved items in runs view) ──enter──▶ saved detail
  *
  * Keys: ↑/↓ (or j/k) select · enter/→ drill in · esc/← back (esc at top closes)
- *       On runs: p pause · x stop · r restart · s save · q quit
- *       On saved: x delete · q quit
+ *       On runs: / filter · p pause · x stop · r restart · s save · q quit
+ *       On saved: r rename · x delete · q quit
  *
- * The state machine and line rendering are pure and unit-tested; the pi-tui
- * Component shell (openWorkflowNavigator) wires them to live manager events.
+ * How the pieces fit:
+ * - NavigatorModel reads runs and saved workflows, preferring live snapshots.
+ * - NavigatorState is the view stack, selection, input mode, and pending
+ *   confirmation; it never touches the terminal.
+ * - renderNavigator draws one frame from the two (views live in ./navigator/).
+ * - keyToAction maps a key to an action; ./navigator/key-input.ts applies it.
+ * - openWorkflowNavigator wires them into a pi-tui overlay that redraws on
+ *   manager events.
  */
 import { type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
-import type { AgentUsage } from "./agent.js";
 import type { ThemeLike, WorkflowAgentSnapshot } from "./display.js";
+import { type ConfirmKind } from "./navigator/confirmation.js";
+import { type ItemIdentity, type ItemKind, type NavigatorSnapshot, type SavedItemIdentity, type VisibleNavigatorItem } from "./navigator/items.js";
+import { type AgentRow, type PhaseRow, type RunRow } from "./navigator/rows.js";
 import type { WorkflowManager } from "./workflow-manager.js";
-import { type SavedWorkflow, type SavedWorkflowMutationResult, type WorkflowStorage } from "./workflow-saved.js";
+import type { SavedWorkflow, SavedWorkflowMutationResult, WorkflowStorage } from "./workflow-saved.js";
 export type ViewKind = "runs" | "phases" | "agents" | "detail" | "savedDetail";
-export type ItemKind = "run" | "saved";
 export type NavigatorInputMode = "browse" | "filter" | "rename" | "confirm";
-export type ItemIdentity = {
-    kind: "run";
-    runId: string;
-} | {
-    kind: "saved";
-    path: string;
-    source: SavedWorkflow["source"];
-    name: string;
-    revision: string;
-};
-export interface VisibleRunItem {
-    kind: "run";
-    identity: Extract<ItemIdentity, {
-        kind: "run";
-    }>;
-    row: RunRow;
-}
-export interface VisibleSavedItem {
-    kind: "saved";
-    identity: Extract<ItemIdentity, {
-        kind: "saved";
-    }>;
-    workflow: SavedWorkflow;
-}
-export type VisibleNavigatorItem = VisibleRunItem | VisibleSavedItem;
-/** One coherent, filtered source of truth for every runs-pane operation. */
-export interface NavigatorSnapshot {
-    filter: string;
-    items: VisibleNavigatorItem[];
-}
-interface RunRow {
-    runId: string;
-    name: string;
-    status: string;
-    done: number;
-    total: number;
-    /** Fresh tokens for the whole run (see tokenFigures for the fallback rule). */
-    fresh: number;
-    /** Cache-read tokens for the whole run. */
-    cacheRead: number;
-    /** True when the displayed figures include character-heuristic estimates (#209). */
-    estimated: boolean;
-    cost: number;
-}
-interface PhaseRow {
-    title: string;
-    done: number;
-    total: number;
-    /** Fresh tokens summed across the phase's agents. */
-    fresh: number;
-    /** Cache-read tokens summed across the phase's agents. */
-    cacheRead: number;
-    /** True when any of the phase's agents reported heuristic-estimated figures (#209). */
-    estimated: boolean;
-}
-interface AgentRow {
-    id: number;
-    label: string;
-    status: string;
-    phase?: string;
-    tokens?: number;
-    tokenUsage?: AgentUsage;
-    model?: string;
-}
-export declare function shortModel(model: string | undefined): string | undefined;
+type NavigatorStorage = Pick<WorkflowStorage, "list" | "delete" | "rename">;
 /** Reads run/phase/agent data from the manager, preferring live snapshots. */
 export declare class NavigatorModel {
     private readonly manager;
-    private frameDepth;
-    private frameRuns;
-    private frameSaved;
-    private readonly frameSnapshots;
+    private readonly frame;
     private readonly getStorage;
-    constructor(manager: Pick<WorkflowManager, "listRuns" | "getRun">, storage?: Pick<WorkflowStorage, "list" | "delete" | "rename"> | (() => Pick<WorkflowStorage, "list" | "delete" | "rename"> | undefined));
+    private rehydrated?;
+    constructor(manager: Pick<WorkflowManager, "listRuns" | "getRun">, storage?: NavigatorStorage | (() => NavigatorStorage | undefined));
     /** Share persisted data across all model lookups performed by one render. */
     withRenderFrame<T>(render: () => T): T;
     private persistedRuns;
-    private rehydratedSnapshot?;
     private snapshot;
     runs(): RunRow[];
     /** Return saved workflows sorted by name, or [] when no storage configured. */
@@ -113,18 +53,11 @@ export declare class NavigatorModel {
     runStatus(runId: string): string;
     phases(runId: string): PhaseRow[];
     agents(runId: string, phase: string): AgentRow[];
-    /**
-     * All agents grouped by their (coerced) phase in a SINGLE pass — O(agents).
-     * The navigator's phase pane needs each phase's agents (status colour + the
-     * selected phase's rows); calling agents() once per phase row was O(phases ×
-     * agents) per frame. Callers that render every phase use this instead.
-     */
+    /** All agents grouped by phase in one pass, for views that render every phase. */
     agentsByPhase(runId: string): Map<string, AgentRow[]>;
     agentDetail(runId: string, agentId: number): WorkflowAgentSnapshot | undefined;
 }
-type ConfirmKind = "pause" | "stop" | "deleteSaved";
-/** Remove terminal control sequences while preserving ordinary pasted text. */
-export declare function safeInputText(data: string): string;
+/** Navigation state machine: view stack, selection, text input, and pending confirmation. */
 export declare class NavigatorState {
     private stack;
     private pending?;
@@ -145,19 +78,15 @@ export declare class NavigatorState {
     get phase(): string | undefined;
     get agentId(): number | undefined;
     get savedName(): string | undefined;
-    get depth(): number;
     get confirmationAction(): ConfirmKind | undefined;
     /** Reconcile selection after any list/filter/manager change without drifting. */
     reconcile(snapshot: NavigatorSnapshot): void;
-    /**
-     * @deprecated No-op kept for source compatibility: manager events no longer
-     * cancel confirmations (audit2 #22) and the render frame reconciles.
-     */
-    noteManagerEvent(_snapshot: NavigatorSnapshot): void;
     currentItem(snapshot: NavigatorSnapshot): VisibleNavigatorItem | undefined;
     itemKindAt(model: NavigatorModel, cursor: number): ItemKind;
     clamp(count: number): void;
     moveRuns(delta: number, snapshot: NavigatorSnapshot): void;
+    /** Detail pages scroll their body; moving in the agent detail opens its pager, and scrolling up stops tailing. */
+    private scrollBody;
     move(delta: number, count: number, snapshot?: NavigatorSnapshot): void;
     setPageSize(rows: number): void;
     movePage(direction: -1 | 1, count: number, snapshot?: NavigatorSnapshot): void;
@@ -177,24 +106,19 @@ export declare class NavigatorState {
     backspaceInput(): void;
     applyFilter(model: NavigatorModel): NavigatorSnapshot;
     takeRename(): {
-        target: Extract<ItemIdentity, {
-            kind: "saved";
-        }>;
+        target: SavedItemIdentity;
         name: string;
     } | undefined;
-    replaceSavedIdentity(previous: Extract<ItemIdentity, {
-        kind: "saved";
-    }>, workflow: SavedWorkflow): void;
+    replaceSavedIdentity(previous: SavedItemIdentity, workflow: SavedWorkflow): void;
     cancelInput(): void;
     private confirmationContext;
-    private sameConfirmationContext;
     beginConfirmation(action: ConfirmKind, target: ItemIdentity, snapshot: NavigatorSnapshot): boolean;
     confirm(action: ConfirmKind, snapshot: NavigatorSnapshot): ItemIdentity | undefined;
     cancelConfirmation(): void;
 }
-/** Build the lines for the current view. Pure: depends only on state + model + theme. */
+/** Build the lines for the current view. Depends only on state, model, and theme, so it renders without a terminal. */
 export declare function renderNavigator(state: NavigatorState, model: NavigatorModel, width: number, theme?: ThemeLike, viewportRows?: number, markdownTheme?: MarkdownTheme): string[];
-/** What a key press should do. Pure mapping from a parsed key id to an action. */
+/** What a key press should do. */
 export type NavAction = {
     type: "move";
     delta: number;
@@ -233,8 +157,8 @@ export type NavAction = {
 } | {
     type: "none";
 };
+/** Pure mapping from a parsed key id to an action; a key's meaning depends on the view and the selected item's kind. */
 export declare function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?: "run" | "saved"): NavAction;
-import type { OverlayAnchor } from "@earendil-works/pi-tui";
 export interface NavigatorOptions {
     storage?: WorkflowStorage;
     /** Live storage accessor when the extension may replace storage after session_start. */
@@ -248,8 +172,6 @@ export interface NavigatorOptions {
      * through the current session's manager (background path), not a stale snapshot.
      */
     getManager?: () => WorkflowManager;
-    /** Overlay anchor position: "center" (default) or "right-center" for sidebar. */
-    anchor?: OverlayAnchor;
 }
 /**
  * Open the interactive `/workflows` navigator as a focused overlay. Resolves when

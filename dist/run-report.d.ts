@@ -23,7 +23,7 @@ export interface RunSummaryDetails {
     };
     activeLabels: string[];
     tokenTotal: number;
-    /** True when tokenTotal includes character-heuristic estimates (#209). */
+    /** True when tokenTotal includes character-heuristic estimates. */
     tokenTotalEstimated: boolean;
 }
 /** Summarize a run, preferring the live snapshot over the persisted record when one exists. */

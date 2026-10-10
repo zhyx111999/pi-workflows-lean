@@ -5,7 +5,7 @@
  * string (e.g. "openai/gpt-4.1-mini" or "openai-codex/gpt-5.5:xhigh").
  * When an agent() call specifies opts.tier, that single model is resolved with
  * Pi CLI-style parsing and used as the subagent's model/thinking level (unless
- * an explicit opts.model is given, which always wins — see agent.ts).
+ * an explicit opts.model is given, which always wins — see agent/model-selection.ts).
  *
  * This augments the phase-pattern routing in model-routing.ts: phase routing
  * maps workflow phases → models via the script's meta; tiers give scripts a
@@ -115,7 +115,7 @@ export declare function buildDefaultTierConfig(currentModelSpec?: string, availa
 /**
  * One-time notice shown when an agent requests `opts.tier` but no
  * model-tiers.json is configured — in that state tiers silently fall back to
- * the session model (see `resolveAgentModelSpec` in agent.ts), which is easy to
+ * the session model (see `resolveAgentModelSpec` in agent/model-selection.ts), which is easy to
  * miss. This surfaces the fallback and the mapping the user *would* get by
  * configuring, using the same `buildDefaultTierConfig` ranking so the hint is
  * actionable. Pure/string-only so the caller owns how it's emitted.

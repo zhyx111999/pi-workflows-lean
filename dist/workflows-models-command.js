@@ -14,7 +14,7 @@
  */
 import { existsSync } from "node:fs";
 import { Container, SelectList, Spacer, Text, } from "@earendil-works/pi-tui";
-import { listAvailableModelSpecs, listAvailableModels } from "./agent.js";
+import { listAvailableModelSpecs, listAvailableModels } from "./agent/available-models.js";
 import { formatModelSpecWithThinking, splitModelSpecThinking, THINKING_LEVELS, } from "./model-spec.js";
 import { buildDefaultTierConfig, getModelTierConfigPath, getProjectModelTierConfigPath, loadModelTierConfig, saveModelTierConfig, sortedTierNames, } from "./model-tier-config.js";
 /**

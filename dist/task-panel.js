@@ -1,85 +1,46 @@
 /**
  * Background-run UX, mirroring Claude Code:
- *  - A live task panel below the input lists in-progress runs while you keep working.
- *    It is informational; run /workflows to open the full navigator.
- *  - When a background run finishes, its result is delivered back into the
- *    conversation so the paused task continues with the outcome.
+ *  - A live task panel below the input lists in-progress runs while you keep
+ *    working. It is informational; /workflows opens the full navigator.
+ *  - When a background run finishes, fails, or pauses for the model, the result
+ *    is delivered back into the conversation that started it, so the paused task
+ *    continues with the outcome.
+ *
+ * Delivery is routed per session because Pi's ExtensionRunner.bindCore() stores
+ * `runtime.sendMessage` on a runtime object shared by every session: the session
+ * constructed last wins, so pi.sendMessage at completion time would land in
+ * whichever session was built last. Instead each session binds an endpoint that
+ * holds its own host AgentSession.sendCustomMessage, which returns a real
+ * Promise (actions.sendMessage is void and swallows rejections). A result is
+ * saved as a pending marker first, sent only through its run's session
+ * endpoint, and cleared only after that send is confirmed. A missing or
+ * suspended endpoint leaves it pending; nothing falls back to pi.sendMessage.
+ *
+ * The internals live in ./task-panel/: panel rendering, session endpoints, host
+ * send capture, pending markers, retries, and dispatch.
  */
-import { randomUUID } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { join } from "node:path";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { aggregateAgentUsage, fmtCost, fmtTokenSegment, shorten, statusIcon, tokenFigures, } from "./display.js";
-import { RunRecordDeletedError } from "./errors.js";
-import { runSummary } from "./run-record-store.js";
-import { shortModel } from "./workflow-ui.js";
-// `tokenUsage` is included so the detailed panel's live token/s counter refreshes
-// as tokens accrue (not only on agent start/end). It is harmless in compact mode —
-// it redraws identical content.
-const RUN_EVENTS = [
-    "agentStart",
-    "agentModel",
-    "agentEnd",
-    "phase",
-    "log",
-    "tokenUsage",
-    "complete",
-    "error",
-    "stopped",
-    "paused",
-    "resumed",
-];
-/** Events after which a run is gone and its token-rate samples can be dropped. */
-const RUN_END_EVENTS = ["complete", "error", "stopped"];
-/** Default cap on the JSON-dump fallback in a delivered result summary. Overridable
- *  via the `deliveredResultMaxChars` setting in ~/.pi/workflows/settings.json. */
-const DEFAULT_DELIVERED_MAX_CHARS = 400;
-/** Human-readable byte size for the dropped-tail hint: 512 B, 3.2 KB, 1.4 MB. */
-function formatBytes(n) {
-    if (n < 1024)
-        return `${n} B`;
-    if (n < 1024 * 1024)
-        return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
+import { fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
+import { fmtTokensShort } from "./task-panel/compact-format.js";
+import { _resetDeliveryDispatchForTests, flushSessionDiskPending, routeBackgroundDelivery, setPendingTextRenderer, } from "./task-panel/delivery-dispatch.js";
+import { resolveDeliverySessionId, sessionEndpoints, } from "./task-panel/delivery-endpoints.js";
+import { _resetDeliveryRetriesForTests, cancelSessionRetries } from "./task-panel/delivery-retry.js";
+import { _resetHostSendCaptureForTests, boundSessionSends, cancelUnsentWaiters, captureHostSessionSend, } from "./task-panel/host-send-capture.js";
+import { panelWidget } from "./task-panel/panel-widget.js";
+import { deliveredAwaitingClear, forgetAwaitingClear } from "./task-panel/pending-markers.js";
+import { deliveredMaxChars, failedRunText, pausedRunText, persistedResultPath, summarizeResult, } from "./task-panel/result-text.js";
+export const WORKFLOW_LIFECYCLE_EVENT = "pi-dynamic-workflows:lifecycle";
+// ─── Live panel ────────────────────────────────────────────────────────────────
 /**
- * Pick a clean human-readable summary from a workflow result, in order of
- * preference: a `verdict`/`report`/`summary`/`synthesis` string field, a bare
- * string result, else a JSON dump capped at `maxChars`. When the dump is truncated the
- * dropped size is reported (the full result is still reachable via the pointer
- * that {@link deliverText} appends).
+ * Install the live "workflows running" panel below the editor. It redraws on
+ * every manager event and is informational only — the user opens the navigator
+ * with /workflows. The unused `_pi` keeps the public signature stable.
  */
-function summarizeResult(result, maxChars = DEFAULT_DELIVERED_MAX_CHARS) {
-    if (typeof result === "string")
-        return result;
-    if (result == null)
-        return "null";
-    if (typeof result === "object") {
-        const obj = result;
-        for (const key of ["verdict", "report", "summary", "synthesis"]) {
-            const val = obj[key];
-            if (typeof val === "string" && val.trim())
-                return val;
-        }
-    }
-    const json = JSON.stringify(result, null, 2);
-    if (json.length <= maxChars)
-        return json;
-    // Slice once (the kept head); derive the dropped size by byte-length subtraction
-    // so we don't also allocate the (potentially large) truncated tail to measure it.
-    const kept = json.slice(0, maxChars);
-    const droppedBytes = Buffer.byteLength(json, "utf8") - Buffer.byteLength(kept, "utf8");
-    return `${kept}\n…(truncated ${formatBytes(droppedBytes)})`;
+export function installTaskPanel(_pi, manager, ui, opts = {}) {
+    ui.setWidget("workflow-tasks", panelWidget(manager, opts.loadSettings), { placement: "belowEditor" });
 }
-function fitLine(line, width) {
-    if (typeof width !== "number" || !Number.isFinite(width))
-        return line;
-    const maxWidth = Math.max(0, Math.floor(width));
-    if (visibleWidth(line) <= maxWidth)
-        return line;
-    return truncateToWidth(line, maxWidth);
-}
+// ─── Delivered messages ────────────────────────────────────────────────────────
+/** The message delivered when a background run completes, ending with a pointer to the full result. */
 export function deliverText(run, opts = {}) {
     const summary = summarizeResult(run.result?.result, opts.maxChars);
     const tu = run.result?.tokenUsage;
@@ -99,575 +60,14 @@ export function deliverText(run, opts = {}) {
         lines.push("", `↳ Full result: ${opts.resultPath}`);
     return lines.join("\n");
 }
-/** Absolute path to a run's persisted result JSON. Undefined if the persistence
- *  layer can't be resolved — delivery must never throw in the complete handler. */
-function persistedResultPath(manager, runId, result) {
-    try {
-        const persistence = manager.getPersistence();
-        return persistence.exportResult
-            ? persistence.exportResult(runId, result)
-            : join(persistence.getRunsDir(), `${runId}.json`);
-    }
-    catch {
-        return undefined;
-    }
-}
-/** Delivered JSON-dump truncation threshold from settings (already normalized),
- *  defaulting to 400 when unset or unreadable. */
-function deliveredMaxChars(opts) {
-    try {
-        return opts.loadSettings?.().deliveredResultMaxChars ?? DEFAULT_DELIVERED_MAX_CHARS;
-    }
-    catch {
-        return DEFAULT_DELIVERED_MAX_CHARS;
-    }
-}
-/** Process-wide: one live endpoint per pi session id. */
-const sessionEndpoints = new Map();
-function warnDelivery(sessionId, message) {
-    const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
-    if (!endpoint || endpoint.warned || !endpoint.reportWarning)
-        return;
-    endpoint.warned = true;
-    try {
-        endpoint.reportWarning(message);
-    }
-    catch {
-        // Diagnostics must never affect delivery or write raw stderr over the TUI.
-    }
-}
-/**
- * Session-stable thenable sends (host AgentSession.sendCustomMessage). Keyed
- * by host sessionId only — workflow children (in-memory, noExtensions, or
- * named `workflow:…`) must never enter this map (#109).
- */
-const boundSessionSends = new Map();
-/** Ownership-token locks prevent stale promise chains from releasing newer sends. */
-const inFlightDeliveries = new Map();
-let inFlightSeq = 0;
-const DEFAULT_STREAMING_ACK_TIMEOUT_MS = 60_000;
-let streamingAckTimeoutMs = DEFAULT_STREAMING_ACK_TIMEOUT_MS;
-const activeStreamingWaiters = new Set();
-const DELIVERY_RETRY_DELAYS_MS = [250, 1_000, 4_000];
-const deliveryRetries = new Map();
-/** ACKed messages whose pending marker still needs to be cleared durably. */
-const deliveredAwaitingClear = new Map();
-/**
- * Custom type for the session bind probe (see probeHostSessionSend). Sent
- * through pi.sendMessage ONLY so the sendCustomMessage capture patch can
- * identify the live host session. Capture-only: the patched sendCustomMessage
- * swallows probe messages — nothing is appended, persisted, or turned.
- */
-export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
-/**
- * Session ids probed successfully. Marked only after a probe that captured a
- * send; a failed or missed probe stays unmarked and is retried on the next
- * bind.
- */
-const probedSessionIds = new Set();
-/**
- * Quiet hosts (omp never sends custom messages itself) never trip the
- * AgentSession.prototype patch, so no thenable send is ever captured. One
- * capture-only probe through pi.sendMessage forces it: the host's void wrapper
- * calls the live session's sendCustomMessage synchronously, the prototype patch
- * captures the receiver (never forwarding the probe), and boundSessionSends is
- * populated by the time this returns.
- *
- * Retry-correct: the session is marked probed only when the probe actually
- * captured a send. A host whose pi.sendMessage throws (e.g. "Extension runtime
- * not initialized" during early startup) stays unmarked, so the next
- * bindSessionDelivery probes again instead of being permanently silent.
- */
-function probeHostSessionSend(pi, sessionId) {
-    if (probedSessionIds.has(sessionId))
-        return;
-    try {
-        pi.sendMessage({ customType: DELIVERY_PROBE_CUSTOM_TYPE, content: "", display: false }, { triggerTurn: false });
-    }
-    catch {
-        // Probe is best-effort; bind stays fail-closed without a captured send.
-        // Not marked probed — the next bindSessionDelivery retries.
-        return;
-    }
-    if (boundSessionSends.has(sessionId))
-        probedSessionIds.add(sessionId);
-}
-let hostAgentSession = AgentSession;
-const patchedSessionPrototypes = new WeakSet();
-/** Bind delivery capture to the host loader's class, not a sibling SDK peer. */
-export function installHostSessionCapture(sessionClass) {
-    hostAgentSession = sessionClass;
-    patchAgentSessionCapture();
-}
-function hostSessionIdToSteal(session, probe) {
-    const sm = session.sessionManager;
-    if (!sm)
-        return undefined;
-    if (session._resourceLoader?.noExtensions === true)
-        return undefined;
-    try {
-        const name = sm.getSessionName?.();
-        if (typeof name === "string" && name.startsWith("workflow:"))
-            return undefined;
-    }
-    catch {
-        // getSessionName unavailable — keep evaluating
-    }
-    if (typeof session.sendCustomMessage !== "function")
-        return undefined;
-    const sid = sm.getSessionId?.();
-    // PROBE EXCEPTION: the probe bypasses ONLY this persistence gate; the
-    // sessionManager presence, noExtensions, and workflow:-name gates above
-    // still apply. Justification: unnamed in-memory workflow children are
-    // excluded by noExtensions/isPersisted at the bindCore hook (probe=false),
-    // and a probe is only ever sent through the pi.sendMessage of the session
-    // running this extension — it cannot reach a foreign or child session. omp
-    // print-mode hosts report isSessionOnDisk()===false at session_start
-    // (persisted lazily after bind), so the gate must not reject a probe-bearing
-    // send (#109).
-    if (!probe) {
-        try {
-            if (typeof sm.isPersisted === "function") {
-                if (!sm.isPersisted())
-                    return undefined;
-            }
-            else if (typeof sm.isSessionOnDisk === "function") {
-                if (!sm.isSessionOnDisk())
-                    return undefined;
-            }
-            else if (sm.persist !== true) {
-                return undefined;
-            }
-        }
-        catch {
-            return undefined;
-        }
-    }
-    return sid;
-}
-function deliveryIdFromDetails(details) {
-    if (!details || typeof details !== "object")
-        return undefined;
-    const deliveryId = details.deliveryId;
-    return typeof deliveryId === "string" && deliveryId ? deliveryId : undefined;
-}
-/** Scan the SDK's JSONL record without allocating the entire session history. */
-export function sessionFileContainsEntry(path, entry) {
-    const needle = Buffer.from(`\n${JSON.stringify(entry)}\n`);
-    let fd;
-    try {
-        fd = openSync(path, "r");
-        // Incremental scan (audit2 #29): the session file is append-only and the
-        // delivery-ACK path re-scans it per check — resume from the last scanned
-        // offset (with a needle-length overlap) instead of offset 0. On a tail
-        // miss, fall back to one head scan: an entry can precede the cached offset
-        // when two deliveries interleave.
-        // - needle.length (NOT needle.length-1): the cached offset is one past
-        // the last scanned byte and a needle straddling it can start at offset-1,
-        // so the tail window must span needle.length bytes from resumeFrom. One
-        // byte narrower and a repeat check for an already-present entry always
-        // misses the tail and degenerates to a full head scan (r1 M1). An entry
-        // followed by later writes still falls back to one head scan — acceptable.
-        const resumeFrom = Math.max(0, (sessionScanOffsets.get(path) ?? 0) - needle.length);
-        const foundInTail = scanRegion(fd, needle, resumeFrom);
-        const end = lseekEnd(fd);
-        rememberScanOffset(path, end);
-        if (foundInTail)
-            return true;
-        if (resumeFrom > 0)
-            return scanRegion(fd, needle, 0, resumeFrom + needle.length - 1);
-        return false;
-    }
-    catch {
-        return false;
-    }
-    finally {
-        if (fd !== undefined)
-            closeSync(fd);
-    }
-}
-/** Last fully-scanned byte offset per session file (append-only). Bounded:
- * one entry per touched session file; LRU-evicted past 128 (delete+set on
- * every hit keeps the ACK hot path's entries resident). */
-const sessionScanOffsets = new Map();
-const SESSION_SCAN_OFFSETS_CAP = 128;
-function rememberScanOffset(path, end) {
-    sessionScanOffsets.delete(path);
-    sessionScanOffsets.set(path, end);
-    if (sessionScanOffsets.size > SESSION_SCAN_OFFSETS_CAP) {
-        const oldest = sessionScanOffsets.keys().next().value;
-        if (oldest !== undefined)
-            sessionScanOffsets.delete(oldest);
-    }
-}
-function lseekEnd(fd) {
-    try {
-        return fstatSync(fd).size;
-    }
-    catch {
-        return 0;
-    }
-}
-function scanRegion(fd, needle, start, end) {
-    const chunk = Buffer.allocUnsafe(64 * 1024);
-    let position = start;
-    let tail = Buffer.alloc(0);
-    for (;;) {
-        const budget = end === undefined ? chunk.length : Math.min(chunk.length, end - position);
-        if (budget <= 0)
-            return false;
-        const count = readSync(fd, chunk, 0, budget, position);
-        if (count === 0)
-            return false;
-        position += count;
-        const window = Buffer.concat([tail, chunk.subarray(0, count)]);
-        if (window.indexOf(needle) !== -1)
-            return true;
-        tail = window.subarray(Math.max(0, window.length - needle.length + 1));
-    }
-}
-function sessionHasDelivery(session, deliveryId) {
-    const sm = session.sessionManager;
-    if (typeof sm?.getBranch !== "function" || typeof sm.getSessionFile !== "function")
-        return undefined;
-    try {
-        const entries = sm
-            .getBranch()
-            .filter((entry) => typeof entry.id === "string" &&
-            entry.type === "custom_message" &&
-            entry.customType === "workflow-result" &&
-            deliveryIdFromDetails(entry.details) === deliveryId);
-        const file = sm.getSessionFile();
-        // getEntries includes abandoned branches; even getBranch can contain a
-        // memory-only entry after a failed/lazy persist. Neither alone is an ACK.
-        return !!file && entries.some((entry) => sessionFileContainsEntry(file, entry));
-    }
-    catch {
-        return undefined;
-    }
-}
-function captureHostSessionSend(session, probe) {
-    const sid = hostSessionIdToSteal(session, probe);
-    const send = session.sendCustomMessage;
-    if (!sid || typeof send !== "function")
-        return;
-    boundSessionSends.set(sid, (message, options) => {
-        const deliveryId = deliveryIdFromDetails(message.details);
-        if (deliveryId && sessionHasDelivery(session, deliveryId) === true)
-            return Promise.resolve();
-        if (!deliveryId) {
-            return send.call(session, message, options);
-        }
-        if (typeof session.subscribe !== "function" || sessionHasDelivery(session, deliveryId) === undefined) {
-            return Promise.reject(new Error("host cannot confirm workflow result delivery"));
-        }
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            let started = false;
-            let waitingForIdle = false;
-            let unsubscribe = () => { };
-            let timer;
-            const finish = (error) => {
-                if (settled)
-                    return;
-                settled = true;
-                if (timer)
-                    clearTimeout(timer);
-                activeStreamingWaiters.delete(waiterRecord);
-                unsubscribe();
-                if (error)
-                    reject(error);
-                else
-                    resolve();
-            };
-            const waiterRecord = {
-                sessionId: sid,
-                deliveryId,
-                hasStarted: () => started,
-                cancel: (err) => finish(err),
-            };
-            activeStreamingWaiters.add(waiterRecord);
-            if (streamingAckTimeoutMs > 0) {
-                timer = setTimeout(() => {
-                    queueMicrotask(() => {
-                        if (settled)
-                            return;
-                        if (sessionHasDelivery(session, deliveryId) === true)
-                            finish();
-                        // No host queue item exists before start, so a retry is safe. Once
-                        // started, never infer non-delivery from elapsed time.
-                        else if (!started)
-                            finish(new Error("timed out waiting for an idle host"));
-                    });
-                }, streamingAckTimeoutMs);
-                timer.unref?.();
-            }
-            unsubscribe =
-                session.subscribe?.((event) => {
-                    if (event.type === "message_end") {
-                        // A fresh session may flush the input only when its first assistant
-                        // message completes. Recheck disk, not just the custom input event.
-                        queueMicrotask(() => {
-                            if (settled)
-                                return;
-                            const persisted = sessionHasDelivery(session, deliveryId);
-                            if (persisted === true)
-                                finish();
-                            // A persistence failure is not proof that a started prompt was
-                            // cancelled. Its send promise remains the failure boundary.
-                        });
-                        return;
-                    }
-                    if (event.type === "agent_settled" || event.type === "compaction_end") {
-                        // An unrelated queue_update only describes user text; it cannot
-                        // establish ownership or consumption of a custom follow-up.
-                        queueMicrotask(startWhenIdle);
-                    }
-                }) ?? (() => { });
-            function startWhenIdle() {
-                if (!deliveryId || !send)
-                    return;
-                if (settled || started)
-                    return;
-                if (session.isStreaming || session.isIdle === false) {
-                    if (!waitingForIdle && typeof session.waitForIdle === "function") {
-                        waitingForIdle = true;
-                        void session.waitForIdle().then(() => {
-                            waitingForIdle = false;
-                            startWhenIdle();
-                        }, finish);
-                    }
-                    return;
-                }
-                if (session.sessionManager?.getSessionId?.() !== sid) {
-                    finish(new Error("host session identity changed before delivery"));
-                    return;
-                }
-                if (sessionHasDelivery(session, deliveryId) === true) {
-                    finish();
-                    return;
-                }
-                // No await between idle inspection and send: this path never installs
-                // a custom message in the host's unobservable follow-up queue.
-                started = true;
-                if (timer)
-                    clearTimeout(timer);
-                try {
-                    const pending = send.call(session, message, options);
-                    if (pending == null || typeof pending.then !== "function") {
-                        finish(new Error("workflow result send did not return a thenable"));
-                        return;
-                    }
-                    Promise.resolve(pending).then(() => finish(sessionHasDelivery(session, deliveryId) === true
-                        ? undefined
-                        : new Error("host send settled without persisting workflow result")), (error) => finish(sessionHasDelivery(session, deliveryId) === true ? undefined : error));
-                }
-                catch (error) {
-                    finish(error);
-                }
-            }
-            startWhenIdle();
-        });
-    });
-}
-/**
- * Capture a Promise-returning send from the *host* AgentSession. bindCore's
- * `actions.sendMessage` is fire-and-forget (void + swallowed reject) and must
- * not be treated as an ACK channel. Child sessions never enter the map.
- */
-function patchAgentSessionCapture() {
-    try {
-        const proto = hostAgentSession.prototype;
-        if (patchedSessionPrototypes.has(proto))
-            return;
-        const original = proto.sendCustomMessage;
-        if (typeof original !== "function") {
-            // AgentSession shape changed — bind stays fail-closed without steal.
-            return;
-        }
-        patchedSessionPrototypes.add(proto);
-        // PRIMARY capture hook: `_bindExtensionCore` runs at session construction,
-        // before any extension code, so a stock pi host is captured without ever
-        // probing. The omp fork bundle does not expose the symbol — guard with
-        // typeof so the patch stays a no-op there and the probe fallback handles
-        // capture. Full original gates apply (persistence gate included,
-        // probe=false).
-        if (typeof proto._bindExtensionCore === "function") {
-            const bindCore = proto._bindExtensionCore;
-            proto._bindExtensionCore = function patchedBindExtensionCore(...args) {
-                try {
-                    captureHostSessionSend(this, false);
-                }
-                catch {
-                    // never break session construction
-                }
-                return bindCore.apply(this, args);
-            };
-        }
-        // Invoke the original with the runtime's live session as receiver. A
-        // `.bind(proto)` forward would freeze the receiver to the prototype, and a
-        // bound function's receiver cannot be overridden by `.call(this, …)` — the
-        // original would run with `this.agent` undefined and every non-trigger
-        // send would reject, silently losing the delivery. Patch predates session
-        // construction: this here is the session that later calls sendCustomMessage.
-        proto.sendCustomMessage = function patchedSendCustomMessage(message, options) {
-            const isProbe = message?.customType === DELIVERY_PROBE_CUSTOM_TYPE;
-            try {
-                captureHostSessionSend(this, isProbe);
-            }
-            catch {
-                // never break the host send
-            }
-            // Capture-only probe: the probe exists only to trip this capture patch.
-            // Never append to agent.state.messages, never write a session entry,
-            // never inject an LLM user turn — swallow it entirely.
-            if (isProbe)
-                return Promise.resolve();
-            return original.call(this, message, options);
-        };
-    }
-    catch {
-        // AgentSession unavailable or shape changed — bind stays fail-closed without steal
-    }
-}
-export const WORKFLOW_LIFECYCLE_EVENT = "pi-dynamic-workflows:lifecycle";
-function deliveryManager(manager) {
-    return manager;
-}
-function resolveDeliverySessionId(run, manager) {
-    // Originating run wins; manager binding is legacy fallback only when the run
-    // predates per-run sessionId. Never invent a session.
-    return run.sessionId ?? manager.getSessionId?.();
-}
-function sameDelivery(a, b) {
-    return a?.kind === b.kind && (a.kind !== "text" || (b.kind === "text" && a.text === b.text));
-}
-function markerWithId(marker, existing) {
-    const deliveryId = sameDelivery(existing, marker) ? existing?.deliveryId : undefined;
-    return { ...marker, deliveryId: deliveryId ?? marker.deliveryId ?? randomUUID() };
-}
-function markRunPending(run, marker) {
-    const identified = markerWithId(marker, run.pendingDelivery);
-    if (run.pendingDelivery?.deliveryId !== identified.deliveryId)
-        deliveredAwaitingClear.delete(run.runId);
-    run.pendingDelivery = identified;
-    return identified;
-}
-function clearRunPending(manager, runId, deliveryId, run) {
-    // Clear disk first. If that fails, retain the live marker so the delivered
-    // message remains visible to the bounded clear retry instead of being lost.
-    // A record deleted by another process has no marker left to clear.
-    try {
-        const live = run ?? manager.getRun(runId);
-        if (live?.pendingDelivery?.deliveryId && live.pendingDelivery.deliveryId !== deliveryId)
-            return "stale";
-        const persistence = manager.getPersistence?.();
-        if (persistence) {
-            if (persistence.updateMetadata) {
-                if (!persistence.updateMetadata(runId, { pendingDelivery: undefined }, deliveryId)) {
-                    const remaining = persistence.loadPreview ? persistence.loadPreview(runId) : persistence.load(runId);
-                    if (remaining)
-                        return "stale";
-                }
-            }
-            else {
-                const state = persistence.load(runId);
-                if (state?.pendingDelivery?.deliveryId && state.pendingDelivery.deliveryId !== deliveryId)
-                    return "stale";
-                if (state?.pendingDelivery) {
-                    const { pendingDelivery: _drop, ...rest } = state;
-                    persistence.save(rest);
-                }
-            }
-        }
-        if (live)
-            live.pendingDelivery = undefined;
-        return "cleared";
-    }
-    catch {
-        warnDelivery(run?.sessionId ?? manager.getSessionId?.(), `Workflow ${runId}: result delivered, but its pending marker could not be cleared.`);
-        return "failed";
-    }
-}
-/**
- * Make a live run's delivery marker durable before sending it. A run that has
- * never been written is seeded with a minimal record; persistence refuses to
- * recreate a record that another process deleted, which reports "deleted".
- */
-function persistRunPending(manager, run) {
-    try {
-        // Prefer merging into an existing on-disk record so we don't clobber the
-        // manager's richer write that follows the complete/error emit.
-        const persistence = manager.getPersistence?.();
-        if (!persistence)
-            return "saved";
-        if (persistence.updateMetadata?.(run.runId, { pendingDelivery: run.pendingDelivery, sessionId: run.sessionId }))
-            return "saved";
-        const existing = persistence.load(run.runId);
-        if (existing) {
-            persistence.save({ ...existing, pendingDelivery: run.pendingDelivery, sessionId: run.sessionId });
-            return "saved";
-        }
-        if (run.pendingDelivery) {
-            persistence.save({
-                runId: run.runId,
-                workflowName: run.snapshot.name,
-                script: run.script ?? "",
-                sessionId: run.sessionId,
-                status: run.status,
-                phases: run.snapshot.phases ?? [],
-                agents: [],
-                logs: run.snapshot.logs ?? [],
-                result: run.result?.result,
-                tokenUsage: run.result?.tokenUsage ?? run.snapshot.tokenUsage,
-                durationMs: run.result?.durationMs,
-                startedAt: run.startedAt?.toISOString?.() ?? new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-                pendingDelivery: run.pendingDelivery,
-            });
-        }
-        return "saved";
-    }
-    catch (error) {
-        if (error instanceof RunRecordDeletedError)
-            return "deleted";
-        warnDelivery(run.sessionId, `Workflow ${run.runId}: delivery deferred because its pending marker could not be saved.`);
-        return "failed";
-    }
-}
-/** Give a disk-only pending run its delivery id. It never creates a record. */
-function persistDiskMarker(manager, runId, marker, state) {
-    try {
-        const persistence = manager.getPersistence?.();
-        if (!persistence)
-            return "saved";
-        if (persistence.updateMetadata)
-            return persistence.updateMetadata(runId, { pendingDelivery: marker }) ? "saved" : "deleted";
-        const current = state ?? persistence.load(runId);
-        if (!current)
-            return "deleted";
-        persistence.save({ ...current, pendingDelivery: marker });
-        return "saved";
-    }
-    catch (error) {
-        return error instanceof RunRecordDeletedError ? "deleted" : "failed";
-    }
-}
-/** A run deleted by another process is no longer deliverable; drop its delivery state. */
-function abandonDeletedDelivery(runId, run) {
-    if (run)
-        run.pendingDelivery = undefined;
-    deliveredAwaitingClear.delete(runId);
-    cancelDeliveryRetry(runId);
-}
-function contentForPending(manager, runId, marker, loadSettings, run, persisted) {
+/** Message for a pending marker; a complete result is rebuilt from the live run or its record. */
+function pendingResultText(manager, runId, marker, loadSettings, run, persisted) {
     if (marker.kind === "text")
         return marker.text;
-    // complete — recompute from live run or disk so we never store the body twice
     if (run) {
         return deliverText(run, {
             resultPath: persistedResultPath(manager, runId, run.result?.result),
-            maxChars: deliveredMaxChars({ loadSettings }),
+            maxChars: deliveredMaxChars(loadSettings),
         });
     }
     if (persisted) {
@@ -681,259 +81,134 @@ function contentForPending(manager, runId, marker, loadSettings, run, persisted)
             },
         }, {
             resultPath: persistedResultPath(manager, runId, persisted.result),
-            maxChars: deliveredMaxChars({ loadSettings }),
+            maxChars: deliveredMaxChars(loadSettings),
         });
     }
     return undefined;
 }
+setPendingTextRenderer(pendingResultText);
+// ─── Host session hooks ────────────────────────────────────────────────────────
 /**
- * Attempt session-routed delivery. Resolves true only after a thenable
- * host sendCustomMessage / stableSend settles on a live endpoint. Void /
- * fire-and-forget sends and durable appends are NOT success (append writes
- * history without triggerTurn). Does not clear pending markers.
+ * Custom type of the capture-only probe sent through pi.sendMessage. The patched
+ * sendCustomMessage swallows it, so nothing is appended, persisted, or turned.
  */
-function tryDeliverEndpoint(endpoint, content, deliveryId) {
-    if (endpoint.suspended)
-        return Promise.resolve(false);
-    if (endpoint.sessionId && sessionEndpoints.get(endpoint.sessionId) !== endpoint) {
-        // Stale endpoint object after rebind/drop.
-        return Promise.resolve(false);
+export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
+/** Sessions whose probe captured a send. A failed probe stays unmarked and is retried on the next bind. */
+const probedSessionIds = new Set();
+/**
+ * Quiet hosts (omp never sends custom messages itself) never trip the
+ * AgentSession prototype patch, so no confirming send is captured. One probe
+ * through pi.sendMessage forces it: the host's void wrapper calls the live
+ * session's sendCustomMessage synchronously, and the patch captures that
+ * receiver before this returns. A host whose pi.sendMessage still throws during
+ * early startup stays unmarked so the next bind probes again.
+ */
+function probeHostSessionSend(pi, sessionId) {
+    if (probedSessionIds.has(sessionId))
+        return;
+    try {
+        pi.sendMessage({ customType: DELIVERY_PROBE_CUSTOM_TYPE, content: "", display: false }, { triggerTurn: false });
     }
-    // Only a thenable session-stable send (host sendCustomMessage) may ACK.
-    if (typeof endpoint.send === "function") {
-        try {
-            const ret = endpoint.send({ customType: "workflow-result", content, display: true, details: { deliveryId } }, { triggerTurn: true, deliverAs: "followUp" });
-            if (ret != null && typeof ret.then === "function") {
-                const startedGeneration = endpoint.generation;
-                const sessionId = endpoint.sessionId;
-                return Promise.resolve(ret).then(() => {
-                    const current = sessionEndpoints.get(sessionId);
-                    // Succeeded under this or a newer live endpoint for the same session.
-                    return !!current && !current.suspended;
-                }, (err) => {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    warnDelivery(sessionId, `Workflow result remains pending: ${msg}`);
-                    const current = sessionEndpoints.get(sessionId);
-                    // If a newer generation already bound, caller may re-flush; signal failure.
-                    if (current && current.generation !== startedGeneration && !current.suspended) {
-                        // Return false so disk marker stays; flush path retries.
-                    }
-                    return false;
-                });
-            }
-            // Non-thenable send (void fire-and-forget) — do not trust as ACK.
-            warnDelivery(endpoint.sessionId, `[workflow-delivery] send for session ${endpoint.sessionId} did not return a thenable; ` +
-                "not treating as delivered (fail closed).");
-        }
-        catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            warnDelivery(endpoint.sessionId, `Workflow result remains pending: ${msg}`);
-            return Promise.resolve(false);
-        }
+    catch {
+        // Best-effort; the bind stays fail-closed without a captured send.
+        return;
     }
-    return Promise.resolve(false);
+    if (boundSessionSends.has(sessionId))
+        probedSessionIds.add(sessionId);
 }
-function cancelDeliveryRetry(runId) {
-    const retry = deliveryRetries.get(runId);
-    if (retry?.timer)
-        clearTimeout(retry.timer);
-    deliveryRetries.delete(runId);
-}
-function cancelSessionDeliveryState(sessionId) {
-    for (const [runId, retry] of deliveryRetries) {
-        if (retry.sessionId === sessionId)
-            cancelDeliveryRetry(runId);
-    }
-    for (const [runId, delivered] of deliveredAwaitingClear) {
-        if (delivered.sessionId === sessionId)
-            deliveredAwaitingClear.delete(runId);
-    }
-}
-function scheduleDeliveryRetry(manager, runId, sessionId, generation) {
-    const current = deliveryRetries.get(runId);
-    if (current?.timer && current.generation === generation)
-        return;
-    const attempt = current?.generation === generation ? current.attempt : 0;
-    if (attempt >= DELIVERY_RETRY_DELAYS_MS.length) {
-        warnDelivery(sessionId, `Workflow ${runId}: result remains pending after delivery retries. Open /workflows to inspect it.`);
-        return;
-    }
-    const retry = { attempt: attempt + 1, generation, sessionId };
-    retry.timer = setTimeout(() => {
-        retry.timer = undefined;
-        if (deliveryRetries.get(runId) !== retry)
-            return;
-        const endpoint = sessionEndpoints.get(sessionId);
-        if (!endpoint || endpoint.suspended || endpoint.generation !== generation)
-            return;
-        flushSessionDiskPending(manager, sessionId, endpoint);
-    }, DELIVERY_RETRY_DELAYS_MS[attempt]);
-    retry.timer.unref?.();
-    deliveryRetries.set(runId, retry);
-}
-function releaseDelivery(runId, token) {
-    if (inFlightDeliveries.get(runId)?.token === token)
-        inFlightDeliveries.delete(runId);
-}
-function deliverAndAck(manager, runId, sessionId, content, deliveryId, run) {
-    if (inFlightDeliveries.has(runId))
-        return;
-    const endpoint = sessionEndpoints.get(sessionId);
-    if (!endpoint) {
-        return;
-    }
-    if (endpoint.suspended) {
-        return;
-    }
-    if (endpoint.sessionId !== sessionId) {
-        warnDelivery(sessionId, `[workflow-delivery] delivery for ${runId} deferred: endpoint sessionId ${endpoint.sessionId} !== ${sessionId}`);
-        return;
-    }
-    const delivered = deliveredAwaitingClear.get(runId);
-    if (delivered?.deliveryId === deliveryId &&
-        delivered.sessionId === sessionId &&
-        delivered.generation === endpoint.generation) {
-        const clear = clearRunPending(manager, runId, deliveryId, run ?? manager.getRun?.(runId));
-        if (clear !== "failed") {
-            deliveredAwaitingClear.delete(runId);
-            cancelDeliveryRetry(runId);
-        }
-        else {
-            scheduleDeliveryRetry(manager, runId, sessionId, endpoint.generation);
-        }
-        return;
-    }
-    // Fail-closed (no send): keep the run pending on disk with NO lock, so a
-    // synchronous re-bind + flush (e.g. probe retry on the next session_start)
-    // is not locked out by a microtask that has not run yet.
-    if (typeof endpoint.send !== "function") {
-        warnDelivery(sessionId, `[workflow-delivery] delivery for ${runId} deferred: endpoint for session ${sessionId} has no thenable send function`);
-        return;
-    }
-    const token = ++inFlightSeq;
-    inFlightDeliveries.set(runId, { token, sessionId });
-    const startedGeneration = endpoint.generation;
-    void tryDeliverEndpoint(endpoint, content, deliveryId)
-        .then((ok) => {
-        if (ok) {
-            cancelDeliveryRetry(runId);
-            const current = sessionEndpoints.get(sessionId);
-            if (!current || current.suspended || current.generation !== startedGeneration || current !== endpoint) {
-                return;
-            }
-            const clear = clearRunPending(manager, runId, deliveryId, run ?? manager.getRun?.(runId));
-            if (clear === "failed") {
-                deliveredAwaitingClear.set(runId, { deliveryId, sessionId, generation: startedGeneration });
-                scheduleDeliveryRetry(manager, runId, sessionId, startedGeneration);
-            }
-            else if (clear === "stale") {
-                // This send belonged to an older marker. Release before flushing the
-                // newer delivery, and let the ownership token protect its lock.
-                releaseDelivery(runId, token);
-                const active = sessionEndpoints.get(sessionId);
-                if (active && !active.suspended && active.manager) {
-                    flushSessionDiskPending(active.manager, sessionId, active);
-                }
-            }
-            return;
-        }
-        releaseDelivery(runId, token);
-        const current = sessionEndpoints.get(sessionId);
-        if (!current || current.suspended || !current.manager)
-            return;
-        if (current.generation !== startedGeneration) {
-            cancelDeliveryRetry(runId);
-            flushSessionDiskPending(current.manager, sessionId, current);
-        }
-        else {
-            scheduleDeliveryRetry(manager, runId, sessionId, startedGeneration);
-        }
-    })
-        .finally(() => {
-        releaseDelivery(runId, token);
-        const liveRun = manager.getRun?.(runId);
-        const persistence = manager.getPersistence?.();
-        const owner = liveRun
-            ? resolveDeliverySessionId(liveRun, manager)
-            : ((persistence?.loadPreview ? persistence.loadPreview(runId) : persistence?.load(runId))?.sessionId ??
-                sessionId);
-        const current = owner ? sessionEndpoints.get(owner) : undefined;
-        // A rebind may have tried to flush while this send still owned the lock.
-        // Hand off after either settlement, including a successful stale ACK.
-        if (current && !current.suspended && current.manager && current !== endpoint) {
-            flushSessionDiskPending(current.manager, current.sessionId, current);
-        }
-    });
-}
-function routeBackgroundDelivery(manager, run, marker, content) {
-    // 1. Mark pending first (fail closed / crash safe). Repeated lifecycle
-    // events reuse the same id so host-session history can deduplicate retries.
-    const pending = markRunPending(run, marker);
-    const deliveryId = pending.deliveryId;
-    if (!deliveryId)
-        return;
-    const saved = persistRunPending(manager, run);
-    if (saved === "deleted") {
-        abandonDeletedDelivery(run.runId, run);
-        return;
-    }
-    const sessionId = resolveDeliverySessionId(run, manager);
-    if (!sessionId) {
-        return;
-    }
-    if (saved === "failed") {
-        const endpoint = sessionEndpoints.get(sessionId);
-        if (endpoint && !endpoint.suspended) {
-            scheduleDeliveryRetry(manager, run.runId, sessionId, endpoint.generation);
-        }
-        return;
-    }
-    // 2. Deliver only via the originating session's endpoint; clear after ACK.
-    deliverAndAck(manager, run.runId, sessionId, content, deliveryId, run);
+let hostAgentSession = AgentSession;
+const patchedSessionPrototypes = new WeakSet();
+/** Bind delivery capture to the host loader's class, not a sibling SDK peer. */
+export function installHostSessionCapture(sessionClass) {
+    hostAgentSession = sessionClass;
+    patchAgentSessionCapture();
 }
 /**
- * Register or refresh the delivery endpoint for a pi session. Requires a
- * session-stable thenable send (stolen host AgentSession.sendCustomMessage, or
- * test DI). Never falls back to shared pi.sendMessage. A durable
- * appendCustomMessageEntry is not an ACK (no triggerTurn).
+ * Patch the host AgentSession so every host session's Promise-returning
+ * sendCustomMessage is captured. bindCore's `actions.sendMessage` is
+ * fire-and-forget and must never be treated as an ACK channel.
+ */
+function patchAgentSessionCapture() {
+    try {
+        const proto = hostAgentSession.prototype;
+        if (patchedSessionPrototypes.has(proto))
+            return;
+        const original = proto.sendCustomMessage;
+        // AgentSession shape changed: delivery stays fail-closed without a capture.
+        if (typeof original !== "function")
+            return;
+        patchedSessionPrototypes.add(proto);
+        // Primary hook: `_bindExtensionCore` runs at session construction, before
+        // any extension code, so a stock pi host is captured without a probe. The
+        // omp bundle does not expose it; there the probe below does the capture.
+        if (typeof proto._bindExtensionCore === "function") {
+            const bindCore = proto._bindExtensionCore;
+            proto._bindExtensionCore = function patchedBindExtensionCore(...args) {
+                try {
+                    captureHostSessionSend(this, false);
+                }
+                catch {
+                    // never break session construction
+                }
+                return bindCore.apply(this, args);
+            };
+        }
+        // Forward with the live session as receiver. A `.bind(proto)` forward would
+        // freeze `this` to the prototype (a bound function ignores `.call(this, …)`),
+        // so `this.agent` would be undefined and every non-trigger send would reject.
+        proto.sendCustomMessage = function patchedSendCustomMessage(message, options) {
+            const isProbe = message?.customType === DELIVERY_PROBE_CUSTOM_TYPE;
+            try {
+                captureHostSessionSend(this, isProbe);
+            }
+            catch {
+                // never break the host send
+            }
+            // The probe exists only to trip this capture: never append it to the
+            // agent state, write a session entry, or start a turn.
+            if (isProbe)
+                return Promise.resolve();
+            return original.call(this, message, options);
+        };
+    }
+    catch {
+        // AgentSession unavailable: delivery stays fail-closed without a capture.
+    }
+}
+// ─── Session endpoints ─────────────────────────────────────────────────────────
+/**
+ * Register or refresh the delivery endpoint for a pi session, then flush what is
+ * pending for that session only. Requires a confirming send (the captured host
+ * sendCustomMessage, or `stableSend` in tests); a durable
+ * appendCustomMessageEntry is not an ACK because it starts no turn.
  *
- * Call from session_start AFTER Pi bindCore. Unsuspends and flushes disk pending
- * for this sessionId only.
+ * Call from session_start, after Pi's bindCore.
  */
 export function bindSessionDelivery(sessionId, pi, opts = {}) {
     if (!sessionId)
         return;
     patchAgentSessionCapture();
-    // Optional identity check — refuse to bind when sessionManager disagrees.
+    // Refuse to bind when the session manager reports a different session.
     try {
         const liveId = opts.sessionManager?.getSessionId?.();
-        if (liveId && liveId !== sessionId) {
+        if (liveId && liveId !== sessionId)
             return;
-        }
     }
     catch {
         // getSessionId unavailable — continue
     }
-    let stolen = opts.stableSend ?? boundSessionSends.get(sessionId);
-    if (!stolen) {
-        // Quiet hosts never call sendCustomMessage themselves, so the prototype
-        // patch never captured. One invisible no-turn probe forces the host's void
-        // send wrapper through AgentSession.sendCustomMessage, populating the
-        // steal map synchronously.
+    let send = opts.stableSend ?? boundSessionSends.get(sessionId);
+    if (!send) {
         probeHostSessionSend(pi, sessionId);
-        stolen = boundSessionSends.get(sessionId);
+        send = boundSessionSends.get(sessionId);
     }
     const prev = sessionEndpoints.get(sessionId);
-    // Retire unsent waits from the previous endpoint. Already-started sends keep
-    // their lock until actual settlement; reload is not an SDK abort barrier.
-    for (const waiter of activeStreamingWaiters) {
-        if (waiter.sessionId === sessionId && !waiter.hasStarted()) {
-            waiter.cancel(new Error("session delivery rebound before send"));
-        }
-    }
+    // Already-started sends keep their lock until they settle: a reload is not an
+    // SDK abort barrier.
+    cancelUnsentWaiters(sessionId, "session delivery rebound before send");
     const endpoint = {
         sessionId,
-        send: stolen,
+        send,
         loadSettings: opts.loadSettings ?? prev?.loadSettings,
         suspended: false,
         generation: (prev?.generation ?? 0) + 1,
@@ -954,32 +229,22 @@ export function suspendSessionDelivery(sessionId) {
     const endpoint = sessionEndpoints.get(sessionId);
     if (endpoint)
         endpoint.suspended = true;
-    // Only an unsent wait is safe to cancel. A started send can still persist
-    // after shutdown/reload, so retain ownership until its real outcome is known.
-    for (const waiter of activeStreamingWaiters) {
-        if (waiter.sessionId === sessionId && !waiter.hasStarted()) {
-            waiter.cancel(new Error("session delivery suspended"));
-        }
-    }
-    for (const [runId, retry] of deliveryRetries) {
-        if (retry.sessionId === sessionId)
-            cancelDeliveryRetry(runId);
-    }
+    cancelUnsentWaiters(sessionId, "session delivery suspended");
+    cancelSessionRetries(sessionId);
 }
 /**
- * Drop endpoint + stolen send for a session that will not come back (quit /
- * discard, or the *old* id after a successful replacement bind). Releases the
- * AgentSession closure retained by the steal map (#109).
+ * Forget a session that will not come back (quit / discard, or the old id after
+ * a successful replacement bind). Releases the AgentSession closure held by its
+ * captured send; pending markers stay on disk.
  */
 export function dropSessionDelivery(sessionId) {
     if (!sessionId)
         return;
     suspendSessionDelivery(sessionId);
-    cancelSessionDeliveryState(sessionId);
+    forgetAwaitingClear(sessionId);
     sessionEndpoints.delete(sessionId);
     boundSessionSends.delete(sessionId);
-    // A dropped session may be rebound fresh (e.g. replaced id): forget probe
-    // bookkeeping so the next bindSessionDelivery probes again.
+    // The id may be bound again later; let that bind probe afresh.
     probedSessionIds.delete(sessionId);
 }
 /**
@@ -998,89 +263,12 @@ export function resumeSessionDelivery(sessionId, manager) {
     if (endpoint.manager)
         flushSessionDiskPending(endpoint.manager, sessionId, endpoint);
 }
-function flushSessionDiskPending(manager, sessionId, endpoint) {
-    if (endpoint.suspended)
-        return;
-    const tryOne = (runId, marker, run, persisted) => {
-        if (inFlightDeliveries.has(runId))
-            return;
-        // A live run re-persists its marker; a disk-only run only needs a missing id.
-        const identified = run ? markRunPending(run, marker) : marker.deliveryId ? marker : markerWithId(marker);
-        const saved = run
-            ? persistRunPending(manager, run)
-            : identified === marker
-                ? "saved"
-                : persistDiskMarker(manager, runId, identified, persisted);
-        if (saved === "deleted") {
-            abandonDeletedDelivery(runId, run);
-            return;
-        }
-        if (saved === "failed") {
-            if (run)
-                scheduleDeliveryRetry(manager, runId, sessionId, endpoint.generation);
-            else
-                warnDelivery(sessionId, `Workflow ${runId}: delivery deferred because its marker could not be saved.`);
-            return;
-        }
-        const deliveryId = identified.deliveryId;
-        if (!deliveryId)
-            return;
-        const content = contentForPending(manager, runId, identified, endpoint.loadSettings, run, persisted);
-        if (content === undefined)
-            return;
-        deliverAndAck(manager, runId, sessionId, content, deliveryId, run);
-    };
-    // Live in-memory runs for this session. Null sessionId is claimable only for
-    // THIS manager's live runs (pre-bind completions) — never from a foreign manager.
-    try {
-        for (const run of manager.listLiveRuns?.() ?? []) {
-            if (!run.pendingDelivery)
-                continue;
-            if (run.sessionId != null && run.sessionId !== sessionId)
-                continue;
-            if (run.sessionId == null)
-                run.sessionId = sessionId;
-            tryOne(run.runId, run.pendingDelivery, run);
-        }
-    }
-    catch {
-        // listLiveRuns may be absent on stubs
-    }
-    // Disk runs (including terminal runs already evicted from memory). Require an
-    // exact sessionId match — do not claim null-sessionId disk rows (same-cwd dual
-    // manager race). Handoff re-homes previous-session pendings via adopt first.
-    try {
-        const persistence = manager.getPersistence?.();
-        if (!persistence)
-            return;
-        for (const state of persistence.list()) {
-            if (!state.pendingDelivery)
-                continue;
-            if (state.sessionId !== sessionId)
-                continue;
-            // Skip if the live copy still carries the marker — the loop above owns it.
-            const live = manager.getRun?.(state.runId);
-            if (live?.pendingDelivery)
-                continue;
-            try {
-                tryOne(state.runId, state.pendingDelivery, live, state);
-            }
-            catch {
-                // The list can still show a run another process just deleted, whose
-                // record then fails to read; skip it so the other results still go out.
-            }
-        }
-    }
-    catch {
-        // best-effort
-    }
-}
 /**
  * Stop live sends for the manager's currently bound session. In-flight
  * completions only leave disk pending until the next bind/resume.
  *
- * Call from session_shutdown BEFORE handoff or discard so a completion that
- * races the teardown cannot deliver into the outgoing session (#143).
+ * Call from session_shutdown before handoff or discard, so a completion racing
+ * the teardown cannot deliver into the outgoing session.
  */
 export function suspendResultDelivery(manager) {
     suspendSessionDelivery(manager.getSessionId?.());
@@ -1093,26 +281,28 @@ export function suspendResultDelivery(manager) {
 export function resumeResultDelivery(manager) {
     resumeSessionDelivery(manager.getSessionId?.(), manager);
 }
+function deliveryManager(manager) {
+    return manager;
+}
+// turn_end is registered once per ExtensionAPI instance (pi.on has no off()), and
+// each handler looks up that instance's latest manager: several live pi
+// instances can interleave installs, and a cross-project rebuild must not stack
+// another handler.
+let turnEndDeliveryManagers = new WeakMap();
 /**
- * When a background run finishes (or fails), deliver its result back into the
- * *originating* conversation AND continue the turn so the assistant can act on
- * it — without blocking the user meanwhile:
+ * When a background run finishes, fails, or pauses for the model, deliver it
+ * into the originating conversation and continue the turn so the assistant can
+ * act on it, without blocking the user meanwhile:
  *
- *  - Delivery is routed by `run.sessionId` through the process-wide endpoint
- *    registry (never "latest pi wins").
+ *  - Delivery is routed by `run.sessionId` through the session endpoints.
  *  - `triggerTurn: true` starts a fresh turn when the agent is idle.
  *  - `deliverAs: "followUp"` queues behind an in-flight turn — never interrupts.
- *  - Durable pending marker clears only after verified delivery ACK.
+ *  - The durable pending marker clears only after the send is confirmed.
  *
- * Set up once per manager; idempotent via an internal guard. Across session
- * replacement the manager (and these listeners) survive via the handoff path;
- * each new generation calls {@link bindSessionDelivery} on session_start.
+ * Idempotent per manager. Across session replacement the manager and these
+ * listeners survive via the handoff path; each new session calls
+ * {@link bindSessionDelivery} on session_start.
  */
-// Register turn_end once for each ExtensionAPI instance. The handler looks up
-// its own latest manager rather than a process-global one: multiple live pi
-// instances can interleave A/B/A installs, and each callback must stay scoped
-// to the instance that emitted it.
-let turnEndDeliveryManagers = new WeakMap();
 export function installResultDelivery(pi, manager, opts = {}) {
     const m = deliveryManager(manager);
     m.__deliveryLoadSettings = opts.loadSettings;
@@ -1149,10 +339,8 @@ export function installResultDelivery(pi, manager, opts = {}) {
         manager.on("error", emitLifecycle("failed"));
         manager.on("stopped", emitLifecycle("stopped"));
     }
-    // Per-instance turn_end dispatch (audit2 #33): within one pi generation,
-    // per-manager registration would stack a handler per cross-project rebuild
-    // (pi.on has no off()). Register once per pi, updating only that pi's latest
-    // manager on repeat installs.
+    // After each turn, bind the session if its send was not captured yet, then
+    // flush whatever is still pending for it.
     const existingTurnEnd = turnEndDeliveryManagers.get(pi);
     if (existingTurnEnd) {
         existingTurnEnd.manager = manager;
@@ -1176,8 +364,7 @@ export function installResultDelivery(pi, manager, opts = {}) {
             let endpoint = sessionEndpoints.get(sid);
             if (!endpoint || typeof endpoint.send !== "function") {
                 probeHostSessionSend(pi, sid);
-                const stolen = boundSessionSends.get(sid);
-                if (stolen) {
+                if (boundSessionSends.get(sid)) {
                     bindSessionDelivery(sid, pi, {
                         loadSettings: active.__deliveryLoadSettings,
                         manager: activeManager,
@@ -1207,17 +394,15 @@ export function installResultDelivery(pi, manager, opts = {}) {
     m.__deliveryInstalled = true;
     manager.on("complete", ({ runId }) => {
         const run = manager.getRun(runId);
-        // Only background/resumed runs are delivered: a foreground (sync) run already
-        // returns its result inline as the tool result, so re-delivering would dup it.
+        // Only background runs are delivered: a foreground run already returned its
+        // result inline as the tool result.
         if (!run?.background)
             return;
         const sessionId = resolveDeliverySessionId(run, manager);
         const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
         const content = deliverText(run, {
             resultPath: persistedResultPath(manager, runId, run.result?.result),
-            maxChars: deliveredMaxChars({
-                loadSettings: endpoint?.loadSettings ?? m.__deliveryLoadSettings,
-            }),
+            maxChars: deliveredMaxChars(endpoint?.loadSettings ?? m.__deliveryLoadSettings),
         });
         routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
     });
@@ -1225,7 +410,7 @@ export function installResultDelivery(pi, manager, opts = {}) {
         const run = manager.getRun(runId);
         if (!run?.background)
             return;
-        const text = `✗ Background workflow ${runId} failed: ${error?.message ?? "unknown error"}`;
+        const text = failedRunText(runId, error);
         routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
     });
     // Two pauses need the model: a provider usage limit (the run is resumable once
@@ -1241,56 +426,26 @@ export function installResultDelivery(pi, manager, opts = {}) {
             routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
     });
 }
-const CHECKPOINT_PAYLOAD_PREVIEW_CHARS = 500;
-/** The delivered notice for a pause the model must act on, or undefined for a manual pause. */
-function pausedRunText({ runId, reason, error, resetHint, checkpoint }) {
-    if (reason === "usage_limit") {
-        const when = resetHint ? ` (${resetHint})` : "";
-        return (`⏸ Subagents run ${runId} paused: ${error?.message ?? "provider usage limit reached"}${when}. ` +
-            `Finished work is saved — continue it with subagents_control action "resume", runId "${runId}" once the limit resets.`);
-    }
-    if (reason === "workflow_checkpoint" && checkpoint) {
-        const payload = JSON.stringify(checkpoint.payload) ?? "undefined";
-        const preview = payload.length > CHECKPOINT_PAYLOAD_PREVIEW_CHARS
-            ? `${payload.slice(0, CHECKPOINT_PAYLOAD_PREVIEW_CHARS)}…`
-            : payload;
-        return (`⏸ Subagents run ${runId} is waiting at checkpoint "${checkpoint.checkpointId}" (${checkpoint.kind}). Payload: ${preview}
-` +
-            `Answer it with subagents_control action "resume", runId "${runId}", checkpointId "${checkpoint.checkpointId}", and your response.`);
-    }
-    return undefined;
-}
+// ─── Test helpers ──────────────────────────────────────────────────────────────
 /** @internal test helper — reset process-wide delivery registries between cases. */
 export function _resetDeliveryRegistriesForTests() {
-    for (const waiter of activeStreamingWaiters) {
-        waiter.cancel(new Error("test reset"));
-    }
-    activeStreamingWaiters.clear();
-    streamingAckTimeoutMs = DEFAULT_STREAMING_ACK_TIMEOUT_MS;
-    sessionEndpoints.clear();
-    boundSessionSends.clear();
-    inFlightDeliveries.clear();
-    for (const retry of deliveryRetries.values())
-        if (retry.timer)
-            clearTimeout(retry.timer);
-    deliveryRetries.clear();
+    _resetHostSendCaptureForTests();
+    _resetDeliveryDispatchForTests();
+    _resetDeliveryRetriesForTests();
     deliveredAwaitingClear.clear();
-    inFlightSeq = 0;
+    sessionEndpoints.clear();
     probedSessionIds.clear();
     turnEndDeliveryManagers = new WeakMap();
 }
-export function _setStreamingAckTimeoutForTests(timeoutMs) {
-    streamingAckTimeoutMs = timeoutMs;
-}
-/** @internal test helper — register a thenable session-stable send (steal map). */
+/** @internal test helper — register a confirming session send directly. */
 export function _registerBoundSessionSendForTests(sessionId, send) {
     boundSessionSends.set(sessionId, send);
 }
-/** @internal test helper — register a host-shaped session (steal-map host filter). */
+/** @internal test helper — capture a host-shaped session as the prototype patch would. */
 export function _registerHostSessionForTests(session) {
     captureHostSessionSend(session);
 }
-/** @internal test helper — inspect which session ids currently hold a stolen send. */
+/** @internal test helper — inspect which session ids currently hold a captured send. */
 export function _getStealMapForTests() {
     return boundSessionSends;
 }
@@ -1298,7 +453,7 @@ export function _getStealMapForTests() {
 export function _isProbedForTests(sessionId) {
     return probedSessionIds.has(sessionId);
 }
-/** @internal test helper — inspect endpoint suspended flag. */
+/** @internal test helper — inspect a session's endpoint state. */
 export function _getSessionDeliveryEndpointForTests(sessionId) {
     const ep = sessionEndpoints.get(sessionId);
     if (!ep)
@@ -1307,268 +462,7 @@ export function _getSessionDeliveryEndpointForTests(sessionId) {
         suspended: ep.suspended,
         generation: ep.generation,
         hasSend: typeof ep.send === "function",
-        // Append is never an ACK; kept on the inspect shape so existing tests compile.
+        // Append is never an ACK; the field stays so the inspected shape is unchanged.
         hasAppend: false,
     };
-}
-export function renderPanel(manager, theme, width) {
-    const all = manager.listRuns();
-    const active = all.filter((r) => r.status === "running" || r.status === "paused");
-    const pending = all.filter((r) => r.status !== "running" && r.status !== "paused" && r.pendingDelivery);
-    if (!active.length && !pending.length)
-        return [];
-    const rows = active.map((r) => {
-        const live = manager.getRun(r.runId);
-        const summary = runSummary(r);
-        const agents = live?.snapshot.agents;
-        const done = agents ? agents.filter((a) => a.status === "done").length : summary.done;
-        const icon = r.status === "paused" ? "⏸" : "◆";
-        const phase = live?.snapshot.currentPhase ? ` · ${live.snapshot.currentPhase}` : "";
-        return `  ${icon} ${r.workflowName}  ${done}/${agents?.length ?? summary.total} agents${phase}`;
-    });
-    const pendingRows = pending.map((r) => `  ⏳ ${r.workflowName}  ${r.status}, result delivery pending`);
-    // Finished runs leave this live panel but are kept in the navigator. Tell the
-    // user so a completed run doesn't look like it vanished.
-    const finished = all.filter((r) => r.status !== "running" && r.status !== "paused" && !r.pendingDelivery).length;
-    const hint = theme.fg("dim", finished > 0
-        ? `  /workflows — open navigator (${finished} finished kept in history)`
-        : "  /workflows — open navigator");
-    const header = active.length
-        ? theme.bold(`Workflows running (${active.length}):`)
-        : theme.bold(`Workflows pending delivery (${pending.length}):`);
-    return [header, ...rows, ...pendingRows, hint].map((line) => fitLine(line, width));
-}
-// ─── Detailed mode: live token rate ────────────────────────────────────────────
-/** Rolling window for the token/s rate. Older samples age out so a stall decays to 0. */
-const RATE_WINDOW_MS = 10_000;
-/** Per-run (timestamp, cumulative total) samples, keyed by the persisted runId so
- *  the rolling rate survives pause→resume. Cleared when a run ends. */
-const tokenSamples = new Map();
-/** Record a token-total sample for `runId` at time `now` (ms). */
-export function sampleTokens(runId, total, now, estimated = false) {
-    const samples = tokenSamples.get(runId) ?? [];
-    const last = samples[samples.length - 1];
-    // Collapse repeat renders within the same instant (e.g. width recalcs).
-    if (last && last.ts === now && last.total === total) {
-        last.estimated = estimated;
-        return;
-    }
-    samples.push({ ts: now, total, estimated });
-    // Drop samples beyond the rolling window, always keeping ≥2 so a rate is computable.
-    while (samples.length > 2 && now - samples[0].ts > RATE_WINDOW_MS)
-        samples.shift();
-    tokenSamples.set(runId, samples);
-}
-/** Tokens/second over the rolling window; 0 when too few samples or totals plateau. */
-export function tokensPerSecond(runId) {
-    const samples = tokenSamples.get(runId);
-    if (!samples || samples.length < 2)
-        return 0;
-    const oldest = samples[0];
-    const newest = samples[samples.length - 1];
-    const elapsedMs = newest.ts - oldest.ts;
-    if (elapsedMs <= 0)
-        return 0;
-    const delta = newest.total - oldest.total;
-    if (delta <= 0)
-        return 0;
-    return (delta / elapsedMs) * 1000;
-}
-/** Whether the two samples that define the current positive token rate include a heuristic estimate. */
-function tokenRateIsEstimated(runId) {
-    const samples = tokenSamples.get(runId);
-    if (!samples || samples.length < 2)
-        return false;
-    const oldest = samples[0];
-    const newest = samples[samples.length - 1];
-    return oldest.estimated || newest.estimated;
-}
-/** Forget a run's samples (call when it finishes) so the map can't grow unbounded. */
-export function clearTokenSamples(runId) {
-    tokenSamples.delete(runId);
-}
-/** Compact token count for the space-constrained panel: 980, 12.4K, 1.3M. */
-function fmtTokensShort(n) {
-    if (!Number.isFinite(n) || n <= 0)
-        return "";
-    if (n < 1000)
-        return `${Math.round(n)}`;
-    if (n < 1_000_000)
-        return `${(n / 1000).toFixed(1)}K`;
-    return `${(n / 1_000_000).toFixed(1)}M`;
-}
-/** Normalize the configured per-phase agent cap to a sane integer (default 8). */
-export function clampMaxAgents(value) {
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 1)
-        return 8;
-    return Math.min(1000, Math.floor(value));
-}
-/** Per-phase + per-agent body for one run in detailed mode (mirrors renderWorkflowLines). */
-function renderRunBody(snap, agents, maxAgents, theme) {
-    const dim = (t) => theme.fg("dim", t);
-    const lines = [];
-    // Group agents by phase, declared order first then discovery order (as the navigator does).
-    const order = snap.phases.length ? [...snap.phases] : [];
-    const byPhase = new Map();
-    for (const a of agents) {
-        const key = a.phase ?? "(no phase)";
-        if (!byPhase.has(key))
-            byPhase.set(key, []);
-        byPhase.get(key)?.push(a);
-        if (!order.includes(key))
-            order.push(key);
-    }
-    for (const title of order) {
-        const phaseAgents = byPhase.get(title) ?? [];
-        if (!phaseAgents.length)
-            continue;
-        const done = phaseAgents.filter((a) => a.status === "done").length;
-        const running = phaseAgents.filter((a) => a.status === "running").length;
-        const errors = phaseAgents.filter((a) => a.status === "error").length;
-        const skipped = phaseAgents.filter((a) => a.status === "skipped").length;
-        const complete = done + errors + skipped === phaseAgents.length;
-        const marker = running > 0 || (!complete && snap.currentPhase === title) ? "▶" : complete ? "✓" : " ";
-        const phaseMeta = [
-            `${done}/${phaseAgents.length} agents`,
-            running ? `${running} running` : "",
-            errors ? `${errors} errors` : "",
-            fmtTokenSegment(aggregateAgentUsage(phaseAgents), fmtTokensShort),
-        ]
-            .filter(Boolean)
-            .join(" · ");
-        lines.push(theme.fg("accent", `  ${marker} ${title}`) + dim(`  ${phaseMeta}`));
-        const visible = phaseAgents.slice(-maxAgents);
-        for (const a of visible) {
-            const segment = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtTokensShort);
-            const tok = segment ? dim(` ${segment}`) : "";
-            const mdl = shortModel(a.model);
-            const model = mdl ? dim(` · ${mdl}`) : "";
-            lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
-        }
-        if (phaseAgents.length > visible.length) {
-            lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));
-        }
-    }
-    return lines;
-}
-/**
- * Detailed variant of {@link renderPanel}: per-run header with aggregate tokens,
- * cost, and a live token/s rate, followed by per-phase progress and per-agent rows
- * (capped at `maxAgents` per phase). `now` is injected for testability.
- */
-export function renderPanelDetailed(manager, theme, width, maxAgents, now) {
-    const all = manager.listRuns();
-    const active = all.filter((r) => r.status === "running" || r.status === "paused");
-    const pending = all.filter((r) => r.status !== "running" && r.status !== "paused" && r.pendingDelivery);
-    if (!active.length && !pending.length)
-        return [];
-    const dim = (t) => theme.fg("dim", t);
-    const header = active.length
-        ? theme.bold(`Workflows running (${active.length}):`)
-        : theme.bold(`Workflows pending delivery (${pending.length}):`);
-    const out = [header];
-    for (const r of active) {
-        const live = manager.getRun(r.runId);
-        const snap = live?.snapshot;
-        const summary = runSummary(r);
-        const agents = (snap?.agents ?? []);
-        const done = snap ? agents.filter((a) => a.status === "done").length : summary.done;
-        const icon = r.status === "paused" ? "⏸" : "◆";
-        const usage = snap?.tokenUsage ?? r.tokenUsage;
-        // Per-agent figures stream while agents run, so aggregate them for the same
-        // fresh+cacheRead sum the header displays. A flat rate now indicates a real
-        // lull rather than merely waiting for a long-running agent to return. Paused
-        // runs do not accrue tokens, so their rate is suppressed.
-        const runUsage = snap ? aggregateAgentUsage(agents) : summary.usage;
-        sampleTokens(r.runId, runUsage.fresh + runUsage.cacheRead, now, runUsage.estimated);
-        const rate = r.status === "running" ? tokensPerSecond(r.runId) : 0;
-        const meta = [
-            `${done}/${snap ? agents.length : summary.total} agents`,
-            snap?.currentPhase || "",
-            fmtTokenSegment(runUsage, fmtTokensShort),
-            // (cost is only known once the run finalizes its usage.)
-            usage?.cost ? fmtCost(usage.cost) : "",
-            rate > 0 ? `${tokenRateIsEstimated(r.runId) ? "~" : ""}${Math.round(rate)} tok/s` : "",
-        ]
-            .filter(Boolean)
-            .join(" · ");
-        out.push(`  ${icon} ${theme.bold(r.workflowName)}  ${dim(meta)}`);
-        if (snap)
-            out.push(...renderRunBody(snap, agents, maxAgents, theme));
-    }
-    for (const r of pending) {
-        out.push(`  ⏳ ${theme.bold(r.workflowName)}  ${dim(`${r.status}, result delivery pending`)}`);
-    }
-    const finished = all.filter((r) => r.status !== "running" && r.status !== "paused" && !r.pendingDelivery).length;
-    out.push(dim(finished > 0
-        ? `  /workflows — open navigator (${finished} finished kept in history)`
-        : "  /workflows — open navigator"));
-    return out.map((line) => fitLine(line, width));
-}
-/**
- * Install the live "workflows running" panel below the editor. Re-rendered on
- * every manager event. Informational only — the user opens the navigator with
- * /workflows. (`_pi` is kept for signature stability.)
- */
-export function installTaskPanel(_pi, manager, ui, opts = {}) {
-    // Live-read settings with a ~1s TTL: a render-path disk read every frame would
-    // be wasteful, but re-reading at most once a second still makes
-    // /workflows-progress take effect "immediately" (no restart).
-    let cached = {};
-    let cachedAt = Number.NEGATIVE_INFINITY;
-    const settings = () => {
-        if (!opts.loadSettings)
-            return cached;
-        const now = Date.now();
-        if (now - cachedAt > 1000) {
-            try {
-                cached = opts.loadSettings() ?? {};
-            }
-            catch {
-                cached = {};
-            }
-            cachedAt = now;
-        }
-        return cached;
-    };
-    const hasActiveRun = () => manager.listRuns().some((r) => r.status === "running" || r.status === "paused");
-    ui.setWidget("workflow-tasks", (tui, theme) => {
-        const onEvent = () => tui.requestRender();
-        for (const ev of RUN_EVENTS)
-            manager.on(ev, onEvent);
-        const onRunEnd = ({ runId }) => clearTokenSamples(runId);
-        for (const ev of RUN_END_EVENTS)
-            manager.on(ev, onRunEnd);
-        // In detailed mode, force a redraw every 2s while a run is active so the
-        // token/s rate keeps updating between sparse token events — and decays to 0
-        // when an agent stalls. Gated + unref'd so it costs nothing when idle.
-        const timer = setInterval(() => {
-            // hasActiveRun() first: settings() is a synchronous disk read, and the
-            // tick (2s) always outlives its cache TTL — with zero workflows this
-            // ordering avoids ~43k pointless config reads/day (audit2 #32).
-            if (hasActiveRun() && settings().progressPanelMode === "detailed")
-                tui.requestRender();
-        }, 2000);
-        timer.unref?.();
-        // Purely informational: it lists running runs and re-renders on events. To
-        // open the navigator, the user runs /workflows (the panel takes no input).
-        const comp = {
-            render: (width) => {
-                const s = settings();
-                if (s.progressPanelMode === "detailed") {
-                    return renderPanelDetailed(manager, theme, width, clampMaxAgents(s.progressPanelMaxAgents), Date.now());
-                }
-                return renderPanel(manager, theme, width);
-            },
-            invalidate: () => { },
-            dispose: () => {
-                clearInterval(timer);
-                for (const ev of RUN_EVENTS)
-                    manager.off(ev, onEvent);
-                for (const ev of RUN_END_EVENTS)
-                    manager.off(ev, onRunEnd);
-            },
-        };
-        return comp;
-    }, { placement: "belowEditor" });
 }

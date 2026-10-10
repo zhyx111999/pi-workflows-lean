@@ -9,7 +9,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 /**
- * Bound every git invocation (audit2 #21): a hung git (network FS, credential
+ * Bound every git invocation: a hung git (network FS, credential
  * helper prompt) must not block agent spawn or teardown forever. 30s is far
  * above any local worktree add/remove.
  */
@@ -131,7 +131,7 @@ export async function createWorktree(baseCwd, name, execOptions) {
     }
     catch (error) {
         // A timed-out/failed `worktree add` can leave a created branch and a
-        // partially checked-out tree behind (r1 MAJOR): git rolls back its
+        // partially checked-out tree behind: git rolls back its
         // registration but never deletes the `-b` branch or the directory.
         await cleanupFailedWorktreeAdd(repoRoot, path, branch);
         return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };

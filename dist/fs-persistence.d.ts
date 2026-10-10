@@ -60,7 +60,7 @@ export declare function writeJsonAtomicWithBackupStrict(fs: PersistenceFsLayer, 
  * Atomic write that preserves the file's PREVIOUS content as `.bak`
  * (version-history semantics, not crash-mirror semantics): an accidental
  * same-name overwrite leaves the prior version recoverable instead of
- * destroying it with zero remaining bytes (audit2 #36). Recovery via
+ * destroying it with zero remaining bytes. Recovery via
  * readJsonWithBackupRecovery() then yields the previous version when the new
  * primary is unreadable — strictly better than an unrecoverable loss.
  *

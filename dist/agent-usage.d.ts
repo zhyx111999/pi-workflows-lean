@@ -10,7 +10,7 @@ export interface AgentUsage {
      * True when these figures come from a character-count heuristic because the
      * provider reported no usage — NOT a measurement. Propagates through
      * sumAgentUsage into run totals so persistence and display never present an
-     * estimate as metered fact (#209). Rendering uses a "~" prefix.
+     * estimate as metered fact. Rendering uses a "~" prefix.
      */
     estimated?: boolean;
 }

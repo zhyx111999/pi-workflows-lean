@@ -10,7 +10,7 @@ export declare const SUBAGENTS_CONTROL_TOOL_NAME = "subagents_control";
 declare const ACTIONS: readonly ["list", "status", "read", "stop", "resume", "message"];
 export type SubagentsControlAction = (typeof ACTIONS)[number];
 declare const subagentsControlSchema: Type.TObject<{
-    action: Type.TUnsafe<"stop" | "status" | "message" | "read" | "resume" | "list">;
+    action: Type.TUnsafe<"status" | "message" | "read" | "resume" | "stop" | "list">;
     runId: Type.TOptional<Type.TString>;
     label: Type.TOptional<Type.TString>;
     text: Type.TOptional<Type.TString>;

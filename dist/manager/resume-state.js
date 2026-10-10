@@ -1,0 +1,167 @@
+// Rebuilds a managed run from its persisted record so resume() can execute it again.
+import { recomputeWorkflowSnapshot } from "../display.js";
+import { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE, sanitizeAutoResumeAttempts, VALID_PERSISTED_AGENT_STATUSES, } from "../run-persistence.js";
+import { retargetAgentRow } from "./task-list-reuse.js";
+/**
+ * The live run for a resume. The snapshot is seeded with the recorded agents,
+ * so the record never loses its earlier agents (an edited script may never
+ * replay them); replayed calls update their seeded row instead of adding one.
+ * Rows of agents that were still queued or running settle as interrupted.
+ * Every field of the record is shape-checked, because nothing may throw once
+ * the lease is held.
+ */
+export function resumedRun(input) {
+    const { runId, persisted, taskMoves } = input;
+    const recordedAgents = Array.isArray(persisted.agents) ? persisted.agents : [];
+    const persistedAgents = taskMoves
+        ? recordedAgents.map((agent) => retargetAgentRow(agent, taskMoves))
+        : recordedAgents;
+    const priorTokenUsage = normalizedTokenUsage(persisted.tokenUsage);
+    const journal = replayableJournal(persisted, runId, taskMoves);
+    const seeded = seedAgents(persistedAgents, persisted.updatedAt);
+    const managed = {
+        runId,
+        status: "running",
+        snapshot: recomputeWorkflowSnapshot({
+            name: persisted.workflowName,
+            phases: Array.isArray(persisted.phases) ? persisted.phases : [],
+            currentPhase: persisted.currentPhase,
+            logs: Array.isArray(persisted.logs) ? persisted.logs : [],
+            agents: seeded.agents,
+            agentCount: 0,
+            runningCount: 0,
+            doneCount: 0,
+            errorCount: 0,
+            // Start from the recorded total, so a pause before the first new agent
+            // finishes keeps the earlier spend.
+            tokenUsage: priorTokenUsage,
+        }),
+        controller: new AbortController(),
+        startedAt: new Date(),
+        // An edited script and args become the run's own, so a later resume uses them.
+        script: input.script,
+        args: input.args,
+        journal,
+        checkpoint: persisted.checkpoint,
+        background: true,
+        // Resuming may move delivery to the current session for old records, but never the parent lineage.
+        sessionId: persisted.sessionId ?? input.currentSessionId,
+        parentSessionId: persisted.parentSessionId ?? persisted.sessionId ?? input.currentSessionId,
+        parentSessionFile: persisted.parentSessionFile,
+        pendingDelivery: persisted.pendingDelivery,
+        lease: input.lease,
+        autoResume: persisted.autoResume,
+        autoResumeAttempts: sanitizeAutoResumeAttempts(persisted.autoResumeAttempts),
+        // Run limits are not restored: every execution uses the manager's current ones.
+        toolset: persisted.toolset,
+        agentTimestamps: seeded.timestamps,
+        agentsById: new Map(),
+        // Replayed calls create no child session, so they keep their recorded one.
+        agentSessionsByCallId: new Map(persistedAgents
+            .filter((agent) => agent && typeof agent === "object" && agent.callId && (agent.sessionId || agent.sessionFile))
+            .map((agent) => [agent.callId, { sessionId: agent.sessionId, sessionFile: agent.sessionFile }])),
+        replayedAgentStatesByCallId: new Map(persistedAgents
+            .filter((agent) => agent && typeof agent === "object" && agent.callId)
+            .map((agent) => [agent.callId, agent])),
+        agentTimestampsByCallId: seeded.timestampsByCallId,
+        seededAgentCount: seeded.agents.length,
+        replayedAgentCalls: new Set(),
+        steerable: new Map(),
+    };
+    return { managed, journal, priorTokenUsage };
+}
+/** The recorded total with concrete numbers; old records may lack cost or cache fields. */
+function normalizedTokenUsage(usage) {
+    if (!usage)
+        return undefined;
+    return {
+        input: usage.input,
+        output: usage.output,
+        total: usage.total,
+        cost: usage.cost ?? 0,
+        cacheRead: usage.cacheRead ?? 0,
+        cacheWrite: usage.cacheWrite ?? 0,
+        // An estimated total must stay marked as an estimate.
+        estimated: usage.estimated,
+    };
+}
+/**
+ * The record's journal entries that can replay. Malformed entries are dropped.
+ * So are entries tagged with another frame's runId, left by older releases whose
+ * scripts could nest saved workflows. An edited task list moves each unchanged
+ * task's entry to its new index and drops the rest.
+ */
+function replayableJournal(persisted, runId, taskMoves) {
+    return (Array.isArray(persisted.journal) ? persisted.journal : []).flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || typeof entry.index !== "number")
+            return [];
+        const { runId: frameRunId, ...journalEntry } = entry;
+        if (frameRunId !== undefined && frameRunId !== runId)
+            return [];
+        if (!taskMoves)
+            return [journalEntry];
+        const index = taskMoves.indices.get(journalEntry.index);
+        return index === undefined ? [] : [{ ...journalEntry, index }];
+    });
+}
+/**
+ * Snapshot rows for the recorded agents, with their timestamps by row id and
+ * by call id. Only well-formed rows are kept. Interrupted rows settle at the
+ * current time, but never before the record's last write, so a clock that
+ * moved backwards cannot end an agent before the record was updated.
+ */
+function seedAgents(persistedAgents, updatedAt) {
+    const settledAt = new Date(Math.max(Date.now(), Date.parse(updatedAt) || 0)).toISOString();
+    const agents = [];
+    const timestamps = new Map();
+    const timestampsByCallId = new Map();
+    for (const agent of persistedAgents) {
+        if (!agent ||
+            typeof agent !== "object" ||
+            Array.isArray(agent) ||
+            !VALID_PERSISTED_AGENT_STATUSES.has(agent.status) ||
+            typeof agent.label !== "string" ||
+            typeof agent.prompt !== "string") {
+            continue;
+        }
+        const id = agents.length + 1;
+        const { startedAt: rawStartedAt, endedAt: rawEndedAt, callId: rawCallId, ...snapshotFields } = agent;
+        // Fields of the wrong type are dropped rather than written back.
+        const startedAt = typeof rawStartedAt === "string" ? rawStartedAt : undefined;
+        const endedAt = typeof rawEndedAt === "string" ? rawEndedAt : undefined;
+        const callId = typeof rawCallId === "string" ? rawCallId : undefined;
+        const interrupted = agentHasNonTerminalStatus(agent.status);
+        const rowTimestamps = startedAt
+            ? { startedAt, endedAt: endedAt ?? (interrupted ? settledAt : undefined) }
+            : interrupted
+                ? { startedAt: settledAt, endedAt: settledAt }
+                : // A finished row with only an end time keeps it as both ends.
+                    endedAt
+                        ? { startedAt: endedAt, endedAt }
+                        : undefined;
+        if (callId !== undefined) {
+            // The last row of a call is its latest execution, as in onAgentStart. When
+            // that row has no timestamps, a replay must not borrow an older row's.
+            if (rowTimestamps)
+                timestampsByCallId.set(callId, rowTimestamps);
+            else
+                timestampsByCallId.delete(callId);
+        }
+        if (rowTimestamps) {
+            timestamps.set(id, rowTimestamps);
+        }
+        agents.push(interrupted
+            ? {
+                ...snapshotFields,
+                id,
+                callId,
+                // The interrupt cause replaces any earlier error, as on disk.
+                status: "skipped",
+                error: INTERRUPTED_AGENT_CAUSE.error,
+                errorCode: INTERRUPTED_AGENT_CAUSE.errorCode,
+                recoverable: false,
+            }
+            : { ...snapshotFields, id, callId });
+    }
+    return { agents, timestamps, timestampsByCallId };
+}
