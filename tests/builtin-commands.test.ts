@@ -1,16 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import test, { type TestContext } from "node:test";
-import {
-  captureCommandPrefix,
-  classifyCodeReviewArtifact,
-  parseDiffNumstat,
-  registerBuiltinWorkflows,
-} from "../src/builtin-commands.js";
-import { MAX_DIFF_CHARS } from "../src/code-review.js";
+import test from "node:test";
+import { registerBuiltinWorkflows } from "../src/builtin-commands.js";
 import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "../src/saved-commands.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import type { WorkflowManager } from "../src/workflow-manager.js";
@@ -61,222 +51,45 @@ function makeFakeManager() {
   return { manager, started };
 }
 
-function git(repo: string, args: string[]): string {
-  return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-}
-
-async function writeRepoFile(repo: string, path: string, content: string | Uint8Array): Promise<void> {
-  const target = join(repo, path);
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, content);
-}
-
-async function makeGitRepo(t: TestContext, files: Record<string, string | Uint8Array>): Promise<string> {
-  const repo = await mkdtemp(join(tmpdir(), "pi-code-review-auto-scope-"));
-  t.after(() => rm(repo, { recursive: true, force: true }));
-  git(repo, ["init", "-q"]);
-  for (const [path, content] of Object.entries(files)) await writeRepoFile(repo, path, content);
-  git(repo, ["add", "-A"]);
-  git(repo, [
-    "-c",
-    "user.name=Workflow Tests",
-    "-c",
-    "user.email=workflow-tests@example.invalid",
-    "commit",
-    "-qm",
-    "initial",
-  ]);
-  return repo;
-}
-
-test("captureCommandPrefix streams output beyond the legacy 64 MiB capture limit", async () => {
-  const chunkChars = 1024 * 1024;
-  const chunkCount = 65;
-  const childScript = `
-    const chunk = "x".repeat(${chunkChars});
-    let remaining = ${chunkCount};
-    function write() {
-      while (remaining > 0) {
-        remaining -= 1;
-        if (!process.stdout.write(chunk)) {
-          process.stdout.once("drain", write);
-          return;
-        }
-      }
-    }
-    write();
-  `;
-
-  const captured = await captureCommandPrefix(process.execPath, ["-e", childScript], {
-    cwd: process.cwd(),
-    maxChars: MAX_DIFF_CHARS,
-  });
-
-  assert.equal(captured.totalChars, chunkChars * chunkCount);
-  assert.equal(captured.stdout.length, MAX_DIFF_CHARS);
-  assert.equal(captured.stdout, "x".repeat(MAX_DIFF_CHARS));
-});
-
-test("parseDiffNumstat preserves NUL-delimited unusual paths and binary markers", () => {
-  assert.deepEqual(parseDiffNumstat("3\t4\tsrc/a\tname\nfile.ts\0-\t-\tpublic/image.png\0"), [
-    { path: "src/a\tname\nfile.ts", addedLines: 3, deletedLines: 4, binary: false },
-    { path: "public/image.png", addedLines: null, deletedLines: null, binary: true },
-  ]);
-  assert.throws(() => parseDiffNumstat("1\t2\tsrc/a.ts"), /NUL-terminated/);
-  assert.throws(() => parseDiffNumstat("1\tx\tsrc/a.ts\0"), /invalid line counts/);
-  assert.throws(() => parseDiffNumstat("1\t2\t\0"), /unsupported path/);
-});
-
-test("classifyCodeReviewArtifact excludes only high-confidence generated paths", () => {
-  assert.equal(classifyCodeReviewArtifact("graphify-out/cache/a.json"), "graph index output");
-  assert.equal(classifyCodeReviewArtifact("packages/app/node_modules/pkg/index.js"), "dependency output");
-  assert.equal(classifyCodeReviewArtifact("cypress/screenshots/home.png"), "browser capture");
-  assert.equal(classifyCodeReviewArtifact("dist/app.min.js"), "compiled bundle");
-  assert.equal(classifyCodeReviewArtifact("src/schema.generated.ts"), "generated file");
-  assert.equal(classifyCodeReviewArtifact("build/cache.tsbuildinfo"), "compiler state");
-
-  assert.equal(classifyCodeReviewArtifact(".claude/commands/review.md"), undefined);
-  assert.equal(classifyCodeReviewArtifact("dist/manual.js"), undefined);
-  assert.equal(classifyCodeReviewArtifact("public/data.json"), undefined);
-  assert.equal(classifyCodeReviewArtifact("fixtures/large-output.log"), undefined);
-  assert.equal(classifyCodeReviewArtifact("src/generator.ts"), undefined);
-});
-
-test("bare code-review auto-scopes artifacts and safely includes unusual source paths", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  const initial: Record<string, string> = {
-    "src/real.ts": "export const value = 'before';\n",
-    "dist/manual.js": "export const manual = 'before';\n",
-    "src/space name.ts": "export const space = 'before';\n",
-    "src/:literal[1].ts": "export const colon = 'before';\n",
-    "-leading.ts": "export const leading = 'before';\n",
-    "src/line\nbreak.ts": "export const newline = 'before';\n",
-    "src/tab\tname.ts": "export const tab = 'before';\n",
-    "src/你好.ts": "export const unicode = 'before';\n",
-    "src/$(echo-pwn).ts": "export const shell = 'before';\n",
-    ".playwright-mcp/capture.yml": "capture-before\n",
-    "graphify-out/cache/a.json": '{"artifact":"before"}\n',
-    "supabase/.temp/version": "before\n",
-  };
-  const repo = await makeGitRepo(t, initial);
-  const markers: Record<string, string> = {
-    "src/real.ts": "AUTO_SCOPE_REAL",
-    "dist/manual.js": "AUTO_SCOPE_UNCERTAIN_DIST",
-    "src/space name.ts": "AUTO_SCOPE_SPACE",
-    "src/:literal[1].ts": "AUTO_SCOPE_COLON",
-    "-leading.ts": "AUTO_SCOPE_LEADING",
-    "src/line\nbreak.ts": "AUTO_SCOPE_NEWLINE",
-    "src/tab\tname.ts": "AUTO_SCOPE_TAB",
-    "src/你好.ts": "AUTO_SCOPE_UNICODE",
-    "src/$(echo-pwn).ts": "AUTO_SCOPE_SHELL",
-    ".playwright-mcp/capture.yml": "AUTO_SCOPE_PLAYWRIGHT_ARTIFACT",
-    "graphify-out/cache/a.json": "AUTO_SCOPE_GRAPH_ARTIFACT",
-    "supabase/.temp/version": "AUTO_SCOPE_SUPABASE_ARTIFACT",
-  };
-  for (const [path, marker] of Object.entries(markers)) await writeRepoFile(repo, path, `${marker}\n`);
-
-  const { pi, commands } = makeCommandRegistryPi();
-  const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: repo, manager, storage: makeFakeStorage({}) });
-  const handler = commands.find((command) => command.name === "code-review")?.handler;
-  assert.ok(handler);
-  const { ctx, notified } = makeNotifyCtx();
-
-  await handler("   ", ctx);
-
-  assert.equal(started.length, 1);
-  const autoArgs = started[0].args as { diff: string; diffSource: string };
-  for (const marker of Object.values(markers).filter((value) => !value.endsWith("_ARTIFACT"))) {
-    assert.match(autoArgs.diff, new RegExp(marker));
-  }
-  assert.doesNotMatch(autoArgs.diff, /AUTO_SCOPE_(?:PLAYWRIGHT|GRAPH|SUPABASE)_ARTIFACT/);
-  assert.match(autoArgs.diffSource, /auto-scope: 9 included, 3 artifacts skipped/);
-  const scopeNotice = notified.find((entry) => entry.message.startsWith("Auto-scope:"));
-  assert.ok(scopeNotice);
-  assert.equal(scopeNotice.type, "info");
-  assert.match(scopeNotice.message, /reviewing 9 tracked files/);
-  assert.match(scopeNotice.message, /skipped 3 high-confidence artifacts/);
-
-  await handler("graphify-out/cache/a.json", ctx);
-  assert.equal(started.length, 2, "an explicit artifact path must bypass auto-scope");
-  const explicitArgs = started[1].args as { diff: string; diffSource: string };
-  assert.match(explicitArgs.diff, /AUTO_SCOPE_GRAPH_ARTIFACT/);
-  assert.equal(explicitArgs.diffSource, "git diff HEAD -- graphify-out/cache/a.json");
-});
-
-test("bare code-review stops cleanly when only generated artifacts changed", async (t) => {
-  const repo = await makeGitRepo(t, { "graphify-out/cache/a.json": "before\n" });
-  await writeRepoFile(repo, "graphify-out/cache/a.json", "after\n");
-
-  const { pi, commands } = makeCommandRegistryPi();
-  const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: repo, manager, storage: makeFakeStorage({}) });
-  const handler = commands.find((command) => command.name === "code-review")?.handler;
-  assert.ok(handler);
-  const { ctx, notified } = makeNotifyCtx();
-
-  await handler("", ctx);
-
-  assert.equal(started.length, 0);
-  assert.equal(notified.length, 1);
-  assert.equal(notified[0].type, "warning");
-  assert.match(notified[0].message, /skipped all 1 tracked changes/);
-  assert.match(notified[0].message, /review one explicitly/);
-});
-
-test("registerBuiltinWorkflows registers all five built-in workflow commands", () => {
+test("registerBuiltinWorkflows registers the deep-research command", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  assert.equal(commands.length, 5);
-  const names = commands.map((c) => c.name).sort();
-  assert.deepEqual(names, [
-    "adversarial-review",
-    "code-review",
-    "codebase-audit",
-    "deep-research",
-    "multi-perspective",
-  ]);
+  assert.deepEqual(
+    commands.map((c) => c.name),
+    ["deep-research"],
+  );
 });
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
-  const { pi, commands } = makeCommandRegistryPi([
-    "deep-research",
-    "adversarial-review",
-    "multi-perspective",
-    "codebase-audit",
-    "code-review",
-  ]);
+  const { pi, commands } = makeCommandRegistryPi(["deep-research"]);
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
   assert.equal(commands.length, 0, "should not re-register when already present");
 });
 
-test("saved workflow cannot claim built-in names occupied by third-party commands", () => {
-  for (const name of ["code-review", "deep-research"]) {
-    const { pi, commands } = makeCommandRegistryPi([name]);
-    const availability = savedWorkflowCommandAvailability(pi, name);
-    assert.equal(availability.ok, false);
-    const result = registerSavedWorkflow(pi, "/tmp", {
-      name,
-      description: "third-party collision",
-      script: "export THIRD_PARTY_COLLISION",
-    });
-    assert.equal(result.ok, false);
-    assert.equal(commands.length, 0, "the rejected command must not be registered");
-  }
+test("saved workflow cannot claim a built-in name occupied by a third-party command", () => {
+  const { pi, commands } = makeCommandRegistryPi(["deep-research"]);
+  const availability = savedWorkflowCommandAvailability(pi, "deep-research");
+  assert.equal(availability.ok, false);
+  const result = registerSavedWorkflow(pi, "/tmp", {
+    name: "deep-research",
+    description: "third-party collision",
+    script: "export THIRD_PARTY_COLLISION",
+  });
+  assert.equal(result.ok, false);
+  assert.equal(commands.length, 0, "the rejected command must not be registered");
 });
 
 test("saved workflow may shadow a built-in only after this extension owns its handler", () => {
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  assert.equal(savedWorkflowCommandAvailability(pi, "code-review").ok, true);
+  assert.equal(savedWorkflowCommandAvailability(pi, "deep-research").ok, true);
   const result = registerSavedWorkflow(pi, "/tmp", {
-    name: "code-review",
+    name: "deep-research",
     description: "saved shadow",
     script: "export SAVED_SHADOW",
   });
   assert.equal(result.ok, true);
-  assert.equal(commands.filter((command) => command.name === "code-review").length, 1);
+  assert.equal(commands.filter((command) => command.name === "deep-research").length, 1);
 });
 
 test("saved workflow rejects an ordinary third-party command name", () => {
@@ -290,19 +103,9 @@ test("saved workflow rejects an ordinary third-party command name", () => {
   assert.equal(commands.length, 0);
 });
 
-test("registerBuiltinWorkflows registers only missing commands", () => {
-  const { pi, commands } = makeCommandRegistryPi(["deep-research", "adversarial-review"]);
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  assert.deepEqual(
-    commands.map((c) => c.name).sort(),
-    ["code-review", "codebase-audit", "multi-perspective"],
-    "should only register the commands that aren't already present",
-  );
-});
-
 test("registerBuiltinWorkflows deep-research handler validates empty args (returns early)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager, storage: makeFakeStorage({}) });
   const deepResearchHandler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(deepResearchHandler, "deep-research handler should exist");
 
@@ -314,51 +117,11 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
-test("registerBuiltinWorkflows adversarial-review handler validates empty args (returns early)", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  const advHandler = commands.find((c) => c.name === "adversarial-review")?.handler;
-  assert.ok(advHandler, "adversarial-review handler should exist");
-
-  const { ctx, notified } = makeNotifyCtx();
-  await advHandler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
-});
-
-test("registerBuiltinWorkflows multi-perspective handler validates empty args (returns early)", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  const handler = commands.find((c) => c.name === "multi-perspective")?.handler;
-  assert.ok(handler, "multi-perspective handler should exist");
-
-  const { ctx, notified } = makeNotifyCtx();
-  await handler("", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
-});
-
-test("registerBuiltinWorkflows codebase-audit handler validates missing checks (returns early)", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  const handler = commands.find((c) => c.name === "codebase-audit")?.handler;
-  assert.ok(handler, "codebase-audit handler should exist");
-
-  const { ctx, notified } = makeNotifyCtx();
-  // scope but no checks → should warn and return early
-  await handler("src/", ctx);
-  assert.equal(notified.length, 1, "should notify with warning");
-  assert.equal(notified[0].type, "warning", "should be a warning");
-  assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
-});
-
 test("built-in handlers start a background run and return immediately (#104)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
-  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
   const { ctx, notified } = makeNotifyCtx();
@@ -367,7 +130,7 @@ test("built-in handlers start a background run and return immediately (#104)", a
   await handler("audit the error paths", ctx);
 
   assert.equal(started.length, 1, "should start exactly one managed background run");
-  assert.deepEqual(started[0].args, { task: "audit the error paths" });
+  assert.deepEqual(started[0].args, { question: "audit the error paths" });
   assert.equal(notified.length, 1);
   assert.equal(notified[0].type, "info");
   assert.ok(notified[0].message.includes("run-test-1"), "start notice should include the run id");
@@ -377,8 +140,8 @@ test("built-in handlers start a background run and return immediately (#104)", a
 test("background start notice is mode-aware: TUI points at the task panel, other hosts at /workflows status", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
-  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
   const tui = makeNotifyCtx("tui");
@@ -399,7 +162,7 @@ test("background start notice is mode-aware: TUI points at the task panel, other
 test("deep-research passes web tools on top of coding tools to its run", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -425,12 +188,12 @@ test("startInBackground throwing synchronously surfaces as an error notify, not 
       throw new Error("lease unavailable");
     },
   } as unknown as WorkflowManager;
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
-  const handler = commands.find((c) => c.name === "adversarial-review")?.handler;
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
   const { ctx, notified } = makeNotifyCtx();
-  await handler("some task", ctx);
+  await handler("some question", ctx);
   assert.equal(notified.length, 1);
   assert.equal(notified[0].type, "error");
   assert.ok(notified[0].message.includes("lease unavailable"));
@@ -444,19 +207,6 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
   assert.ok(deepResearchCmd, "deep-research should be registered");
   assert.ok(deepResearchCmd.description?.includes("Research"), "should have research description");
   assert.equal(typeof deepResearchCmd.handler, "function");
-
-  const advReviewCmd = commands.find((c) => c.name === "adversarial-review");
-  assert.ok(advReviewCmd, "adversarial-review should be registered");
-  assert.ok(
-    advReviewCmd.description?.includes("Investigate") || advReviewCmd.description?.includes("Review"),
-    "should contain Investigate",
-  );
-  assert.equal(typeof advReviewCmd.handler, "function");
-
-  const codeReviewCmd = commands.find((c) => c.name === "code-review");
-  assert.ok(codeReviewCmd, "code-review should be registered");
-  assert.ok(codeReviewCmd.description?.includes("Multi-angle"), "should describe the multi-angle review");
-  assert.equal(typeof codeReviewCmd.handler, "function");
 });
 
 // ─── Precedence: a saved workflow shadows a built-in of the same name ──────────
@@ -487,24 +237,24 @@ test("a saved workflow shadows the built-in slash command of the same name", asy
   assert.equal(notified[0].type, "info");
 });
 
-test("a saved workflow shadow parses slash-command args the same way any saved workflow would", async () => {
+test("a saved workflow shadow skips the built-in's own argument validation", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  const customScript = "export const meta = { name: 'custom_audit', description: 'override' }\nreturn 1";
-  const storage = makeFakeStorage({ "codebase-audit": { script: customScript } });
+  const customScript = "export const meta = { name: 'custom_research', description: 'override' }\nreturn 1";
+  const storage = makeFakeStorage({ "deep-research": { script: customScript } });
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage });
-  const handler = commands.find((c) => c.name === "codebase-audit")?.handler;
+  const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
   const { ctx } = makeNotifyCtx();
-  // No scope/checks at all — would fail the built-in's own "Usage" guard, but
-  // the shadow bypasses builtin-specific validation entirely (like any other
-  // saved workflow command) and just forwards parsed args.
-  await handler("mode=quick", ctx);
+  // An empty question would fail the built-in's own "Usage" guard, but the
+  // shadow behaves like any other saved workflow command and just forwards
+  // the parsed args.
+  await handler("", ctx);
 
   assert.equal(started.length, 1, "the shadow should start a run even with args the built-in would reject");
   assert.equal(started[0].script, customScript);
-  assert.deepEqual(started[0].args, { mode: "quick", _: "", _raw: "mode=quick" });
+  assert.deepEqual(started[0].args, { _: "", _raw: "" });
 });
 
 test("deep-research still runs the built-in when no saved workflow shadows it", async () => {
@@ -521,74 +271,6 @@ test("deep-research still runs the built-in when no saved workflow shadows it", 
   assert.equal(started.length, 1);
   const { meta } = parseWorkflowScript(started[0].script);
   assert.equal(meta.name, "deep_research", "the built-in should run when nothing shadows it");
-});
-
-// ─── Validation drift: registry errors reach the user as a notify, not a throw ─
-
-test("multi-perspective handler notifies (not throws) for a whitespace-only topic", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  const handler = commands.find((c) => c.name === "multi-perspective")?.handler;
-  assert.ok(handler);
-
-  const { ctx, notified } = makeNotifyCtx();
-  // A quoted whitespace-only topic passes the handler's own cheap `!topic`
-  // check (non-empty length) but fails the registry's real validation.
-  await assert.doesNotReject(() => handler('"  "', ctx));
-  assert.equal(notified.length, 1, "should notify instead of throwing");
-  assert.equal(notified[0].type, "warning");
-  assert.match(notified[0].message, /topic/i);
-});
-
-test("codebase-audit handler notifies (not throws) for a whitespace-only check", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
-  const handler = commands.find((c) => c.name === "codebase-audit")?.handler;
-  assert.ok(handler);
-
-  const { ctx, notified } = makeNotifyCtx();
-  // An empty quoted check token passes checks.length === 0 (length is 1) but
-  // fails the registry's real validation.
-  await assert.doesNotReject(() => handler('src ""', ctx));
-  assert.equal(notified.length, 1, "should notify instead of throwing");
-  assert.equal(notified[0].type, "warning");
-  assert.match(notified[0].message, /checks/i);
-});
-
-// ─── Quote injection: quotes/apostrophes reach the generated script safely ─────
-
-test("multi-perspective handler passes an apostrophe-laden perspective through without throwing", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
-  const handler = commands.find((c) => c.name === "multi-perspective")?.handler;
-  assert.ok(handler);
-
-  const { ctx, notified } = makeNotifyCtx();
-  await handler(`"climate policy" "user's view" "another's take"`, ctx);
-
-  assert.equal(notified.length, 1);
-  assert.equal(notified[0].type, "info", "should start successfully, not warn/error");
-  assert.equal(started.length, 1);
-  const { meta } = parseWorkflowScript(started[0].script);
-  assert.equal(meta.name, "multi_perspective_analysis");
-});
-
-test("codebase-audit handler passes a quote-laden check through without throwing", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
-  const handler = commands.find((c) => c.name === "codebase-audit")?.handler;
-  assert.ok(handler);
-
-  const { ctx, notified } = makeNotifyCtx();
-  await handler(`src/ "find TODO's"`, ctx);
-
-  assert.equal(notified.length, 1);
-  assert.equal(notified[0].type, "info");
-  assert.equal(started.length, 1);
-  const { meta } = parseWorkflowScript(started[0].script);
-  assert.equal(meta.name, "codebase_audit");
 });
 
 test("a saved shadow of a builtin receives the builtin's positional argument (audit2 #43)", async () => {
@@ -628,7 +310,7 @@ test("a saved shadow does not override an explicitly named argument (audit2 #43)
   assert.equal(args.question, "explicit-topic", "the named arg wins; positionals stay in _");
 });
 
-test("shadow positional mapping: equals-only topics, defaults, and structured secondaries (audit2 #43 r1)", async () => {
+test("shadow positional mapping: equals-only topics and declared defaults (audit2 #43 r1)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(pi, {
@@ -639,48 +321,19 @@ test("shadow positional mapping: equals-only topics, defaults, and structured se
         script: "export const meta = { name: 'shadow', description: 's' }",
         parameters: { question: { default: "DEFAULT" } },
       },
-      "multi-perspective": { script: "export const meta = { name: 'mps', description: 's' }" },
     }),
   });
   const { ctx } = makeNotifyCtx();
   const deep = commands.find((c) => c.name === "deep-research")?.handler;
-  const mps = commands.find((c) => c.name === "multi-perspective")?.handler;
-  assert.ok(deep && mps);
+  assert.ok(deep);
 
   // "="-containing topic survives (parseCommandArgs treats it as key=value).
-  assert.ok(deep);
   await deep("a=b=c", ctx);
   assert.equal((started[0].args as Record<string, unknown>).question, "a=b=c");
 
   // A bare positional beats the declared parameter default.
   await deep("explicit topic", ctx);
   assert.equal((started[1].args as Record<string, unknown>).question, "explicit topic");
-
-  // Structured secondary: first token → topic, rest → perspectives.
-  assert.ok(mps);
-  await mps("auth-flows security performance", ctx);
-  const mpArgs = started[2].args as Record<string, unknown>;
-  assert.equal(mpArgs.topic, "auth-flows");
-  assert.deepEqual(mpArgs.perspectives, ["security", "performance"]);
-});
-
-test("shadow tokenized mapping is quote-aware like the builtin (audit2 #43 r2)", async () => {
-  const { pi, commands } = makeCommandRegistryPi();
-  const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, {
-    cwd: "/tmp",
-    manager,
-    storage: makeFakeStorage({
-      "multi-perspective": { script: "export const meta = { name: 'mps', description: 's' }" },
-    }),
-  });
-  const mps = commands.find((c) => c.name === "multi-perspective")?.handler;
-  assert.ok(mps);
-  const { ctx } = makeNotifyCtx();
-  await mps('"auth flows" security performance', ctx);
-  const args = started[0].args as Record<string, unknown>;
-  assert.equal(args.topic, "auth flows", "quoted multi-word topic, exactly like the builtin");
-  assert.deepEqual(args.perspectives, ["security", "performance"]);
 });
 
 test("shadow whole-string mapping keeps equals-containing topics whole (audit2 #43 r2)", async () => {

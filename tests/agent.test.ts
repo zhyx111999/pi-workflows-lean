@@ -2418,7 +2418,7 @@ test("WorkflowAgent.getRegistry: per-run registry wins, then constructor's share
 // buildPrompt — verifies that the agent's internal prompt assembly is correct
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("buildPrompt includes base instructions, task label, and user prompt", () => {
+test("buildPrompt includes base instructions and the user prompt, but not the task label", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp", instructions: "You are a helper." });
   const built: string = (agent as unknown as WorkflowAgentPrivates).buildPrompt(
     "analyze this",
@@ -2426,8 +2426,8 @@ test("buildPrompt includes base instructions, task label, and user prompt", () =
     false,
   );
   assert.ok(built.includes("You are a helper."), "should include base instructions");
-  assert.ok(built.includes("Task label: analyzer"), "should include task label");
   assert.ok(built.includes("analyze this"), "should include user prompt");
+  assert.ok(!built.includes("analyzer"), "the label is display metadata, not prompt text");
 });
 
 test("buildPrompt includes per-call instructions when provided", () => {
@@ -2454,8 +2454,7 @@ test("buildPrompt injects structured output contract when schema is used", () =>
 test("buildPrompt works without base instructions", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" });
   const built: string = (agent as unknown as WorkflowAgentPrivates).buildPrompt("hello", { label: "greeter" }, false);
-  assert.ok(built.includes("Task label: greeter"), "should contain Task label: greeter");
-  assert.ok(built.includes("hello"), "should contain hello");
+  assert.equal(built, "hello", "the user prompt is sent unchanged");
 });
 
 test("buildPrompt works without label", () => {
@@ -2473,10 +2472,9 @@ test("buildPrompt includes both instructions when both base and per-call are set
     { label: "reviewer", instructions: "Focus on security." },
     true,
   );
-  // Order: base instructions, per-call instructions, label, prompt, structured contract
+  // Order: base instructions, per-call instructions, prompt, structured contract
   assert.ok(built.indexOf("You are a code reviewer.") < built.indexOf("Focus on security."), "base before per-call");
-  assert.ok(built.indexOf("Focus on security.") < built.indexOf("Task label: reviewer"), "per-call before label");
-  assert.ok(built.indexOf("Task label: reviewer") < built.indexOf("check this file"), "label before prompt");
+  assert.ok(built.indexOf("Focus on security.") < built.indexOf("check this file"), "per-call before prompt");
   assert.ok(
     built.indexOf("check this file") < built.indexOf("Final output contract:"),
     "prompt before structured contract",

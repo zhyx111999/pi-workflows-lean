@@ -7,18 +7,10 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { MAX_AGENT_RETRIES, MAX_CONCURRENCY, normalizeKeywordTriggerWord, WORKFLOW_SETTINGS_FILE } from "./config.js";
+import { MAX_AGENT_RETRIES, MAX_CONCURRENCY, WORKFLOW_SETTINGS_FILE } from "./config.js";
 import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
 export interface WorkflowSettings {
-  keywordTriggerEnabled?: boolean;
-  /** Literal keyword that arms workflows mode from interactive input. */
-  keywordTriggerWord?: string;
-  /**
-   * Initial in-memory orchestration effort for a fresh Pi session. Omitted
-   * (the default) is "off"; slash commands never write this preference.
-   */
-  defaultEffort?: "off" | "high" | "ultra";
   defaultAgentTimeoutMs?: number | null;
   /**
    * Default hard token budget applied to runs that don't pass their own
@@ -173,18 +165,15 @@ function readSettings(path: string): WorkflowSettings {
   }
 }
 
+/**
+ * Copy only known, valid keys. Files written by older versions may still hold
+ * keys for removed features; they are ignored here and left untouched on disk
+ * by saveWorkflowSettings.
+ */
 function normalizeSettings(value: unknown): WorkflowSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;
   const settings: WorkflowSettings = {};
-  if (typeof raw.keywordTriggerEnabled === "boolean") {
-    settings.keywordTriggerEnabled = raw.keywordTriggerEnabled;
-  }
-  const keywordTriggerWord = normalizeKeywordTriggerWord(raw.keywordTriggerWord);
-  if (keywordTriggerWord !== undefined) settings.keywordTriggerWord = keywordTriggerWord;
-  if (raw.defaultEffort === "off" || raw.defaultEffort === "high" || raw.defaultEffort === "ultra") {
-    settings.defaultEffort = raw.defaultEffort;
-  }
   if (raw.defaultAgentTimeoutMs === null) {
     settings.defaultAgentTimeoutMs = null;
   } else if (

@@ -1,6 +1,5 @@
 import { resolve } from "node:path";
 import packageJson from "../package.json" with { type: "json" };
-import type { EffortState } from "./effort-command.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 
 /**
@@ -25,7 +24,6 @@ export interface WorkflowReloadRuntime {
   /** Package version that created this manager. Only an exact match is retained. */
   extensionVersion: string;
   manager: WorkflowManager;
-  effort: EffortState;
 }
 
 export interface WorkflowRuntimeClaim {

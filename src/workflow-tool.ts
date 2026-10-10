@@ -3,19 +3,8 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { BUILTIN_WORKFLOW_NAMES, resolveWorkflowInvocation } from "./builtin-workflows.js";
 import { MAX_AGENTS_PER_RUN } from "./config.js";
-import {
-  createToolUpdateWorkflowDisplay,
-  createWorkflowSnapshot,
-  fmtCost,
-  fmtFull,
-  fmtTokenSegment,
-  recomputeWorkflowSnapshot,
-  renderWorkflowText,
-  tokenFigures,
-  type WorkflowSnapshot,
-} from "./display.js";
-import { WorkflowError, WorkflowErrorCode } from "./errors.js";
-import { parseWorkflowScript, type WorkflowRunResult } from "./workflow.js";
+import { renderWorkflowText, type WorkflowSnapshot } from "./display.js";
+import { parseWorkflowScript } from "./workflow.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings } from "./workflow-settings.js";
@@ -116,6 +105,12 @@ const workflowToolSchema = Type.Object({
   ),
 });
 
+/**
+ * `details` of a workflow tool result: the started or resumed run. Results from
+ * earlier blocking runs, still stored in session files, carry a full snapshot.
+ */
+type WorkflowToolDetails = { runId: string; background: true; resumedFrom?: string } | WorkflowSnapshot;
+
 export type WorkflowToolInput = {
   script?: string;
   name?: string;
@@ -182,7 +177,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
   const getStorage = () => options.getStorage?.() ?? fallbackStorage;
   const getCwd = () => options.getCwd?.() ?? fallbackCwd;
 
-  return defineTool({
+  return defineTool<typeof workflowToolSchema, WorkflowToolDetails>({
     name: "workflow",
     label: "Workflow",
     description:
@@ -196,14 +191,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     prepareArguments(args) {
       return normalizeWorkflowToolArgs(args);
     },
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+    async execute(_toolCallId, params) {
       const manager = getManager();
       const storage = getStorage();
       const cwd = getCwd();
       // `name` resolves through the same registry the built-in slash commands
       // and saved-workflow commands use (see builtin-workflows.ts /
       // workflow-saved.ts): a project/user saved workflow of that name wins on
-      // a collision, else one of the 5 curated built-in patterns. This lets the
+      // a collision, else a curated built-in pattern. This lets the
       // model reach a curated pattern by name instead of having to author an
       // equivalent script from scratch (and, for patterns that need it, the
       // right exec context — e.g. deep-research's web tools — travels with it).
@@ -254,154 +249,30 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         };
       }
 
-      // checkpoint() reaches the human only on a UI-bearing foreground run; a
-      // background run is detached, so checkpoint() falls back to its headless
-      // default. Map a checkpoint to ctx.ui.confirm (a yes/no gate) when available.
-      const uiCtx = ctx as
-        | { hasUI?: boolean; ui?: { confirm?(title: string, message: string): Promise<boolean> } }
-        | undefined;
-      const uiConfirm = uiCtx?.hasUI ? uiCtx.ui?.confirm : undefined;
-      const confirm = uiConfirm
-        ? (promptText: string) => uiConfirm.call(uiCtx?.ui, "Workflow checkpoint", promptText)
-        : undefined;
-
-      // Foreground blocking is removed. A run always returns immediately and
-      // delivers its result later (see installResultDelivery).
-      params.background = true;
-      if (params.background) {
-        const { runId } = manager.startInBackground(script, params.args, {
-          maxAgents: params.maxAgents,
-          concurrency: params.concurrency,
-          agentRetries: params.agentRetries,
-          agentTimeoutMs: params.agentTimeoutMs,
-          tokenBudget: params.tokenBudget,
-          tools: invocationTools,
-          toolset: invocationToolset,
-        });
-        return {
-          content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId) }],
-          details: { runId, background: true },
-        };
-      }
-
-      // Synchronous execution (blocking) — but routed through the manager so the
-      // run shows up live in the /workflows navigator and the task panel while it
-      // runs, then stays in history afterwards. We still block on the result and
-      // return it inline, so the model gets the full output in the same turn.
-      let snapshot: WorkflowSnapshot = createWorkflowSnapshot(parsed.meta);
-      const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, {
-        key: "workflow",
-        streamToolUpdates: true,
-        maxAgents: 4,
-        showResultPreviews: false,
+      // Runs never block the tool call: the run ID returns now and
+      // installResultDelivery sends the result back when the run finishes.
+      // A background run has no UI, so checkpoint() uses its headless default.
+      const { runId } = manager.startInBackground(script, params.args, {
+        maxAgents: params.maxAgents,
+        concurrency: params.concurrency,
+        agentRetries: params.agentRetries,
+        agentTimeoutMs: params.agentTimeoutMs,
+        tokenBudget: params.tokenBudget,
+        tools: invocationTools,
+        toolset: invocationToolset,
       });
-
-      // Coalesced progress rendering state (see onProgress below).
-      let latestProgress: WorkflowSnapshot | undefined;
-      let progressRenderTimer: ReturnType<typeof setTimeout> | undefined;
-      const flushProgress = () => {
-        if (progressRenderTimer) {
-          clearTimeout(progressRenderTimer);
-          progressRenderTimer = undefined;
-          if (latestProgress) {
-            snapshot = recomputeWorkflowSnapshot(latestProgress);
-            display.update(snapshot); // the last frame must not be 100ms stale
-          }
-        }
-      };
-
-      let result: WorkflowRunResult;
-      try {
-        result = await manager.runSync(script, params.args, {
-          maxAgents: params.maxAgents,
-          concurrency: params.concurrency,
-          agentRetries: params.agentRetries,
-          agentTimeoutMs: params.agentTimeoutMs,
-          tokenBudget: params.tokenBudget,
-          tools: invocationTools,
-          toolset: invocationToolset,
-          confirm,
-          externalSignal: signal,
-          onProgress(live) {
-            // Trailing-edge coalescing (audit2 #24): with many concurrent
-            // agents, progress events fire hundreds of times per second and a
-            // full recompute+render each time stalls the host event loop.
-            latestProgress = live;
-            if (!progressRenderTimer) {
-              progressRenderTimer = setTimeout(() => {
-                progressRenderTimer = undefined;
-                if (latestProgress) {
-                  snapshot = recomputeWorkflowSnapshot(latestProgress);
-                  display.update(snapshot);
-                }
-              }, 100);
-            }
-          },
-        });
-      } catch (error) {
-        flushProgress();
-        if (signal?.aborted || (error instanceof WorkflowError && error.code === WorkflowErrorCode.WORKFLOW_ABORTED)) {
-          for (const agent of snapshot.agents) {
-            if (agent.status === "running") {
-              agent.status = "skipped";
-              agent.error = "aborted";
-            }
-          }
-          snapshot = recomputeWorkflowSnapshot(snapshot);
-          display.complete(snapshot);
-          throw new Error("Workflow was aborted");
-        }
-        throw error;
-      }
-
-      flushProgress(); // no stray timer may survive ANY exit, incl. this throw
-      if (result.agentCount === 0) {
-        throw new Error(
-          "workflow scripts must call agent() at least once; this workflow declared phases but did not run any subagents",
-        );
-      }
-
-      flushProgress();
-      snapshot.result = result.result;
-      snapshot.durationMs = result.durationMs;
-      snapshot = recomputeWorkflowSnapshot(snapshot);
-      display.complete(snapshot);
-
-      // Format token usage (include cost when the provider reports it)
-      const tokenSegment = fmtTokenSegment(tokenFigures(result.tokenUsage), fmtFull);
-      const tokenInfo = tokenSegment
-        ? `\n\nToken usage: ${tokenSegment}${result.tokenUsage?.cost ? ` (${fmtCost(result.tokenUsage.cost)})` : ""}`
-        : "";
-
-      const formattedResult =
-        result.result !== undefined ? `\n\`\`\`json\n${JSON.stringify(result.result, null, 2)}\n\`\`\`` : "";
-
       return {
-        content: [
-          {
-            type: "text",
-            text: `Workflow **${result.meta.name}** completed with **${result.agentCount}** agent(s).${tokenInfo}\n\n## Result${formattedResult}\n\n${reviseHint(result.runId)}`,
-          },
-        ],
-        details: {
-          ...snapshot,
-          meta: result.meta,
-          phases: result.phases,
-          logs: result.logs,
-          result: result.result,
-          durationMs: result.durationMs,
-          tokenUsage: result.tokenUsage,
-          runId: result.runId,
-        },
+        content: [{ type: "text", text: backgroundStartedText(parsed.meta.name, runId) }],
+        details: { runId, background: true },
       };
     },
     renderCall(_args, theme) {
       return new Text(theme.fg("toolTitle", theme.bold("workflow")), 0, 0);
     },
     renderResult(result, { isPartial }, theme) {
-      const snapshot = result.details as WorkflowSnapshot | undefined;
-      if (snapshot?.name) {
-        return new Text(renderWorkflowText(snapshot, !isPartial), 0, 0);
+      const details = result.details;
+      if (details && "name" in details && details.name) {
+        return new Text(renderWorkflowText(details, !isPartial), 0, 0);
       }
       // Fallback: strip markdown syntax so the TUI doesn't display raw asterisks/hashes.
       // The `content` field is for the LLM (where markdown is preserved), but the TUI

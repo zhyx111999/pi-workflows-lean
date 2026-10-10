@@ -9,13 +9,7 @@ import { parse } from "acorn";
 import type { TSchema } from "typebox";
 import { type AgentRunOptions, WorkflowAgent, type WorkflowAgentOptions } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
-import {
-  type AgentDefinition,
-  type AgentRegistry,
-  agentDefinitionKey,
-  loadAgentRegistry,
-  resolveAgentType,
-} from "./agent-registry.js";
+import { type AgentRegistry, agentDefinitionKey, loadAgentRegistry, resolveAgentType } from "./agent-registry.js";
 import { type AgentUsage, createAgentCallUsageTracker, sumAgentUsage } from "./agent-usage.js";
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_AGENTS_PER_RUN, MAX_CONCURRENCY } from "./config.js";
 import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, wrapError } from "./errors.js";
@@ -458,7 +452,7 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
    * user). Binds that definition's tool allow/denylist, model, and body prompt
    * to this agent. An explicit `model` overrides the definition's model; the
    * definition's model overrides `tier`/phase. An unknown name logs a warning
-   * and falls back to default tools/model (with the name as a prose hint).
+   * and falls back to default tools/model with no role prompt.
    */
   agentType?: string;
   /**
@@ -1052,7 +1046,9 @@ export async function runWorkflow<T = unknown>(
                 : `workflow:${runId} ${label}`,
               schema: agentOptions.schema,
               signal: agentController.signal,
-              instructions: buildAgentInstructions(assignedPhase, agentDef, resolvedIsolation),
+              // The agentType body is the user's own role prompt; the plugin adds
+              // no phase, isolation, or role text of its own.
+              instructions: agentDef?.prompt || undefined,
               model: modelSpec,
               thinking: agentOptions.thinking ?? agentDef?.thinking,
               tier: agentOptions.tier,
@@ -2181,22 +2177,6 @@ function resolveAgentCwd(value: unknown): string | undefined {
       { recoverable: false },
     );
   }
-}
-
-function buildAgentInstructions(
-  phase: string | undefined,
-  def: AgentDefinition | undefined,
-  resolvedIsolation?: "worktree",
-): string | undefined {
-  const lines: string[] = [];
-  // A resolved agentType binds a real role prompt (the definition body). Only
-  // fall back to the prose hint when the agentType named no known definition.
-  // Plugin-authored phase, isolation, and role filler are not injected.
-  // A user-authored agent definition body is part of the system layer they wrote.
-  void phase;
-  void resolvedIsolation;
-  if (def?.prompt) lines.push(def.prompt);
-  return lines.length ? lines.join("\n\n") : undefined;
 }
 
 function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): boolean {
