@@ -1230,13 +1230,14 @@ export async function runWorkflow<T = unknown>(
     // This error escaped the script completely uncaught: nothing in the call
     // chain (this script, any enclosing try/catch around parallel()/agent())
     // caught it, so the run's fate is genuinely sealed now (see
-    // RuntimeState.runFatalController). Sealing it here, not
-    // inside agent()/parallel(), is what preserves parallel()'s "a thrown
-    // thunk resolves to null without failing the others" contract and a
-    // script's own try/catch around agent(): both those cases are swallowed
-    // well before an error would ever reach this catch. Idempotent: if this is already an intentional pause/stop (options.signal
-    // aborted) or a second escape after the fatal signal already fired,
-    // aborting an already-aborted controller is a no-op.
+    // RuntimeState.runFatalController). Sealing it here, not inside
+    // agent()/parallel(), is what preserves parallel()'s "a thrown thunk
+    // resolves to null without failing the others" contract and a script's
+    // own try/catch around agent(): both those cases are swallowed well before
+    // an error would ever reach this catch. Idempotent: if this is already an
+    // intentional pause/stop (options.signal aborted) or a second escape after
+    // the fatal signal already fired, aborting an already-aborted controller
+    // is a no-op.
     //
     // This also fires on a PROVIDER_USAGE_LIMIT escape (a quota/rate-limit
     // hit), not just a genuine bug — that error is non-recoverable too (see

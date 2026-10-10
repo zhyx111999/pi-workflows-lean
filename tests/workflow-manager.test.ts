@@ -3372,7 +3372,7 @@ test(
     // fan-out where one sibling ('failer') throws a non-recoverable error
     // while another ('straggler') is still in flight: Promise.all rejects
     // immediately but does NOT cancel 'straggler'). That gap is now closed at
-    // the ROOT — runWorkflow's own run-fatal handling (SharedRuntime.
+    // the ROOT — runWorkflow's own run-fatal handling (RuntimeState.
     // runFatalController, see workflow.ts) fires the instant 'failer's error
     // escapes the top-level script, and every in-flight agent (including
     // 'straggler') links its abort controller to that signal. So 'straggler'
@@ -3389,7 +3389,7 @@ test(
     // below), it just never has to fire for THIS scenario anymore.
     // managed.controller.signal itself still never aborts here (asserted
     // below) — the two abort signals are deliberately independent (see
-    // SharedRuntime.runFatalController's doc comment).
+    // RuntimeState.runFatalController's doc comment).
     let stragglerSettles = 0;
     const agent = {
       async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
@@ -3462,8 +3462,8 @@ test(
     // required a run to reach "failed" WITHOUT managed.controller ever
     // aborting AND its straggler's onAgentJournal still firing after the
     // fact — exactly the gap item 1 (run-fatal abort, see
-    // SharedRuntime.runFatalController in workflow.ts) closes: ANY error that
-    // fails a top-level run now seals that SAME execution's shared runtime
+    // RuntimeState.runFatalController in workflow.ts) closes: ANY error that
+    // fails a run now seals that SAME execution's runtime state
     // before its own catch returns, so a sibling straggler within THAT
     // execution — like 'straggler' below — trips throwIfAborted() the moment
     // it resolves and NEVER reaches onAgentJournal (see the flow proven
