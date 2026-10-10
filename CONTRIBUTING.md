@@ -17,7 +17,7 @@ npm test
 4. `npm run context:check`: fails when the context-size measurement is stale.
 5. `npm run test:unit`: unit tests with fake agents.
 
-Run one test file with `npx tsx --test tests/<name>.test.ts`. After changing `src/`, run `npm run build` and `/reload` in Pi to load the new `dist/`.
+Run one test file with `npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`; the import keeps the test off your real home directory. After changing `src/`, run `npm run build` and `/reload` in Pi to load the new `dist/`.
 
 ## Generated files
 

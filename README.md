@@ -314,7 +314,7 @@ npm install
 npm test     # Biome, script type check, build, generated-doc and context-size checks, unit tests
 ```
 
-The capability table above and the skill's capability references are generated from `src/workflow-capability-contract.ts`; regenerate them with `npm run docs:generate`, and the context-size measurement with `npm run context:generate`. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full conventions.
+The capability table above and the skill's capability references are generated from `src/workflow-capability-contract.ts`; regenerate them with `npm run docs:generate`, and the context-size measurement with `npm run context:generate`. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full conventions, and the [architecture guide (Chinese)](docs/architecture.zh-CN.md) for how the modules fit together.
 
 ## Credits
 

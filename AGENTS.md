@@ -2,6 +2,8 @@
 
 pi-workflows-lean is an independent fork of pi-dynamic-workflows 3.13.0. It does not follow upstream: do not merge, cherry-pick, or keep compatibility code for upstream changes.
 
+Read [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) first: it maps every module and explains the main flow and the design decisions.
+
 ## Before finishing a change
 
 - Run `npm test`; [CONTRIBUTING.md](CONTRIBUTING.md) lists what it checks.
