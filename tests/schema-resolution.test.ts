@@ -1,13 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Type } from "typebox";
-import {
-  extractValidated,
-  lastAssistantError,
-  resolveStructuredOutput,
-  type StructuredSession,
-  throwIfProviderLimit,
-} from "../src/agent.js";
+import { lastAssistantError, throwIfProviderLimit } from "../src/agent/provider-limit.js";
+import { extractValidated, resolveStructuredOutput, type StructuredSession } from "../src/agent/turn-result.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import type { StructuredOutputCapture } from "../src/structured-output.js";
 

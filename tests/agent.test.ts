@@ -13,16 +13,16 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { runtimeOf } from "../src/agent/model-registry.js";
+import { isProviderMiddlewareExtensionPath } from "../src/agent/provider-middleware.js";
+import { usageFromStats } from "../src/agent/session-usage.js";
 import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
 import {
   DEFAULT_EXCLUDED_SUBAGENT_TOOLS,
   DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS,
-  isProviderMiddlewareExtensionPath,
   listAvailableModelSpecs,
   resolveAgentModelSpec,
-  runtimeOf,
   subagentExcludedTools,
-  usageFromStats,
   WorkflowAgent,
 } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";

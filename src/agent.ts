@@ -10,23 +10,27 @@ import {
   DefaultPackageManager,
   DefaultResourceLoader,
   getAgentDir,
-  type LoadExtensionsResult,
-  ModelRegistry,
+  type ModelRegistry,
   type ModelRuntime,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
-import { Check, Convert } from "typebox/value";
+import { builtFallbackRegistry, ensureFallbackRegistry, runtimeOf } from "./agent/model-registry.js";
+import { throwIfProviderLimit } from "./agent/provider-limit.js";
+import { filterProviderMiddlewareExtensions, isProviderMiddlewareExtensionPath } from "./agent/provider-middleware.js";
+import { subtractSessionUsageStats, usageFromSessionProgress, usageFromStats } from "./agent/session-usage.js";
+import { resolveStructuredOutput } from "./agent/turn-result.js";
+import { assertProcessesStartIn } from "./agent/windows-cwd.js";
 import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
-import { type AgentUsage, agentUsageEquals, createEmptyAgentUsage, sumAgentUsage } from "./agent-usage.js";
+import { type AgentUsage, agentUsageEquals } from "./agent-usage.js";
 import { pinChildCacheRetention } from "./child-cache-retention.js";
 
 export type { AgentUsage } from "./agent-usage.js";
 
 import { applyToolPolicy } from "./agent-registry.js";
-import { classifyProviderLimit, WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
   canonicalModelSpec,
   formatModelSpecWithThinking,
@@ -51,141 +55,6 @@ import {
 import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
 
 const LIVE_USAGE_EMIT_INTERVAL_MS = 250;
-
-/**
- * Find a JSON object/array in free-form text: a fenced ```json block if present,
- * else the first balanced {...} or [...]. Best-effort (the schema check is the
- * real gate). Returns the raw JSON string, or undefined when none is found.
- */
-function findJsonBlock(text: string): string | undefined {
-  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fence?.[1]) return fence[1].trim();
-  const start = text.search(/[{[]/);
-  if (start === -1) return undefined;
-  const open = text[start];
-  const close = open === "{" ? "}" : "]";
-  let depth = 0;
-  for (let i = start; i < text.length; i++) {
-    if (text[i] === open) depth++;
-    else if (text[i] === close && --depth === 0) return text.slice(start, i + 1);
-  }
-  return undefined;
-}
-
-/**
- * Last-resort structured-output recovery: extract a JSON block from prose, coerce
- * it toward the schema, and accept it only if it then validates. Never fabricates
- * — returns undefined unless the parsed value genuinely satisfies the schema.
- */
-export function extractValidated<T>(text: string, schema: TSchema): T | undefined {
-  const json = findJsonBlock(text);
-  if (json === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return undefined;
-  }
-  try {
-    const converted = Convert(schema, parsed);
-    if (Check(schema, converted)) return converted as T;
-  } catch {
-    // typebox can throw on exotic schemas; treat as no match.
-  }
-  return undefined;
-}
-
-/**
- * The last assistant message's terminal metadata (stopReason/errorMessage). The pi
- * SDK does NOT throw provider usage/quota limits — it records them as an assistant
- * message with stopReason "error" and an errorMessage. This is the only place that
- * metadata is observable to the workflow layer.
- */
-export function lastAssistantError(messages: unknown[]): { stopReason?: string; errorMessage?: string } | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i] as Partial<AssistantMessage> | undefined;
-    if (message?.role !== "assistant") continue;
-    return { stopReason: message.stopReason, errorMessage: message.errorMessage };
-  }
-  return undefined;
-}
-
-/**
- * If the subagent's turn ended in a provider usage/quota/rate-limit error, throw a
- * PROVIDER_USAGE_LIMIT WorkflowError carrying the real provider message + reset hint.
- * Gated on stopReason === "error" so a successful turn whose text merely mentions
- * "rate limit" is never misclassified. recoverable:false so the run checkpoints
- * (paused) rather than being retried into the same wall or collapsed to a silent null.
- */
-export function throwIfProviderLimit(messages: unknown[], label?: string): void {
-  const err = lastAssistantError(messages);
-  if (err?.stopReason !== "error") return;
-  const { matched, resetHint } = classifyProviderLimit(err.errorMessage);
-  if (!matched) return;
-  throw new WorkflowError(
-    err.errorMessage ?? "Provider usage/quota limit reached",
-    WorkflowErrorCode.PROVIDER_USAGE_LIMIT,
-    { recoverable: false, agentLabel: label, resetHint },
-  );
-}
-
-/** Minimal session surface resolveStructuredOutput needs (real session or a test double). */
-export interface StructuredSession {
-  prompt(text: string): Promise<void>;
-  setActiveToolsByName?(names: string[]): void;
-  messages: unknown[];
-}
-
-/**
- * Resolve a schema agent's result. If the tool was called, return the captured
- * value. Otherwise re-prompt up to maxSchemaRetries (tools restricted to
- * structured_output), then try strict schema-validated prose extraction, else
- * throw SCHEMA_NONCOMPLIANCE (non-recoverable — surfaced, never a silent null).
- * Module-level with an injected `lastText` so it is unit-testable.
- */
-export async function resolveStructuredOutput<T>(
-  session: StructuredSession,
-  capture: StructuredOutputCapture<T>,
-  schema: TSchema,
-  options: { maxSchemaRetries?: number; signal?: AbortSignal; label?: string },
-  lastText: (messages: unknown[]) => string,
-): Promise<T> {
-  if (capture.called) return capture.value as T;
-
-  const maxRetries = Math.max(0, options.maxSchemaRetries ?? 2);
-  // Restrict to the schema tool so the only useful next action is calling it
-  // (takes effect on the next prompt turn). Best-effort.
-  try {
-    session.setActiveToolsByName?.(["structured_output"]);
-  } catch {
-    // ignore — the re-prompt alone still drives most models to comply
-  }
-  for (let attempt = 0; attempt < maxRetries && !capture.called; attempt++) {
-    if (options.signal?.aborted) throw new Error("Subagent was aborted");
-    await session.prompt(
-      "You did not call the structured_output tool. Call structured_output now as your only action, with the required fields filled in. Do not write a prose answer.",
-    );
-  }
-  if (capture.called) return capture.value as T;
-
-  const extracted = extractValidated<T>(lastText(session.messages), schema);
-  if (extracted !== undefined) {
-    console.warn(
-      "[workflow] structured_output recovered from prose extraction (the model never called the tool); prefer a tool-reliable model",
-    );
-    return extracted;
-  }
-
-  // A repair re-prompt can itself hit the provider limit. Surface that as the real
-  // (recoverable) cause instead of the misleading non-recoverable SCHEMA_NONCOMPLIANCE.
-  throwIfProviderLimit(session.messages, options.label);
-
-  throw new WorkflowError(
-    "Subagent did not produce valid structured_output after repair attempts",
-    WorkflowErrorCode.SCHEMA_NONCOMPLIANCE,
-    { recoverable: false, agentLabel: options.label },
-  );
-}
 
 /**
  * Resolve which concrete model spec a subagent should use. Precedence, most
@@ -237,63 +106,6 @@ export function resolveAgentModelSpec(
 
 /** Child sessions load no host extensions unless explicitly opted in. */
 export const DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS: readonly string[] = Object.freeze([]);
-
-const RECURSIVE_SUBAGENT_EXTENSION_NAMES = new Set(["pi-dynamic-workflows", "workflow", "pi-subagents"]);
-
-/**
- * Keep only explicitly approved provider/auth middleware paths. Recursive
- * orchestration extensions are always rejected, even if explicitly allowlisted.
- */
-export function isProviderMiddlewareExtensionPath(
-  extensionPath: string,
-  allowlist: readonly string[],
-  packageSource?: string,
-): boolean {
-  const allowed = new Set(allowlist.map((name) => name.trim().toLowerCase()).filter(Boolean));
-  const segments = extensionPath
-    .replaceAll("\\", "/")
-    .split("/")
-    .filter(Boolean)
-    .map((segment) => segment.toLowerCase());
-  const file = segments.at(-1)?.replace(/\.(?:[cm]?[jt]s)$/i, "");
-  if ([...segments, file ?? ""].some((name) => RECURSIVE_SUBAGENT_EXTENSION_NAMES.has(name))) return false;
-  // Ancestor directory names are not extension identities: an allowlisted
-  // name appearing in a project/home path must not approve all descendants.
-  const identities = new Set(file ? [file] : []);
-  const moduleIndex = segments.lastIndexOf("node_modules");
-  const packageName = segments[moduleIndex + 1];
-  if (moduleIndex >= 0 && packageName) {
-    identities.add(packageName.startsWith("@") ? `${packageName}/${segments[moduleIndex + 2] ?? ""}` : packageName);
-  }
-  if (packageSource) {
-    const source = packageSource.replaceAll("\\", "/").toLowerCase();
-    const npmName = /^npm:((?:@[^/]+\/)?[^@]+)(?:@.*)?$/.exec(source)?.[1];
-    const sourceName =
-      npmName ??
-      source
-        .replace(/[?#].*$/, "")
-        .replace(/\/+$/, "")
-        .split("/")
-        .at(-1)
-        ?.replace(/\.git$/, "");
-    if (sourceName) identities.add(sourceName);
-  }
-  if ([...identities].some((name) => RECURSIVE_SUBAGENT_EXTENSION_NAMES.has(name))) return false;
-  return [...identities].some((name) => allowed.has(name));
-}
-
-export function filterProviderMiddlewareExtensions(
-  base: LoadExtensionsResult,
-  allowlist: readonly string[],
-  packageSources: ReadonlyMap<string, string> = new Map(),
-): LoadExtensionsResult {
-  return {
-    ...base,
-    extensions: base.extensions.filter((extension) =>
-      isProviderMiddlewareExtensionPath(extension.path, allowlist, packageSources.get(extension.path)),
-    ),
-  };
-}
 
 export interface WorkflowAgentOptions {
   cwd?: string;
@@ -360,80 +172,6 @@ export interface WorkflowAgentOptions {
   persistAgentSessions?: boolean;
 }
 
-// omp's ModelRegistry is auth-storage-backed (no pi >= 0.80.8 sync-facade /
-// runtime split): build it directly from the discovered AuthStorage. The
-// disk-backed fallback is built lazily; sync callers see [] until it resolves
-// and real specs on later reads.
-let fallbackRuntimePromise: Promise<ModelRegistry> | undefined;
-let fallbackRegistry: ModelRegistry | undefined;
-
-function ensureFallbackRegistry(): Promise<ModelRegistry> {
-  if (!fallbackRuntimePromise) {
-    const dir = getAgentDir();
-    // Same auth.json/models.json createAgentSession uses by default, so a model
-    // resolved here carries valid credentials. Three host shapes, tried in
-    // order; only a real registry ever resolves:
-    // 1. omp's bundled pi exports discoverAuthStorage (auth-storage-backed
-    //    registry, no runtime split).
-    // 2. Legacy pi (< 0.80.8) had a static ModelRegistry.create({ dir }).
-    // 3. pi >= 0.80.8 splits registry/runtime: ModelRuntime.create() then
-    //    new ModelRegistry(runtime).
-    fallbackRuntimePromise = (async () => {
-      // Dynamic import on purpose: discoverAuthStorage exists only in omp's
-      // bundled pi; a static named import would fail to resolve on stock pi,
-      // and the host shape must be feature-detected at runtime.
-      const ompExports = (await import("@earendil-works/pi-coding-agent").catch(() => undefined)) as
-        | {
-            discoverAuthStorage?: (dir: string) => Promise<unknown>;
-            ModelRuntime?: { create?: (options?: unknown) => Promise<ModelRuntime> };
-          }
-        | undefined;
-      if (typeof ompExports?.discoverAuthStorage === "function") {
-        const authStorage = (await ompExports.discoverAuthStorage(dir)) as ConstructorParameters<
-          typeof ModelRegistry
-        >[0];
-        return new ModelRegistry(authStorage);
-      }
-      const legacyCreate = (
-        ModelRegistry as unknown as {
-          create?: (opts: { dir: string }) => Promise<ModelRegistry>;
-        }
-      ).create;
-      if (typeof legacyCreate === "function") return legacyCreate({ dir });
-      const runtimeCreate = ompExports?.ModelRuntime?.create;
-      if (typeof runtimeCreate === "function") {
-        // No options: defaults to getAgentDir()/auth.json and models.json —
-        // the same disk layout the omp and legacy paths read.
-        return new ModelRegistry(await runtimeCreate());
-      }
-      throw new Error(
-        "[workflow] no ModelRegistry construction path in @earendil-works/pi-coding-agent (expected discoverAuthStorage, ModelRegistry.create, or ModelRuntime.create)",
-      );
-    })();
-    // Don't cache a rejection: a transient failure (e.g. auth.json lock) would
-    // otherwise wedge the fallback for the rest of the process.
-    fallbackRuntimePromise.catch(() => {
-      fallbackRuntimePromise = undefined;
-    });
-  }
-  return fallbackRuntimePromise.then((registry) => {
-    fallbackRegistry ??= registry;
-    return registry;
-  });
-}
-
-/**
- * The ModelRuntime behind a registry facade (pi >= 0.80.8 shape: ModelRegistry
- * wraps a ModelRuntime but exposes no getter). Subagent sessions need it to
- * share the host session's exact catalog and auth. omp's fork is
- * auth-storage-backed (registry has no `runtime` field and createAgentSession
- * takes modelRegistry instead), so this returns undefined there and callers
- * pass the registry itself.
- */
-export function runtimeOf(registry: ModelRegistry): unknown {
-  return (registry as unknown as { runtime?: unknown }).runtime;
-}
-
 /**
  * List the user's currently available models (those with auth configured) with
  * the minimal fields tier ranking needs: canonical spec, output price, and
@@ -443,7 +181,7 @@ export function runtimeOf(registry: ModelRegistry): unknown {
  */
 export function listAvailableModels(registry?: ModelRegistry): RankableModel[] {
   try {
-    const modelRegistry = registry ?? fallbackRegistry;
+    const modelRegistry = registry ?? builtFallbackRegistry();
     if (!modelRegistry) {
       // Kick off the async fallback build; this call reports [] and later
       // calls (e.g. the tool's lazy promptGuidelines re-reads) see real specs.
@@ -499,109 +237,6 @@ function warnPersistSecretsOnce(sessionDir: string): void {
   console.warn(
     `[workflow] persistAgentSessions is ON: full subagent transcripts (which may include secrets or other sensitive context) are being written to disk under ${sessionDir}. Disable persistAgentSessions if that isn't intended.`,
   );
-}
-
-/**
- * Map session stats to an AgentUsage, or undefined when the provider reported
- * no usage at all (all-zero stats). Returning undefined — instead of a zero
- * breakdown — lets displays fall back to their scalar token count, so setups
- * on non-reporting providers render the same as before the split existed.
- */
-export function usageFromStats(stats: {
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-  cost: number;
-}): AgentUsage | undefined {
-  const { tokens, cost } = stats;
-  if (tokens.total <= 0 && cost <= 0) return undefined;
-  return {
-    input: tokens.input,
-    output: tokens.output,
-    cacheRead: tokens.cacheRead,
-    cacheWrite: tokens.cacheWrite,
-    total: tokens.total,
-    cost,
-  };
-}
-
-function estimateStreamingAssistantUsage(event: AgentSessionEvent): AgentUsage | undefined {
-  if (event.type !== "message_update" && event.type !== "message_end") {
-    return undefined;
-  }
-  if (event.message.role !== "assistant") {
-    return undefined;
-  }
-
-  const reported = event.message.usage;
-  const reportedTotal = reported.input + reported.output + reported.cacheRead + reported.cacheWrite;
-  if (reportedTotal > 0 || reported.cost.total > 0) {
-    return {
-      input: reported.input,
-      output: reported.output,
-      cacheRead: reported.cacheRead,
-      cacheWrite: reported.cacheWrite,
-      total: reportedTotal,
-      cost: reported.cost.total,
-    };
-  }
-
-  let streamedCharacters = 0;
-  for (const content of event.message.content) {
-    if (content.type === "text") {
-      streamedCharacters += content.text.length;
-    } else if (content.type === "thinking") {
-      streamedCharacters += content.thinking.length;
-    } else if (content.type === "toolCall") {
-      streamedCharacters += JSON.stringify(content.arguments).length;
-    }
-  }
-  if (streamedCharacters === 0) {
-    return undefined;
-  }
-
-  const estimatedOutput = Math.max(1, Math.ceil(streamedCharacters / 4));
-  // Character heuristic, not a provider measurement — tag it (#209).
-  return {
-    input: 0,
-    output: estimatedOutput,
-    cacheRead: 0,
-    cacheWrite: 0,
-    total: estimatedOutput,
-    cost: 0,
-    estimated: true,
-  };
-}
-
-type SessionUsageStats = Parameters<typeof usageFromStats>[0];
-
-function subtractSessionUsageStats(stats: SessionUsageStats, baseline?: SessionUsageStats): SessionUsageStats {
-  if (!baseline) {
-    return stats;
-  }
-  return {
-    tokens: {
-      input: Math.max(0, stats.tokens.input - baseline.tokens.input),
-      output: Math.max(0, stats.tokens.output - baseline.tokens.output),
-      cacheRead: Math.max(0, stats.tokens.cacheRead - baseline.tokens.cacheRead),
-      cacheWrite: Math.max(0, stats.tokens.cacheWrite - baseline.tokens.cacheWrite),
-      total: Math.max(0, stats.tokens.total - baseline.tokens.total),
-    },
-    cost: Math.max(0, stats.cost - baseline.cost),
-  };
-}
-
-/**
- * Combine usage from completed messages with the current streaming message.
- * AgentSession notifies subscribers before it appends a message_end event to
- * SessionManager, so the event's assistant usage is absent from stats and must
- * be added exactly once. The real-session regression test pins this ordering.
- */
-function usageFromSessionProgress(stats: SessionUsageStats, event: AgentSessionEvent): AgentUsage | undefined {
-  const persisted = usageFromStats(stats);
-  const streaming = estimateStreamingAssistantUsage(event);
-  if (!streaming) {
-    return persisted;
-  }
-  return sumAgentUsage(persisted ?? createEmptyAgentUsage(), streaming);
 }
 
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
@@ -765,29 +400,6 @@ interface ThreadSession {
  * a spread-order regression that dropped the defaults would slip past a test
  * that only asserts the constant. The SDK dedupes, so overlap is harmless.
  */
-/**
- * Refuse a run directory that Windows would silently swap for another one.
- * fs calls reach it literally, but process creation normalizes the path: it
- * drops a single trailing period from inner segments and all trailing periods
- * and spaces from the last segment. The agent's shell would then run in a
- * different (possibly existing) directory than its file tools.
- */
-function assertProcessesStartIn(cwd: string, label: string | undefined): void {
-  if (process.platform !== "win32") return;
-  const segments = cwd.split("\\");
-  const startsIn = segments
-    .map((segment, index) =>
-      index === segments.length - 1 ? segment.replace(/[. ]+$/, "") : segment.replace(/([^.])\.$/, "$1"),
-    )
-    .join("\\");
-  if (startsIn === cwd) return;
-  throw new WorkflowError(
-    `agent cwd "${cwd}" cannot be used on Windows: processes started there run in "${startsIn}", because Windows drops trailing dots and spaces from path segments`,
-    WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-    { recoverable: false, agentLabel: label },
-  );
-}
-
 export function subagentExcludedTools(extra?: string[], sessionExclude?: string[]): string[] {
   return [...DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ...(sessionExclude ?? []), ...(extra ?? [])];
 }
