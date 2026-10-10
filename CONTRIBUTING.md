@@ -1,55 +1,41 @@
 # Contributing
 
-Thanks for contributing to pi-dynamic-workflows. This project values small, well-tested changes that keep the workflow runtime predictable. A few conventions keep review fast.
+pi-workflows-lean is a personal fork of pi-dynamic-workflows 3.13.0, maintained independently. It is not published to npm and does not take upstream updates.
 
-## Before you open a PR
+## Checks
 
 ```bash
 npm install
-npm test     # Biome, TypeScript, unit tests, and release checks — must pass
+npm test
 ```
 
-`npm test` runs exactly what CI runs. If it's green locally it should be green in CI. CI runs on every PR to `main`; for fork PRs a maintainer approves the first run.
+`npm test` runs exactly what CI runs:
 
-## What a good PR looks like
+1. `npm run check`: Biome lint and format check, then a type check of `scripts/` and `src/`.
+2. `npm run build`: compiles `src/` to `dist/`, which the Pi extension entry loads.
+3. `npm run docs:check`: fails when generated capability docs are stale.
+4. `npm run context:check`: fails when the context-size measurement is stale.
+5. `npm run test:unit`: unit tests with fake agents.
 
-- **One concern per PR.** Keep a bug fix, a feature, and a refactor in separate PRs. A mixed PR (e.g. a test-infra fix *and* a new runtime feature) is harder to review and to revert; split it if you can.
-- **Conventional Commits.** Use `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, etc. The type drives versioning, so it matters: anything that adds or changes public API (new tool params, new settings, new exported options) is a `feat:`, not a `fix:`, even if it's small. Maintainers squash-merge, so the PR title becomes the commit — make it accurate.
-- **Backward compatible by default.** New options should be optional with conservative defaults (off unless configured).
+Run one test file with `npx tsx --test tests/<name>.test.ts`. After changing `src/`, run `npm run build` and `/reload` in Pi to load the new `dist/`.
 
-## When you add user-facing config
+## Generated files
 
-If you add a `workflow` tool parameter or a `~/.pi/workflows/settings.json` setting, document it in `README.md` in the same place the existing ones live (the agent-options table and the settings paragraph). Undocumented config is treated as incomplete.
+| After changing | Run | Rewrites |
+| --- | --- | --- |
+| `src/workflow-capability-contract.ts` | `npm run docs:generate` | the capability table in `README.md` and `docs/workflow-authoring.md`, and `skills/workflow-authoring/references/capabilities.md` and `capability-details.md` |
+| the `workflow` tool prompt or schema text, any skill file, or `pi.skills` | `npm run context:generate` | `docs/workflow-context-surfaces.json` |
 
-## When you change runtime behavior
+Commit generated files in the same commit as the change that produced them.
 
-Fake-agent unit tests are necessary but not sufficient. Any change to how agents actually run — retries, timeouts, model routing, token accounting, concurrency, resume — must also be verified **end-to-end against a real Pi subagent session** (real `createAgentSession` → real model), because the real SDK path behaves differently than a mock. If you don't have a real-provider environment, say so in the PR and a maintainer will run it before merge.
+## Runtime changes
 
-A throwaway harness for this should live in the repo root (not `/tmp`, whose symlink breaks relative imports), import from `./src`, and be deleted before commit — don't commit harnesses.
+- Keep the contract equal to the runtime. `tests/workflow-capability-contract.test.ts` compares the declared globals with what `runWorkflow` injects and the declared tool inputs with the `workflow` tool schema.
+- Fake-agent tests do not exercise the real SDK path. When a change affects how agents run (retries, timeouts, model routing, token accounting, concurrency, resume), also try it in a real Pi session.
+- Settings in `~/.pi/workflows/settings.json` are user data: new settings must be optional, and settings files that still contain removed keys must keep loading. Document new settings and `workflow` tool parameters in `README.md`.
 
-## Protected workflow-authoring guidance
+## Commits
 
-The goal is to keep workflow guidance accurate as the runtime changes without bloating the context sent to every model. Stable capability facts come from the executable capability contract and generated documentation. Detailed authoring guidance lives in the on-demand `workflow-authoring` skill instead of the permanent prompt. Context checks keep these surfaces from growing unnoticed.
-
-Some files under `skills/workflow-authoring/` contain mixed or partially behavior-covered guidance. Their full-file SHA-256 hashes in `WORKFLOW_AUTHORING_FROZEN_FILES` (`src/workflow-authoring-coverage.ts`) are explicit review checkpoints, not proof that the wording is correct.
-
-If `PROTECTED_GUIDANCE_DRIFT` reports an accidental change, revert it. For housekeeping such as a typo, link, formatting, or version update, deterministic checks and review are enough. For a semantic guidance change, inspect the affected coverage manifest entry, update relevant behavioral tests, and review provider evidence when needed. Required anchors and required text in the manifest may also need deliberate updates.
-
-After that review, explicitly accept each changed frozen file:
-
-```bash
-npm run guidance:accept -- skills/workflow-authoring/path/to/file
-```
-
-The command updates only explicitly named frozen files and prints each old and new hash for review. It does not update protected anchors or required text. `npm run guidance:generate` refreshes only the non-contractual prose baseline; it does not update protected hashes. Validate the accepted change with exactly:
-
-```bash
-npm run docs:check
-npm run context:check
-npm run guidance:check
-npm run release:verify
-```
-
-## Style
-
-Formatting and linting are handled by Biome (`npm run format`, `npm run lint`). Match the existing code; don't reformat files you aren't otherwise changing.
+- Use Conventional Commits: `feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`.
+- Keep one concern per commit, with its tests and generated files.
+- Format with `npm run format`; do not reformat files you are not otherwise changing.

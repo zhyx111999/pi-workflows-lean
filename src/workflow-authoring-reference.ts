@@ -25,7 +25,7 @@ export const CAPABILITY_TABLE_PUBLICATION_PATHS = [
   "docs/workflow-authoring.md",
 ] as const;
 /** All generated capability publication surfaces checked for drift. */
-export const CAPABILITY_PUBLICATION_PATHS = [...CAPABILITY_TABLE_PUBLICATION_PATHS, CAPABILITY_DETAIL_PATH] as const;
+const CAPABILITY_PUBLICATION_PATHS = [...CAPABILITY_TABLE_PUBLICATION_PATHS, CAPABILITY_DETAIL_PATH] as const;
 
 function escapeTable(value: string): string {
   return value.replaceAll("|", "\\|").replaceAll("\n", " ");
@@ -100,7 +100,7 @@ export function writeWorkflowCapabilityPublications(root: string): void {
   writeFileSync(join(root, CAPABILITY_DETAIL_PATH), renderWorkflowCapabilityDetails());
 }
 
-/** Returns every stale surface in stable publication order. Overrides are useful to CI callers and tests. */
+/** Returns every stale surface in stable publication order. Overrides let tests check edited content without writing files. */
 export function checkWorkflowCapabilityPublications(
   root: string,
   overrides: Readonly<Partial<Record<(typeof CAPABILITY_PUBLICATION_PATHS)[number], string>>> = {},
@@ -120,15 +120,9 @@ export function checkWorkflowCapabilityPublications(
   return stale;
 }
 
-function anchorFor(fact: StaticCapabilityFact): string {
-  const anchor = fact.reference?.split("#")[1];
-  if (!anchor) throw new Error(`Static capability fact ${fact.id} has no reference anchor.`);
-  return anchor;
-}
-
 function detail(fact: StaticCapabilityFact): string {
   const lines = [
-    `<a id="${anchorFor(fact)}"></a>`,
+    `<a id="${fact.reference.split("#")[1]}"></a>`,
     `## ${fact.label}`,
     "",
     `- Classification: \`${fact.classification}\``,
@@ -143,15 +137,14 @@ function detail(fact: StaticCapabilityFact): string {
     lines.push(
       `- Dynamic reference owner: \`${fact.dynamicReference.owner}\``,
       `- Item shape: \`${fact.dynamicReference.itemShape}\``,
-      `- Future lookup connection: \`${fact.dynamicReference.connection}\``,
+      `- Live lookup: \`${fact.dynamicReference.connection}\``,
       "- Live values are intentionally absent from this static reference.",
     );
   }
   return `${lines.join("\n")}\n`;
 }
 
-/** Compact generated entrypoint for ordinary exact-name and signature lookup. */
-/** Render the compact index that routes exact lookups to exhaustive details. */
+/** Render the compact index that routes exact lookups to the exhaustive details. */
 export function renderWorkflowCapabilityReference(): string {
   const { definition } = WORKFLOW_CAPABILITY_CONTRACT;
   return `${GENERATED_MARKER}
@@ -168,8 +161,7 @@ ${renderSupportedCapabilityTable()}
 `;
 }
 
-/** Exhaustive generated fact projection and stable anchor owner. */
-/** Render exhaustive static facts while leaving live catalogues as dynamic references. */
+/** Render every contract fact under a stable anchor, leaving live catalogues as dynamic references. */
 export function renderWorkflowCapabilityDetails(): string {
   const { definition } = WORKFLOW_CAPABILITY_CONTRACT;
   const facts = WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts();

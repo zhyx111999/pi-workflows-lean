@@ -2,7 +2,7 @@
 name: workflow-patterns
 description: Argument shape for the built-in deep-research workflow, runnable via the workflow tool's name input. Not for authoring a new workflow script — see workflow-authoring.
 metadata:
-  version: "3.7.0"
+  version: "3.13.0-lean.1"
 ---
 
 # Built-in workflow patterns
@@ -33,9 +33,9 @@ from inside a script fails as an unknown saved workflow; use the top-level
 ```
 
 This is a `workflow` tool call, not a script — omit `script` entirely. The run
-starts in the background exactly like the slash-command form; `background`,
-`maxAgents`, `concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget`
-all still apply.
+starts in the background exactly like the slash-command form; `maxAgents`,
+`concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget` all still
+apply.
 
 ## Writing a new workflow instead
 

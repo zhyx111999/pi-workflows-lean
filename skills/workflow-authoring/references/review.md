@@ -1,6 +1,6 @@
 # Workflow review checklist
 
-Review author-visible behavior, not formatting preferences. When behavior depends on a quality or control combinator, consult only its exact [quality](quality-helpers.md) or [specialized](specialized-helpers.md) helper contract before correcting the script.
+Review author-visible behavior, not formatting preferences. When behavior depends on a control helper, consult only its exact [retry](retry-helper.md) or [specialized](specialized-helpers.md) helper contract before correcting the script.
 
 ## Envelope and contract
 
@@ -13,6 +13,7 @@ Review author-visible behavior, not formatting preferences. When behavior depend
 
 - Does topology match dependencies: thunks for independent parallel work, stages for per-item pipelines, barriers before whole-set synthesis?
 - Is cardinality bounded before fan-out?
+- Does each subagent do one task, with no follow-up subagent that only cross-checks another one?
 - Is every agent label short and unique?
 - Are stable work-unit IDs retained beside ordered results?
 - Are failed/null identities recorded before any filtering?
@@ -29,7 +30,7 @@ Review author-visible behavior, not formatting preferences. When behavior depend
 - Are runtime retries and semantic retries separately bounded?
 - Are loops, agents, concurrency, timeout, and token spend bounded appropriately?
 - Are budget claims honest about soft gates and in-flight overshoot?
-- Are checkpoints limited to implemented confirmation/headless behavior?
+- Do prompt checkpoints rely only on their headless `default` or `headless: "abort"` behavior?
 - Does nesting stay one level and account for shared limits/store?
 - Would lexical call order remain stable under resume?
 

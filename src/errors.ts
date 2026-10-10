@@ -5,26 +5,9 @@
 /** Dependency-neutral diagnostic payload retained by capability contract failures. */
 export interface CapabilityErrorDiagnostic {
   code: string;
-  severity: "error" | "warning" | "information";
+  severity: "error" | "warning";
   subject: string;
   message: string;
-}
-
-/** Dependency-neutral skill-loading payload retained by generation failures. */
-export interface ModelGenerationSkillLoadingEvidence {
-  discovered: boolean;
-  loaded: boolean;
-  toolCalls: Array<{ tool: string; path?: string }>;
-}
-
-/** Dependency-neutral provider-usage payload retained by generation failures. */
-export interface ModelGenerationTokenUsage {
-  input: number;
-  output: number;
-  total: number;
-  cost: number;
-  cacheRead: number;
-  cacheWrite: number;
 }
 
 /** Stable runtime and persistence failure codes exposed to callers and UI surfaces. */
@@ -125,23 +108,6 @@ export class WorkflowCapabilityContractError extends Error {
     super(message);
     this.name = "WorkflowCapabilityContractError";
     this.diagnostics = diagnostics;
-  }
-}
-
-/** Generation failure that retains loading and token evidence for diagnosis. */
-export class ModelGenerationError extends Error {
-  readonly skillLoadingEvidence: ModelGenerationSkillLoadingEvidence;
-  readonly tokenUsage: ModelGenerationTokenUsage;
-
-  constructor(
-    message: string,
-    skillLoadingEvidence: ModelGenerationSkillLoadingEvidence,
-    tokenUsage: ModelGenerationTokenUsage,
-  ) {
-    super(message);
-    this.name = "ModelGenerationError";
-    this.skillLoadingEvidence = skillLoadingEvidence;
-    this.tokenUsage = tokenUsage;
   }
 }
 
