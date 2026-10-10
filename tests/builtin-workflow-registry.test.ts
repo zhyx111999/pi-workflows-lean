@@ -20,6 +20,7 @@ import {
 import { generateDeepResearchWorkflow } from "../src/deep-research.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import { createWorkflowStorage } from "../src/workflow-saved.js";
+import { withFakeHome } from "./helpers/fake-home.js";
 
 /** Look up a built-in descriptor, failing the test clearly if the name is unknown. */
 function requireBuiltin(name: string) {
@@ -28,13 +29,16 @@ function requireBuiltin(name: string) {
   return found;
 }
 
+/** Project storage lives under the home directory, so isolate both the cwd and HOME. */
 function withTempCwd(fn: (cwd: string) => void) {
   return () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-dw-registry-"));
+    const home = mkdtempSync(join(tmpdir(), "pi-dw-registry-home-"));
     try {
-      fn(cwd);
+      withFakeHome(home, () => fn(cwd));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   };
 }

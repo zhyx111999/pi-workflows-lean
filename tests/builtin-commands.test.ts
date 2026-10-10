@@ -105,7 +105,7 @@ test("saved workflow rejects an ordinary third-party command name", () => {
 
 test("registerBuiltinWorkflows deep-research handler validates empty args (returns early)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager, storage: makeFakeStorage({}) });
   const deepResearchHandler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(deepResearchHandler, "deep-research handler should exist");
 
@@ -120,7 +120,7 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
 test("built-in handlers start a background run and return immediately (#104)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -140,7 +140,7 @@ test("built-in handlers start a background run and return immediately (#104)", a
 test("background start notice is mode-aware: TUI points at the task panel, other hosts at /workflows status", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -162,7 +162,7 @@ test("background start notice is mode-aware: TUI points at the task panel, other
 test("deep-research passes web tools on top of coding tools to its run", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -188,7 +188,7 @@ test("startInBackground throwing synchronously surfaces as an error notify, not 
       throw new Error("lease unavailable");
     },
   } as unknown as WorkflowManager;
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager });
+  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
