@@ -11,7 +11,7 @@ import type { WorkflowManager } from "./workflow-manager.js";
 // reject with "schema must be type object, got type: null". So the schema is a
 // single object: `action` is the full set of verbs and `runId` is optional at
 // the schema level. The per-action requirement (runId is mandatory for every
-// action except `list`, and `list` takes no runId) is enforced at runtime in
+// action except `list`, which ignores it) is enforced at runtime in
 // normalizeInput() and guarded again in execute().
 const workflowControlSchema = Type.Object(
   {
@@ -28,7 +28,7 @@ const workflowControlSchema = Type.Object(
     runId: Type.Optional(
       Type.String({
         minLength: 1,
-        description: "Canonical workflow run ID. Required for status, pause, resume, and stop; omit for list.",
+        description: "Canonical workflow run ID. Required for status, pause, resume, and stop; ignored for list.",
       }),
     ),
     checkpointId: Type.Optional(
@@ -150,35 +150,38 @@ export function createWorkflowControlTool(
   });
 }
 
+const CONTROL_ACTIONS: ReadonlySet<string> = new Set(["list", "status", "pause", "resume", "stop"]);
+const CONTROL_FIELDS: ReadonlySet<string> = new Set(["action", "runId", "checkpointId"]);
+
+/**
+ * Validate one control request. Providers can materialize every optional schema
+ * field, so a declared field that does not apply to the action is dropped rather
+ * than rejected: list ignores runId and checkpointId, and only resume keeps a
+ * checkpointId. Unknown fields, a missing runId, and an invalid resume
+ * checkpointId remain errors.
+ */
 function normalizeInput(value: unknown): WorkflowControlInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("workflow_control requires an object argument");
   }
   const input = value as Record<string, unknown>;
-  const actions = new Set(["list", "status", "pause", "resume", "stop"]);
-  if (typeof input.action !== "string" || !actions.has(input.action)) {
+  const { action, runId, checkpointId } = input;
+  if (typeof action !== "string" || !CONTROL_ACTIONS.has(action)) {
     throw new Error("workflow_control requires action: list|status|pause|resume|stop");
   }
+  const extraKey = Object.keys(input).find((key) => !CONTROL_FIELDS.has(key));
+  if (extraKey) throw new Error(`workflow_control action "${action}" does not accept ${extraKey}`);
+  if (action === "list") return { action };
 
-  const allowedKeys = new Set(
-    input.action === "list" ? ["action", "checkpointId"] : ["action", "runId", "checkpointId"],
-  );
-  const extraKey = Object.keys(input).find((key) => !allowedKeys.has(key));
-  if (extraKey) throw new Error(`workflow_control action "${input.action}" does not accept ${extraKey}`);
-
-  if (input.action !== "list" && (typeof input.runId !== "string" || !input.runId.trim())) {
-    throw new Error(`workflow_control action "${input.action}" requires runId`);
+  if (typeof runId !== "string" || !runId.trim()) {
+    throw new Error(`workflow_control action "${action}" requires runId`);
   }
-  // Providers can materialize optional schema fields for every action. Keep
-  // checkpoint identity strict for resume, but discard it for other actions.
-  const { checkpointId, ...control } = input;
-  if (input.action === "resume" && Object.hasOwn(input, "checkpointId")) {
-    if (typeof checkpointId !== "string" || !checkpointId.trim()) {
-      throw new Error('workflow_control action "resume" requires a non-empty checkpointId');
-    }
-    return { ...control, checkpointId } as WorkflowControlInput;
+  const control = { action, runId } as WorkflowControlInput;
+  if (action !== "resume" || !Object.hasOwn(input, "checkpointId")) return control;
+  if (typeof checkpointId !== "string" || !checkpointId.trim()) {
+    throw new Error('workflow_control action "resume" requires a non-empty checkpointId');
   }
-  return control as WorkflowControlInput;
+  return { ...control, checkpointId };
 }
 
 function result(text: string, details: Record<string, unknown>): ControlResult {

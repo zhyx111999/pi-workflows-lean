@@ -103,6 +103,20 @@ export class WorkflowCheckpointSuspensionError extends Error {
   }
 }
 
+/**
+ * A run record this process has written or read was removed by another process.
+ * Deletion is authoritative, so a stale writer must not recreate the record.
+ */
+export class RunRecordDeletedError extends Error {
+  readonly runId: string;
+
+  constructor(runId: string) {
+    super(`workflow run ${JSON.stringify(runId)} was deleted`);
+    this.name = "RunRecordDeletedError";
+    this.runId = runId;
+  }
+}
+
 /** Contract failure that retains every definition or assembly diagnostic. */
 export class WorkflowCapabilityContractError extends Error {
   readonly diagnostics: readonly CapabilityErrorDiagnostic[];

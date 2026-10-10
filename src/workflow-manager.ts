@@ -15,7 +15,13 @@ import {
   type WorkflowAgentSnapshot,
   type WorkflowSnapshot,
 } from "./display.js";
-import { isProviderUsageLimit, WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode } from "./errors.js";
+import {
+  isProviderUsageLimit,
+  RunRecordDeletedError,
+  WorkflowCheckpointSuspensionError,
+  WorkflowError,
+  WorkflowErrorCode,
+} from "./errors.js";
 import {
   agentHasNonTerminalStatus,
   createRunPersistence,
@@ -1713,11 +1719,32 @@ export class WorkflowManager extends EventEmitter {
         durationMs: managed.result?.durationMs ?? (terminal ? now.getTime() - managed.startedAt.getTime() : undefined),
       });
     } catch (err) {
+      // Deletion by another process is authoritative: the local copy is stale.
+      const deleted = err instanceof RunRecordDeletedError;
+      if (deleted) this.forgetDeletedRun(managed);
       if (required) throw err;
       // Ordinary progress persistence remains best-effort. Durable checkpoint
       // transitions pass required=true and fail closed instead.
-      console.warn("[workflow-manager] Persist run failed:", err);
+      if (!deleted) console.warn("[workflow-manager] Persist run failed:", err);
     }
+  }
+
+  /**
+   * Another process deleted this run's record. Mirror a local deleteRun(): stop
+   * any live execution, drop the in-memory copy, and notify watchers, so no later
+   * lifecycle write can recreate the run.
+   */
+  private forgetDeletedRun(managed: ManagedRun): void {
+    if (!this.isCurrent(managed)) return;
+    if (!managed.controller.signal.aborted) managed.controller.abort();
+    const timer = this.persistTimers.get(managed.runId);
+    if (timer) {
+      clearTimeout(timer);
+      this.persistTimers.delete(managed.runId);
+    }
+    this.runs.delete(managed.runId);
+    this.releaseRunLease(managed);
+    this.emit("deleted", { runId: managed.runId });
   }
 
   /**

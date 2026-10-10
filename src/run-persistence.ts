@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentUsage } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
-import { WorkflowErrorCode } from "./errors.js";
+import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import {
   ensureDir as ensureDirFs,
   listJsonFilesSafe,
@@ -222,7 +222,10 @@ export interface RunPersistence {
   loadPreview?(runId: string): PersistedRunState | null;
   /** Under the caller's run lease, settle orphaned agents using a log delta. */
   recoverInterrupted?(runId: string): boolean;
-  /** Save current run state. */
+  /**
+   * Save current run state. Throws RunRecordDeletedError instead of recreating a
+   * run this instance has written or read after another writer deleted it.
+   */
   save(state: PersistedRunState): void;
   /** Merge small delivery/ownership fields without hydrating the run history. */
   updateMetadata?(
@@ -234,7 +237,7 @@ export interface RunPersistence {
   load(runId: string): PersistedRunState | null;
   /** List all persisted runs. */
   list(): PersistedRunState[];
-  /** Delete a persisted run. */
+  /** Delete a persisted run with its sidecars, exported results, and run log. */
   delete(runId: string): boolean;
   /**
    * Acquire an exclusive cross-process lease for a run. Returns null when another
@@ -375,6 +378,13 @@ export function createRunPersistence(
   const primaryLockPath = (runId: string) => lockPath(runsDir, runId);
   const legacyLockPath = (runId: string) => lockPath(legacyRunsDir, runId);
   const candidateRunPaths = (runId: string) => [primaryRunPath(runId), legacyRunPath(runId)];
+  const recordExists = (runId: string) =>
+    candidateRunPaths(runId).some((path) => _existsSync(path) || _existsSync(`${path}.bak`));
+  // Runs this instance has written or read. Every write path re-saves a state it
+  // obtained that way, so a known run whose record is now absent was deleted by
+  // another writer; recreating it would resurrect the deleted run. A run this
+  // instance has never seen is still created normally.
+  const knownRunIds = new Set<string>();
 
   const pidIsAlive = (pid: number): boolean => {
     if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -533,6 +543,7 @@ export function createRunPersistence(
           }
           const record = JSON.parse(_readFileSync(path, "utf-8"));
           const state = records.preview(path, record);
+          knownRunIds.add(state.runId);
           fileStateCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, state });
           if (!byRunId.has(state.runId)) byRunId.set(state.runId, state);
         } catch {
@@ -608,6 +619,7 @@ export function createRunPersistence(
       if (!_existsSync(dir)) continue;
       for (const name of fs.readdirSync(dir)) {
         if (
+          name === `${runId}.log` ||
           name.startsWith(`${runId}.json.result-`) ||
           (name.startsWith(`${runId}.json.write-lock.`) && (name.endsWith(".owner") || name.includes(".reap-")))
         )
@@ -651,7 +663,11 @@ export function createRunPersistence(
       // Atomic write: a crash mid-write can't corrupt the live file (tmp+rename is
       // atomic on the same filesystem). A .bak from the previous good save is the
       // recovery fallback if the primary is somehow truncated.
-      mutate(state.runId, () => records.save(path, state));
+      mutate(state.runId, () => {
+        if (knownRunIds.has(state.runId) && !recordExists(state.runId)) throw new RunRecordDeletedError(state.runId);
+        records.save(path, state);
+        knownRunIds.add(state.runId);
+      });
       invalidateListCache();
       // Only a terminal write can grow the terminal-run count, so only check
       // the cap then — a "running"/"paused" save is on the hot path (every
@@ -662,7 +678,10 @@ export function createRunPersistence(
     loadPreview(runId) {
       for (const path of candidateRunPaths(runId)) {
         const record = records.peek(path);
-        if (record) return record;
+        if (record) {
+          knownRunIds.add(runId);
+          return record;
+        }
       }
       return null;
     },
@@ -695,7 +714,10 @@ export function createRunPersistence(
         } catch {
           return null;
         }
-        if (state) return state;
+        if (state) {
+          knownRunIds.add(runId);
+          return state;
+        }
       }
       return null;
     },

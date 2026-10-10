@@ -103,20 +103,23 @@ test("workflow_control exposes only list, status, pause, resume, and stop in a s
   const prepare = tool.prepareArguments as (value: unknown) => unknown;
   assert.throws(() => prepare({ action: "pause" }), /requires runId/);
   assert.throws(() => prepare({ action: "status" }), /requires runId/);
-  assert.throws(() => prepare({ action: "list", runId: "abc" }), /does not accept runId/);
+  assert.deepEqual(prepare({ action: "list", runId: "abc" }), { action: "list" }, "list ignores runId");
+  assert.throws(() => prepare({ action: "list", extra: true }), /does not accept extra/);
   assert.throws(() => prepare({ action: "status", runId: "abc", extra: true }), /does not accept extra/);
   assert.throws(() => prepare({ action: "restart", runId: "abc" }), /requires action/);
   assert.throws(() => prepare({ action: "status", runId: "abc", response: {} }), /does not accept response/);
 });
 
-test("non-resume actions discard provider-supplied checkpoint IDs before validation and execution", async () => {
+test("non-resume actions discard provider-supplied fields that do not apply before validation and execution", async () => {
   for (const action of ["list", "status", "pause", "stop"] as const) {
     for (const checkpointId of ["unused", "", null]) {
       const fixture = fakeManager([run()]);
       const tool = createWorkflowControlTool({ manager: fixture.manager });
       const prepare = tool.prepareArguments as (value: unknown) => Record<string, unknown>;
       const expected = action === "list" ? { action } : { action, runId: "audit-abc123" };
-      const input = Object.freeze({ ...expected, checkpointId });
+      // Providers can materialize every optional field, including runId on list.
+      const materialized = action === "list" ? { runId: checkpointId ?? "" } : {};
+      const input = Object.freeze({ ...expected, ...materialized, checkpointId });
       const prepared = prepare(input);
 
       assert.deepEqual(prepared, expected);

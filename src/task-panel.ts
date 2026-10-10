@@ -21,6 +21,7 @@ import {
   type WorkflowAgentSnapshot,
   type WorkflowSnapshot,
 } from "./display.js";
+import { RunRecordDeletedError } from "./errors.js";
 import type { PendingDeliveryMarker, PersistedRunState } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
@@ -695,6 +696,9 @@ function markRunPending(run: ManagedRun, marker: PendingDeliveryMarker): Pending
 
 type ClearPendingResult = "cleared" | "stale" | "failed";
 
+/** Outcome of making a delivery marker durable before its send. */
+type PendingSaveResult = "saved" | "deleted" | "failed";
+
 function clearRunPending(
   manager: WorkflowManager,
   runId: string,
@@ -703,6 +707,7 @@ function clearRunPending(
 ): ClearPendingResult {
   // Clear disk first. If that fails, retain the live marker so the delivered
   // message remains visible to the bounded clear retry instead of being lost.
+  // A record deleted by another process has no marker left to clear.
   try {
     const live = run ?? manager.getRun(runId);
     if (live?.pendingDelivery?.deliveryId && live.pendingDelivery.deliveryId !== deliveryId) return "stale";
@@ -711,14 +716,13 @@ function clearRunPending(
     if (persistence) {
       if (persistence.updateMetadata) {
         if (!persistence.updateMetadata(runId, { pendingDelivery: undefined }, deliveryId)) {
-          if (!persistence.loadPreview?.(runId)) throw new Error("persisted run disappeared before delivery ACK");
-          return "stale";
+          const remaining = persistence.loadPreview ? persistence.loadPreview(runId) : persistence.load(runId);
+          if (remaining) return "stale";
         }
       } else {
         const state = persistence.load(runId);
-        if (!state) throw new Error("persisted run disappeared before delivery ACK");
-        if (state.pendingDelivery?.deliveryId && state.pendingDelivery.deliveryId !== deliveryId) return "stale";
-        if (state.pendingDelivery) {
+        if (state?.pendingDelivery?.deliveryId && state.pendingDelivery.deliveryId !== deliveryId) return "stale";
+        if (state?.pendingDelivery) {
           const { pendingDelivery: _drop, ...rest } = state;
           persistence.save(rest as PersistedRunState);
         }
@@ -735,20 +739,23 @@ function clearRunPending(
   }
 }
 
-function persistRunPending(manager: WorkflowManager, run: ManagedRun): boolean {
+/**
+ * Make a live run's delivery marker durable before sending it. A run that has
+ * never been written is seeded with a minimal record; persistence refuses to
+ * recreate a record that another process deleted, which reports "deleted".
+ */
+function persistRunPending(manager: WorkflowManager, run: ManagedRun): PendingSaveResult {
   try {
     // Prefer merging into an existing on-disk record so we don't clobber the
-    // manager's richer write that follows the complete/error emit. When no
-    // record exists yet (complete fires before manager.persistRun), seed a
-    // minimal marker-bearing record; the subsequent manager write overwrites.
+    // manager's richer write that follows the complete/error emit.
     const persistence = manager.getPersistence?.();
-    if (!persistence) return true;
+    if (!persistence) return "saved";
     if (persistence.updateMetadata?.(run.runId, { pendingDelivery: run.pendingDelivery, sessionId: run.sessionId }))
-      return true;
+      return "saved";
     const existing = persistence.load(run.runId);
     if (existing) {
       persistence.save({ ...existing, pendingDelivery: run.pendingDelivery, sessionId: run.sessionId });
-      return true;
+      return "saved";
     }
     if (run.pendingDelivery) {
       persistence.save({
@@ -768,14 +775,43 @@ function persistRunPending(manager: WorkflowManager, run: ManagedRun): boolean {
         pendingDelivery: run.pendingDelivery,
       });
     }
-    return true;
-  } catch {
+    return "saved";
+  } catch (error) {
+    if (error instanceof RunRecordDeletedError) return "deleted";
     warnDelivery(
       run.sessionId,
       `Workflow ${run.runId}: delivery deferred because its pending marker could not be saved.`,
     );
-    return false;
+    return "failed";
   }
+}
+
+/** Give a disk-only pending run its delivery id. It never creates a record. */
+function persistDiskMarker(
+  manager: WorkflowManager,
+  runId: string,
+  marker: PendingDeliveryMarker,
+  state?: PersistedRunState,
+): PendingSaveResult {
+  try {
+    const persistence = manager.getPersistence?.();
+    if (!persistence) return "saved";
+    if (persistence.updateMetadata)
+      return persistence.updateMetadata(runId, { pendingDelivery: marker }) ? "saved" : "deleted";
+    const current = state ?? persistence.load(runId);
+    if (!current) return "deleted";
+    persistence.save({ ...current, pendingDelivery: marker });
+    return "saved";
+  } catch (error) {
+    return error instanceof RunRecordDeletedError ? "deleted" : "failed";
+  }
+}
+
+/** A run deleted by another process is no longer deliverable; drop its delivery state. */
+function abandonDeletedDelivery(runId: string, run?: ManagedRun): void {
+  if (run) run.pendingDelivery = undefined;
+  deliveredAwaitingClear.delete(runId);
+  cancelDeliveryRetry(runId);
 }
 
 function contentForPending(
@@ -1030,14 +1066,18 @@ function routeBackgroundDelivery(
   const pending = markRunPending(run, marker);
   const deliveryId = pending.deliveryId;
   if (!deliveryId) return;
-  const persisted = persistRunPending(manager, run);
+  const saved = persistRunPending(manager, run);
+  if (saved === "deleted") {
+    abandonDeletedDelivery(run.runId, run);
+    return;
+  }
 
   const sessionId = resolveDeliverySessionId(run, manager);
   if (!sessionId) {
     return;
   }
 
-  if (!persisted) {
+  if (saved === "failed") {
     const endpoint = sessionEndpoints.get(sessionId);
     if (endpoint && !endpoint.suspended) {
       scheduleDeliveryRetry(manager, run.runId, sessionId, endpoint.generation);
@@ -1187,30 +1227,24 @@ function flushSessionDiskPending(manager: WorkflowManager, sessionId: string, en
 
   const tryOne = (runId: string, marker: PendingDeliveryMarker, run?: ManagedRun, persisted?: PersistedRunState) => {
     if (inFlightDeliveries.has(runId)) return;
-    let identified = marker;
-    if (!identified.deliveryId) {
-      identified = markerWithId(marker);
-      if (run) run.pendingDelivery = identified;
-      try {
-        const persistence = manager.getPersistence?.();
-        if (persistence?.updateMetadata) {
-          if (!persistence.updateMetadata(runId, { pendingDelivery: identified }))
-            throw new Error("persisted run disappeared before delivery");
-        } else {
-          const state = persisted ?? persistence?.load(runId);
-          if (persistence && state) persistence.save({ ...state, pendingDelivery: identified });
-        }
-      } catch {
-        warnDelivery(sessionId, `Workflow ${runId}: delivery deferred because its marker could not be saved.`);
-        return;
-      }
+    // A live run re-persists its marker; a disk-only run only needs a missing id.
+    const identified = run ? markRunPending(run, marker) : marker.deliveryId ? marker : markerWithId(marker);
+    const saved = run
+      ? persistRunPending(manager, run)
+      : identified === marker
+        ? "saved"
+        : persistDiskMarker(manager, runId, identified, persisted);
+    if (saved === "deleted") {
+      abandonDeletedDelivery(runId, run);
+      return;
+    }
+    if (saved === "failed") {
+      if (run) scheduleDeliveryRetry(manager, runId, sessionId, endpoint.generation);
+      else warnDelivery(sessionId, `Workflow ${runId}: delivery deferred because its marker could not be saved.`);
+      return;
     }
     const deliveryId = identified.deliveryId;
     if (!deliveryId) return;
-    if (run && !persistRunPending(manager, run)) {
-      scheduleDeliveryRetry(manager, runId, sessionId, endpoint.generation);
-      return;
-    }
     const content = contentForPending(manager, runId, identified, endpoint.loadSettings, run, persisted);
     if (content === undefined) return;
     deliverAndAck(manager, runId, sessionId, content, deliveryId, run);
