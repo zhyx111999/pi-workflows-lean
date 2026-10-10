@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { generateDeepResearchWorkflow } from "../src/deep-research.js";
 import { createWebTools } from "../src/web-tools.js";
@@ -13,20 +15,49 @@ test("generateDeepResearchWorkflow produces a valid, parseable script", () => {
     meta.phases?.map((p) => p.title),
     ["Queries", "Gather"],
   );
-  assert.match(
-    body,
-    /return \{ question, queries, minSupport, sources: allSources \}/,
-    "returns raw sources to the parent",
-  );
+  assert.match(body, /return \{ question, queries, sources: allSources \}/, "returns raw sources to the parent");
   assert.match(body, /args && args\.question/);
   assert.match(body, /web_search/);
   assert.match(body, /web_fetch/);
 });
 
-test("generateDeepResearchWorkflow uses configurable angles and minSupport", () => {
-  const body = generateDeepResearchWorkflow();
-  assert.match(body, /args\.angles/);
-  assert.match(body, /args\.minSupport/);
+test("generateDeepResearchWorkflow uses configurable angles", () => {
+  assert.match(generateDeepResearchWorkflow(), /args\.angles/);
+});
+
+test("deep_research returns every gathered source to the parent and takes no filtering argument", async () => {
+  // The parent model checks the sources; the script filters nothing, so it must
+  // not accept or echo a support threshold that would suggest otherwise.
+  const runner = {
+    async run(prompt: string) {
+      if (prompt.includes("planning web research")) return { queries: ["q1", "q2"] };
+      const query = prompt.includes("Query: q1") ? "a" : "b";
+      return { sources: [{ url: `https://${query}.example`, claims: [`only-${query}`] }] };
+    },
+  };
+  const result = await runWorkflow(generateDeepResearchWorkflow(), {
+    agent: runner as never,
+    persistLogs: false,
+    args: { question: "Q", angles: 2, minSupport: 3 },
+  });
+  const output = JSON.parse(JSON.stringify(result.result));
+  assert.deepEqual(Object.keys(output), ["question", "queries", "sources"]);
+  assert.deepEqual(output.sources, [
+    { url: "https://a.example", claims: ["only-a"] },
+    { url: "https://b.example", claims: ["only-b"] },
+  ]);
+});
+
+test("workflow-patterns skill documents exactly the args the deep-research script reads", () => {
+  const skill = readFileSync(join(import.meta.dirname, "../skills/workflow-patterns/SKILL.md"), "utf8");
+  const row = skill.split("\n").find((line) => line.startsWith("| `deep-research` |")) ?? "";
+  const shape = /`\{ ([^`]*) \}`/.exec(row)?.[1] ?? "";
+  const documented = [...shape.matchAll(/(\w+)\??:/g)].map(([, name]) => name).sort();
+  const read = [
+    ...new Set([...generateDeepResearchWorkflow().matchAll(/args\.(\w+)/g)].map(([, name]) => name)),
+  ].sort();
+  assert.deepEqual(documented, ["angles", "question"]);
+  assert.deepEqual(read, documented);
 });
 
 test("generateDeepResearchWorkflow guards the planner result before reading queries (#86)", () => {

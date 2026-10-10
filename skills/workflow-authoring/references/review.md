@@ -6,7 +6,7 @@ Review author-visible behavior, not formatting preferences.
 
 - Is literal `export const meta` the first statement, with a short unique name and useful description?
 - Are only used phases declared, and does each named phase begin at the intended boundary?
-- Does the script call at least one agent and explicitly return JSON-serializable data?
+- Does the script explicitly return JSON-serializable data?
 - Are imports and nondeterministic APIs absent?
 
 ## Topology and identity
