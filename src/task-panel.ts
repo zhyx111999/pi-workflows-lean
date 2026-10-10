@@ -1274,7 +1274,12 @@ function flushSessionDiskPending(manager: WorkflowManager, sessionId: string, en
       // Skip if the live copy still carries the marker — the loop above owns it.
       const live = manager.getRun?.(state.runId);
       if (live?.pendingDelivery) continue;
-      tryOne(state.runId, state.pendingDelivery, live, state);
+      try {
+        tryOne(state.runId, state.pendingDelivery, live, state);
+      } catch {
+        // The list can still show a run another process just deleted, whose
+        // record then fails to read; skip it so the other results still go out.
+      }
     }
   } catch {
     // best-effort

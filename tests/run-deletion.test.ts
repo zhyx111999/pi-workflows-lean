@@ -268,6 +268,45 @@ test(
 );
 
 test(
+  "a listed pending result another process deleted does not hold back the other pending results",
+  withTempProject(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, sessionId: SESSION, agent: quickAgent(), maxTerminalRunsInMemory: 0 });
+    const pi = deliveryPi();
+    installResultDelivery(pi, manager);
+    const sent: string[] = [];
+    bindSessionDelivery(SESSION, pi, {
+      manager,
+      stableSend: (message) => {
+        sent.push(message.content);
+        return Promise.resolve();
+      },
+    });
+    suspendSessionDelivery(SESSION);
+    const survivor = manager.startInBackground(oneAgentScript);
+    await survivor.promise;
+    await pause(10);
+    const deleted = manager.startInBackground(oneAgentScript);
+    await deleted.promise;
+    assert.deepEqual(
+      manager
+        .getPersistence()
+        .list()
+        .filter((run) => run.pendingDelivery)
+        .map((run) => run.runId),
+      [deleted.runId, survivor.runId],
+      "the list cache holds both results, the deleted one first",
+    );
+
+    await deleteFromAnotherManager(cwd, deleted.runId);
+    resumeSessionDelivery(SESSION, manager);
+    await pause(100);
+
+    assert.equal(sent.length, 1, "the surviving result is delivered by the same flush");
+    assert.deepEqual(runFiles(manager.getPersistence(), deleted.runId), []);
+  }),
+);
+
+test(
   "stopping a paused run deleted by another process does not recreate it",
   withTempProject(async (cwd) => {
     const owner = new WorkflowManager({ cwd, agent: waitingAgent() });
