@@ -56,7 +56,6 @@ function runtime(cwd: string): WorkflowReloadRuntime {
     cwd,
     extensionVersion: WORKFLOW_EXTENSION_VERSION,
     manager: { marker: cwd } as unknown as WorkflowReloadRuntime["manager"],
-    effort: { level: "high" },
   };
 }
 
@@ -174,7 +173,6 @@ test(
       cwd,
       extensionVersion: WORKFLOW_EXTENSION_VERSION,
       manager: manager as unknown as WorkflowReloadRuntime["manager"],
-      effort: { level: "high" },
     };
     discardWorkflowRuntime(cwd);
     handoffWorkflowRuntime(value, 10);
@@ -225,7 +223,6 @@ test("handoff staged under a session project cwd is claimable via process.cwd() 
     cwd: project,
     extensionVersion: WORKFLOW_EXTENSION_VERSION,
     manager: mgr as unknown as WorkflowReloadRuntime["manager"],
-    effort: { level: "high" },
   };
   handoffWorkflowRuntime(value);
 
@@ -251,7 +248,6 @@ test("overwriting a staged handoff pauses the displaced runtime's live runs", ()
       },
       getCwd: () => `/tmp/reload-handoff-${process.pid}-overwrite-a`,
     } as unknown as WorkflowReloadRuntime["manager"],
-    effort: { level: "high" },
   };
   const second = runtime(`/tmp/reload-handoff-${process.pid}-overwrite-b`);
 

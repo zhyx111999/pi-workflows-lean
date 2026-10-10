@@ -136,12 +136,10 @@ Deleting a run is final across processes. Deletion removes the record, its sidec
 | Command | Purpose |
 | --- | --- |
 | `/workflows` | Open the interactive run navigator |
-| `/workflows run <prompt>` | Arm workflow mode for a prompt even when keyword triggering is off |
+| `/workflows run <prompt>` | Send the prompt with an instruction to run it as a workflow now |
 | `/workflows status <id>` | Watch a run and print its result when complete |
 | `/workflows pause\|resume\|stop\|rm <id>` | Control a run |
 | `/workflows save <name>` | Save the latest script as a reusable command |
-| `/workflows-trigger off\|on\|status` | Control automatic keyword triggering |
-| `/workflows-trigger set <word>\|reset` | Set or reset the trigger word |
 | `/workflows-progress compact\|detailed\|status\|max <N>` | Live-panel detail level (and max agents shown per phase in detailed mode) |
 | `/workflows-models` | Map model tiers and thinking levels |
 

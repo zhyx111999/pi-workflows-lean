@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createCodingTools, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerBuiltinWorkflows } from "./builtin-commands.js";
-import { createEffortState, type EffortState } from "./effort-command.js";
 import {
   claimWorkflowRuntime,
   discardWorkflowRuntime,
@@ -25,7 +24,7 @@ import { UsageLimitScheduler } from "./usage-limit-scheduler.js";
 import { createWebTools } from "./web-tools.js";
 import { registerWorkflowCommands } from "./workflow-commands.js";
 import { createWorkflowControlTool } from "./workflow-control-tool.js";
-import { installWorkflowKeywordArming } from "./workflow-editor.js";
+import { installParentPromptHook, registerWorkflowProgressCommands } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
 import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettingsForCwd } from "./workflow-settings.js";
@@ -143,14 +142,6 @@ export default function extension(pi: ExtensionAPI) {
   let manager = previousRuntime?.manager ?? new WorkflowManager({ cwd, ...managerOptions });
   if (previousRuntime) manager.reconfigureAfterReload(managerOptions);
 
-  // Stable effort object: /effort and keyword arming close over this reference.
-  // A handoff retains that same object and its user-selected in-memory level.
-  const handedOffEffort = (previousRuntime ?? runtimeClaim.versionMismatch)?.effort;
-  const effort: EffortState = handedOffEffort ?? createEffortState();
-  // A compatible runtime has already had a user-visible session. Keep its
-  // current in-memory choice rather than applying a setting again on reload.
-  let effortInitialized = handedOffEffort !== undefined;
-
   const getManager = () => manager;
   const getCwd = () => cwd;
   const getStorage = () => storage;
@@ -197,7 +188,6 @@ export default function extension(pi: ExtensionAPI) {
       cwd,
       extensionVersion: WORKFLOW_EXTENSION_VERSION,
       manager,
-      effort,
     };
 
     if (reason && SESSION_REPLACEMENT_REASONS.has(reason)) {
@@ -243,17 +233,19 @@ export default function extension(pi: ExtensionAPI) {
   registerWorkflowCommands(pi, getManager, {
     getStorage,
     getCwd,
-    effort,
+  });
+  registerWorkflowProgressCommands(pi, {
+    load: () => loadWorkflowSettings({ cwd: getCwd() }),
+    save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, getCwd()),
   });
   registerWorkflowModelsCommand(pi);
   registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage });
+  installParentPromptHook(pi);
   // Saved project commands are registered on session_start (after the real
   // ctx.cwd is known and any cross-project rebuild has finished). Registering
   // them in the factory would stamp source-project descriptions onto slash
   // commands before a resume into another project could correct the cwd —
   // and Pi cannot unregister/replace a command's metadata once registered.
-
-  let armingInstalled = false;
 
   pi.on("session_start", (_event: unknown, ctx: ExtensionContext) => {
     // True project cwd for this session. Pi keeps process.cwd() on the
@@ -268,7 +260,6 @@ export default function extension(pi: ExtensionAPI) {
         cwd: manager.getCwd(),
         extensionVersion: WORKFLOW_EXTENSION_VERSION,
         manager,
-        effort,
       };
       const n = pauseStrandedWorkflowRuntime(stranded);
       if (n > 0) pausedForMismatch += n;
@@ -286,15 +277,6 @@ export default function extension(pi: ExtensionAPI) {
       storage = createWorkflowStorage(cwd);
       managerOptions = buildManagerOptions(cwd, storage);
       manager.reconfigureAfterReload(managerOptions);
-    }
-
-    // Factory-time process.cwd() can be the launch directory after /resume.
-    // Initialize only once, after ctx.cwd has selected the actual project, so
-    // the project overlay is applied without overwriting /effort changes on a
-    // later session_start or a compatible runtime handoff.
-    if (!effortInitialized) {
-      effort.level = "off";
-      effortInitialized = true;
     }
 
     // First registration (and post-rebuild catch-up for target-only names).
@@ -358,15 +340,6 @@ export default function extension(pi: ExtensionAPI) {
       cwd,
       loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }),
     });
-    if (!armingInstalled) {
-      installWorkflowKeywordArming(pi, effort, {
-        settingsStore: {
-          load: () => loadWorkflowSettings({ cwd: getCwd() }),
-          save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, getCwd()),
-        },
-      });
-      armingInstalled = true;
-    }
   });
 
   // Keep mainModel in sync with mid-session /model (and cycle/restore). Without

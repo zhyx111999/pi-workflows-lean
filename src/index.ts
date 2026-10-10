@@ -30,14 +30,6 @@ export {
   renderWorkflowText,
 } from "./display.js";
 export {
-  createEffortState,
-  type EffortLevel,
-  type EffortState,
-  effortDirective,
-  isSubstantive,
-  registerEffortCommand,
-} from "./effort-command.js";
-export {
   isAbortError,
   isTimeoutError,
   isWorkflowError,
@@ -159,16 +151,9 @@ export type {
 } from "./workflow-control-tool.js";
 export { createWorkflowControlTool } from "./workflow-control-tool.js";
 export {
-  type ArmReason,
-  buildArmedWorkflowPrompt,
   buildForcedWorkflowPrompt,
-  endsWithTrigger,
-  hasTrigger,
-  type InstallWorkflowKeywordArmingOptions,
-  installWorkflowKeywordArming,
+  installParentPromptHook,
   registerWorkflowProgressCommands,
-  registerWorkflowTriggerCommand,
-  type WorkflowModeState,
 } from "./workflow-editor.js";
 export type { ManagedRun, WorkflowManagerOptions, WorkflowResumeOptions } from "./workflow-manager.js";
 export { WorkflowManager } from "./workflow-manager.js";

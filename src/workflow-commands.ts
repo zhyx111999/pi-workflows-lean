@@ -12,7 +12,6 @@ import {
   tokenFigures,
   type WorkflowSnapshot,
 } from "./display.js";
-import { type EffortState, effortDirective } from "./effort-command.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
@@ -126,8 +125,6 @@ export interface WorkflowCommandOptions {
   getCwd?: () => string;
   /** Live manager accessor; preferred over a closed-over manager. */
   getManager?: () => WorkflowManager;
-  /** Standing effort mode; when high/ultra, `/workflows run` carries its directive too. */
-  effort?: EffortState;
 }
 
 /** Register the `/workflows` command against the shared manager. Idempotent. */
@@ -171,7 +168,7 @@ export function registerWorkflowCommands(
           }
 
           // Best-effort: ensure the workflow tool is active (session_start usually has).
-          // Add-only so this does not interfere with the keyword hook's save/restore state.
+          // Add-only so tools enabled by the user or other extensions stay active.
           try {
             const active = pi.getActiveTools?.() ?? [];
             if (!active.includes(WORKFLOW_TOOL_NAME)) pi.setActiveTools?.([...active, WORKFLOW_TOOL_NAME]);
@@ -179,16 +176,13 @@ export function registerWorkflowCommands(
             // ignore — the forced directive is the real forcing primitive
           }
 
-          const effort = opts.effort;
-          const extra = effort && effort.level !== "off" ? effortDirective(effort.level) : undefined;
-          // `/workflows run` is an explicit, maximal-intent command — use the
-          // forcing directive (no "if it's a question just answer" escape),
-          // distinct from the heuristic keyword/effort arming.
-          const armed = buildForcedWorkflowPrompt(prompt, extra);
+          // The parent tail prompt leaves delegation to the model's judgement;
+          // this explicit command asks for a workflow, so it sends the forcing directive.
+          const directive = buildForcedWorkflowPrompt(prompt);
           ctx.ui.notify(`Running workflow: ${prompt.slice(0, 60)}${prompt.length > 60 ? "…" : ""}`, "info");
           try {
             await pi.sendMessage(
-              { customType: "workflow-run", content: armed, display: true },
+              { customType: "workflow-run", content: directive, display: true },
               { triggerTurn: true, deliverAs: "followUp" },
             );
           } catch {
@@ -216,7 +210,7 @@ export function registerWorkflowCommands(
           }
           const runs = manager.listRuns();
           if (!runs.length) {
-            await print("No workflow runs yet. Start one with a background workflow (background: true).");
+            await print("No workflow runs yet. Start one with /workflows run <prompt>.");
             return;
           }
           await print(["Workflow runs:", ...runs.map(summarizeRun), "", USAGE].join("\n"));
