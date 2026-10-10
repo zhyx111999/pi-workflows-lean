@@ -269,9 +269,8 @@ export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema |
   schema?: TSchemaDef;
   /**
    * Run this agent on a specific model (`provider/modelId` or a bare `modelId`).
-   * The workflow author chooses per-agent models per the routing policy in the
-   * tool guidelines (e.g. a lighter model for exploration, the main model for
-   * analysis). When omitted, the session's main model is used.
+   * Takes precedence over the agentType model, `tier` and the phase route; with
+   * none of them set, the agent layer picks its default model.
    */
   model?: string;
   /** Pi thinking level. Used when `model` has no `:thinking` suffix. */
