@@ -9,25 +9,14 @@ import { EventEmitter } from "node:events";
 import { isDeepStrictEqual } from "node:util";
 import type { ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { WorkflowAgent } from "./agent.js";
-import type { AgentUsage } from "./agent-usage.js";
 import { DEFAULT_MAX_AGENTS } from "./config.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
-import {
-  RunRecordDeletedError,
-  WorkflowCheckpointSuspensionError,
-  WorkflowError,
-  WorkflowErrorCode,
-} from "./errors.js";
-import {
-  abortForLifecycleControl,
-  type ExternalAbort,
-  ExternalAbortLink,
-  type LifecycleControl,
-} from "./manager/abort-control.js";
-import { checkpointAlreadyConsumed, withCheckpointResponse } from "./manager/checkpoint-response.js";
+import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { abortForLifecycleControl, type ExternalAbort, type LifecycleControl } from "./manager/abort-control.js";
+import { attachCheckpointResponse, checkpointAlreadyConsumed } from "./manager/checkpoint-response.js";
 import { waitForPausedExecutionSettlement } from "./manager/execution-settlement.js";
+import { LiveRuns } from "./manager/live-runs.js";
 import { newManagedRun } from "./manager/new-run.js";
-import { PersistThrottle } from "./manager/persist-throttle.js";
 import {
   abortRecord,
   readRecordPreview,
@@ -38,19 +27,13 @@ import {
   writeAutoResumeAttempts,
 } from "./manager/record-ops.js";
 import { resumedRun } from "./manager/resume-state.js";
-import { runEventHooks, type SteerableAgent } from "./manager/run-events.js";
-import { classifyFailure, emptyFleetWarning } from "./manager/run-outcome.js";
-import {
-  initialRunRecord,
-  runRecord,
-  settleAgentsForTerminalRun,
-  settleInterruptedAgents,
-} from "./manager/run-record.js";
+import type { SteerableAgent } from "./manager/run-events.js";
+import { type ExecOptions, executeRun } from "./manager/run-execution.js";
+import { initialRunRecord } from "./manager/run-record.js";
 import { taskListMoves } from "./manager/task-list-reuse.js";
-import { DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY, TerminalRunRetention } from "./manager/terminal-retention.js";
+import { DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY } from "./manager/terminal-retention.js";
 import {
   createRunPersistence,
-  INTERRUPTED_AGENT_CAUSE,
   type PendingDeliveryMarker,
   type PersistedAgentState,
   type PersistedRunState,
@@ -58,16 +41,9 @@ import {
   type RunPersistence,
   type RunStatus,
   sanitizeAutoResumeAttempts,
-  TERMINAL_RUN_STATUSES,
 } from "./run-persistence.js";
-import { isTaskListScript, type SubagentTask } from "./subagent-tasks.js";
-import {
-  cloneDurableJsonValue,
-  type JournalEntry,
-  runWorkflow,
-  type WorkflowCheckpoint,
-  type WorkflowRunResult,
-} from "./workflow.js";
+import type { SubagentTask } from "./subagent-tasks.js";
+import type { JournalEntry, WorkflowCheckpoint, WorkflowRunResult } from "./workflow.js";
 
 type AgentTimestamps = { startedAt: string; endedAt?: string };
 
@@ -144,40 +120,6 @@ export interface ManagedRun {
   replayedAgentCalls: Set<string>;
   /** Sessions of this execution's running agents, by call id, for steerAgent(). */
   steerable: Map<string, SteerableAgent>;
-}
-
-/** Per-execution options shared by sync, background, and resume runs. */
-export interface ExecOptions {
-  /** Journaled results to replay by call index (resume). */
-  resumeJournal?: Map<number, JournalEntry>;
-  /** Durable checkpoint response being replayed by this execution. */
-  resumeCheckpoint?: WorkflowCheckpoint;
-  /** Host signal (e.g. tool/Esc) that aborts this run when fired. */
-  externalSignal?: AbortSignal;
-  /**
-   * Grace (ms) for the final drain once this run is aborted (default 10_000;
-   * Infinity = unbounded). A host setting, not persisted with the run.
-   */
-  drainAbortGraceMs?: number;
-  /** Called with the live snapshot on every progress event. */
-  onProgress?: (snapshot: WorkflowSnapshot) => void;
-  /**
-   * Tools for this run's subagents instead of the default coding tools, e.g.
-   * /deep-research adds web tools. Pair with `toolset` so a resume finds them again.
-   */
-  tools?: ToolDefinition[];
-  /**
-   * Named toolset, resolved via WorkflowManagerOptions.toolsets and persisted
-   * for resume(). With both set, `tools` serves this execution and `toolset` resumes.
-   */
-  toolset?: string;
-  /**
-   * Whether a usage-limit pause may resume automatically. Default on; false opts
-   * out. Persisted so the scheduler honors it after a restart.
-   */
-  autoResume?: boolean;
-  /** Token usage already spent (resume), so reported totals stay cumulative. */
-  initialTokenUsage?: AgentUsage;
 }
 
 export interface WorkflowResumeOptions {
@@ -258,12 +200,10 @@ export class WorkflowManager extends EventEmitter {
    * record" (listRuns/findRun), and resume() always reloads from disk.
    */
   private runs = new Map<string, ManagedRun>();
-  private readonly terminalRuns: TerminalRunRetention;
-  private readonly persistThrottle = new PersistThrottle();
+  /** Guarded writes for `runs`: record writes, lease release, events, deletion. */
+  private readonly live: LiveRuns;
   /** Executions by managed run, so pause/resume can wait for settlement before overlapping. */
   private readonly executions = new WeakMap<ManagedRun, Promise<WorkflowRunResult>>();
-  /** Runs deleted here or by another process; an execution still winding down finishes their deletion. */
-  private readonly deletedRuns = new WeakSet<ManagedRun>();
   private persistence: RunPersistence;
   private cwd: string;
   private concurrency: number;
@@ -300,11 +240,13 @@ export class WorkflowManager extends EventEmitter {
     this.providerMiddlewareExtensions = options.providerMiddlewareExtensions;
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.inheritMainModel = options.inheritMainModel ?? false;
-    this.terminalRuns = new TerminalRunRetention(
+    this.persistence = createRunPersistence(this.cwd);
+    this.live = new LiveRuns(
       this.runs,
+      this.persistence,
+      this,
       options.maxTerminalRunsInMemory ?? DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY,
     );
-    this.persistence = createRunPersistence(this.cwd);
     recoverStaleRuns(this.persistence);
   }
 
@@ -391,12 +333,12 @@ export class WorkflowManager extends EventEmitter {
   private moveRunToSession(managed: ManagedRun, sessionId: string): boolean {
     if (managed.lease) {
       managed.sessionId = sessionId;
-      this.persistRun(managed);
-      return this.isCurrent(managed);
+      this.live.persistRun(managed);
+      return this.live.isCurrent(managed);
     }
     try {
       if (!rehomeRecord(this.persistence, managed.runId, sessionId)) {
-        this.dropIfDeleted(managed);
+        this.live.dropIfDeleted(managed);
         return false;
       }
     } catch (error) {
@@ -419,7 +361,7 @@ export class WorkflowManager extends EventEmitter {
     try {
       this.persistence.save(initialRunRecord(managed));
     } catch (err) {
-      this.releaseRunLease(managed);
+      this.live.releaseLease(managed);
       this.runs.delete(managed.runId);
       throw err;
     }
@@ -438,7 +380,7 @@ export class WorkflowManager extends EventEmitter {
   async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
     const managed = this.registerNewRun(script, args, exec, false);
     // Write at once so listRuns() shows the run before its first agent finishes.
-    this.persistRun(managed);
+    this.live.persistRun(managed);
     return this.execute(managed, script, args, exec);
   }
 
@@ -458,232 +400,32 @@ export class WorkflowManager extends EventEmitter {
     return managed;
   }
 
-  /** Start one execution of `managed` and track it, so pause/resume can wait for it to settle. */
+  /** Start one execution of `managed` with the manager's current settings and track it. */
   private execute(
     managed: ManagedRun,
     script: string,
     args: unknown,
     exec: ExecOptions = {},
   ): Promise<WorkflowRunResult> {
-    const execution = this.executeRun(managed, script, args, exec);
-    this.executions.set(managed, execution);
-    return execution;
-  }
-
-  /** Execute `script` for `managed` and record the outcome on the run. Rejects with the run's error. */
-  private async executeRun(
-    managed: ManagedRun,
-    script: string,
-    args: unknown,
-    exec: ExecOptions,
-  ): Promise<WorkflowRunResult> {
-    const { onProgress } = exec;
-    // Explicit tools win; otherwise re-resolve the run's toolset name (how a
-    // resumed /deep-research keeps its web tools); otherwise the default tools.
-    const resolvedTools = exec.tools ?? (managed.toolset ? this.toolsets?.[managed.toolset]?.() : undefined);
-    const events = runEventHooks(managed, {
-      emit: (event, payload) => this.emitLive(managed, event, payload),
-      progress: () => {
-        if (this.isCurrent(managed)) onProgress?.(managed.snapshot);
-      },
-      persist: (required) => this.persistRun(managed, required),
-      schedulePersist: () => this.schedulePersist(managed),
-    });
-    const externalAbort = exec.externalSignal ? new ExternalAbortLink(exec.externalSignal, managed) : undefined;
-    try {
-      externalAbort?.attach();
-      const result = await runWorkflow(script, {
+    const execution = executeRun(this.live, managed, script, args, exec, {
+      runtime: {
         cwd: this.cwd,
-        args,
-        // The run's own id, so result.runId is the id listRuns() and resume() use.
-        runId: managed.runId,
         agent: this.agent,
         mainModel: this.mainModel,
         modelRegistry: this.modelRegistry,
         persistAgentSessions: this.persistAgentSessions,
         inheritMainModel: this.inheritMainModel,
-        parentSessionFile: managed.parentSessionFile,
-        signal: managed.controller.signal,
-        // Current limits, so a resume picks up limits raised since the run started.
         concurrency: this.concurrency,
         agentRetries: this.agentRetries,
         maxAgents: this.maxAgents,
         agentTimeoutMs: this.agentTimeoutMs,
-        drainAbortGraceMs: exec.drainAbortGraceMs,
-        tools: resolvedTools,
         excludeTools: this.excludeSubagentTools,
         providerMiddlewareExtensions: this.providerMiddlewareExtensions,
-        resumeJournal: exec.resumeJournal,
-        independentCalls: isTaskListScript(script),
-        resumeCheckpoint: exec.resumeCheckpoint,
-        initialTokenUsage: exec.initialTokenUsage,
-        ...events,
-      });
-      return this.settleCompleted(managed, result);
-    } catch (error) {
-      throw this.settleFailure(managed, error);
-    } finally {
-      externalAbort?.detach();
-      // A deleted run's script may catch the abort and keep writing its run log
-      // after the files were removed. Nothing writes for it now, so delete again.
-      if (this.deletedRuns.has(managed)) {
-        try {
-          this.persistence.delete(managed.runId);
-        } catch {
-          // Best-effort: a leftover log never resurrects the run.
-        }
-      }
-    }
-  }
-
-  /** Record a returned script. A pause() that arrived during the final drain keeps the run paused. */
-  private settleCompleted(managed: ManagedRun, result: WorkflowRunResult): WorkflowRunResult {
-    const warning = emptyFleetWarning(managed);
-    if (warning) {
-      managed.snapshot.logs.push(warning);
-      this.emitLive(managed, "log", { runId: managed.runId, message: warning });
-      console.warn(`[workflow] ${warning.replace(/\n\s*/g, " ")}`);
-    }
-    managed.result = result;
-    if (managed.status === "paused") {
-      // The journal holds the work, so a resume replays it and completes at once.
-      // Agents abandoned by the drain never report an end; settle their rows.
-      settleInterruptedAgents(managed, INTERRUPTED_AGENT_CAUSE, new Date());
-      this.persistRun(managed);
-      if (this.isCurrent(managed)) this.releaseRunLease(managed);
-      return result;
-    }
-    managed.status = "completed";
-    this.emitLive(managed, "complete", { runId: managed.runId, result });
-    this.persistRun(managed);
-    if (this.isCurrent(managed)) {
-      this.releaseRunLease(managed);
-      this.terminalRuns.record(managed.runId);
-    }
-    return result;
-  }
-
-  /** Record an execution that threw. Returns the error to rethrow. */
-  private settleFailure(managed: ManagedRun, error: unknown): unknown {
-    if (error instanceof WorkflowCheckpointSuspensionError && !managed.controller.signal.aborted) {
-      managed.status = "paused";
-      managed.error = undefined;
-      this.persistRun(managed);
-      if (this.isCurrent(managed)) {
-        this.releaseRunLease(managed);
-        this.emitLive(managed, "paused", {
-          runId: managed.runId,
-          reason: "workflow_checkpoint",
-          checkpoint: managed.checkpoint,
-        });
-      }
-      return error;
-    }
-
-    const outcome = classifyFailure(managed, error);
-    if (outcome.status) managed.status = outcome.status;
-    if (outcome.usageLimitPaused) managed.usageLimitPause = outcome.error;
-    managed.error = outcome.terminalError;
-    if (outcome.usageLimitPaused) {
-      this.emitLive(managed, "paused", {
-        runId: managed.runId,
-        reason: "usage_limit",
-        error: outcome.error,
-        resetHint: outcome.error.resetHint,
-      });
-    } else if (!outcome.announced && this.listenerCount("error") > 0) {
-      // EventEmitter throws on an unheard "error", which would skip the final
-      // write, the lease release, and the rethrow.
-      this.emitLive(managed, "error", { runId: managed.runId, error: outcome.terminalError });
-    }
-    // The drain has finished, so agents still marked active no longer run.
-    if (managed.status === "paused") {
-      settleInterruptedAgents(managed, INTERRUPTED_AGENT_CAUSE, new Date());
-    }
-    this.persistRun(managed);
-    if (this.isCurrent(managed)) {
-      this.releaseRunLease(managed);
-      // A paused run stays resumable, so it is never evicted.
-      if (TERMINAL_RUN_STATUSES.has(managed.status)) this.terminalRuns.record(managed.runId);
-    }
-    return outcome.error;
-  }
-
-  /**
-   * Whether `managed` is still the entry for its run id. False once resume()
-   * replaced it or deleteRun() removed it: such an execution must not write the
-   * record, touch the lease, or emit events for the run any more.
-   */
-  private isCurrent(managed: ManagedRun): boolean {
-    return this.runs.get(managed.runId) === managed;
-  }
-
-  /**
-   * Emit an event for an execution that is still current. A superseded one's
-   * "complete" would otherwise deliver a result for a run that is gone or
-   * replaced. Lifecycle commands emit directly: they are current when they fire.
-   */
-  private emitLive(managed: ManagedRun, event: string, payload: unknown): void {
-    if (this.isCurrent(managed)) this.emit(event, payload);
-  }
-
-  private releaseRunLease(managed: ManagedRun): void {
-    if (!managed.lease) return;
-    this.persistence.releaseRunLease(managed.lease);
-    managed.lease = undefined;
-  }
-
-  // ── Writing the run record ─────────────────────────────────────────────────
-
-  /**
-   * Write the run now, replacing any pending throttled write, so the newest
-   * state lands last. Every lifecycle change writes through here.
-   */
-  private persistRun(managed: ManagedRun, required = false): void {
-    if (!this.isCurrent(managed)) return;
-    this.persistThrottle.cancel(managed.runId);
-    this.writeRunToDisk(managed, required);
-  }
-
-  /** Write the run after the throttle window (progress only). */
-  private schedulePersist(managed: ManagedRun): void {
-    this.persistThrottle.schedule(managed.runId, () => this.writeRunToDisk(managed));
-  }
-
-  /**
-   * The single path to disk. A superseded execution writes nothing: it would
-   * recreate a deleted record or overwrite the newer execution's. The check
-   * repeats persistRun()'s because the throttled write arrives here directly.
-   * Progress writes are best-effort; `required` writes (checkpoints) throw.
-   */
-  private writeRunToDisk(managed: ManagedRun, required = false): void {
-    if (!this.isCurrent(managed)) return;
-    try {
-      const now = new Date();
-      settleAgentsForTerminalRun(managed, now);
-      this.persistence.save(runRecord(managed, now));
-    } catch (err) {
-      // Deletion by another process is authoritative: the local copy is stale.
-      const deleted = err instanceof RunRecordDeletedError;
-      if (deleted) this.forgetDeletedRun(managed);
-      if (required) throw err;
-      if (!deleted) console.warn("[workflow-manager] Persist run failed:", err);
-    }
-  }
-
-  /**
-   * Another process deleted this run's record. Mirror a local deleteRun(): stop
-   * any live execution, drop the in-memory copy, and notify watchers, so no
-   * later write can recreate the run.
-   */
-  private forgetDeletedRun(managed: ManagedRun): void {
-    if (!this.isCurrent(managed)) return;
-    if (!managed.controller.signal.aborted) managed.controller.abort();
-    this.persistThrottle.cancel(managed.runId);
-    this.runs.delete(managed.runId);
-    this.deletedRuns.add(managed);
-    this.releaseRunLease(managed);
-    this.emit("deleted", { runId: managed.runId });
+      },
+      toolsets: this.toolsets,
+    });
+    this.executions.set(managed, execution);
+    return execution;
   }
 
   // ── Pause, checkpoint responses, resume, stop ─────────────────────────────
@@ -698,72 +440,17 @@ export class WorkflowManager extends EventEmitter {
     this.emit("paused", { runId });
     // Write the new state now, but keep the lease until the execution settles
     // and writes its exact final usage.
-    this.persistRun(managed);
+    this.live.persistRun(managed);
     return true;
   }
 
   /**
    * Attach a response to a waiting checkpoint; it is on disk before this
-   * resolves, so it survives a restart. While the suspended execution still
-   * waits for its other agents, the response is written through the live run,
-   * whose lease that execution holds; otherwise through the record under a
-   * fresh lease. resume() still waits for the execution to settle, so hosts
-   * attach first and resume on the "paused" event.
+   * resolves. resume() still waits for the paused execution to settle, so
+   * hosts attach first and resume on the "paused" event.
    */
-  async attachCheckpointResponse(runId: string, checkpointId: string, responseValue: unknown): Promise<void> {
-    const response = cloneDurableJsonValue(responseValue, "checkpoint response");
-    const active = this.runs.get(runId);
-    const settlingExecution = active ? this.executions.get(active) : undefined;
-    // A .then on a settled promise runs within one microtask; on a pending one
-    // it does not. That tells a still-draining execution from a settled one.
-    let executionPending = false;
-    if (settlingExecution) {
-      let settled = false;
-      void settlingExecution.then(
-        () => (settled = true),
-        () => (settled = true),
-      );
-      await Promise.resolve();
-      executionPending = !settled;
-    }
-    if (settlingExecution && executionPending) {
-      // The draining execution writes the run again after the drain and reads
-      // the live checkpoint then, so the response reaches disk with it.
-      if (active?.lease && this.isCurrent(active)) {
-        if (!active.checkpoint) throw new Error("run has no durable checkpoint");
-        const next = withCheckpointResponse(active.checkpoint, checkpointId, response);
-        if (next === undefined) return;
-        const previousCheckpoint = active.checkpoint;
-        active.checkpoint = next;
-        try {
-          // Also write now, so the response survives a crash during the drain.
-          this.persistRun(active, true);
-        } catch (error) {
-          // The caller is told the attach failed, so the live run must not keep it.
-          active.checkpoint = previousCheckpoint;
-          throw error;
-        }
-        return;
-      }
-      if (!(await waitForPausedExecutionSettlement(settlingExecution))) {
-        throw new Error(`workflow run ${JSON.stringify(runId)} is still settling`);
-      }
-    }
-
-    const lease = this.persistence.acquireRunLease(runId);
-    if (!lease) throw new Error(`workflow run ${JSON.stringify(runId)} is busy`);
-    try {
-      const persisted = this.persistence.load(runId);
-      if (!persisted?.checkpoint) throw new Error("run has no durable checkpoint");
-      const next = withCheckpointResponse(persisted.checkpoint, checkpointId, response);
-      if (next === undefined) return;
-      this.persistence.save({ ...persisted, checkpoint: next });
-      if (active && this.isCurrent(active)) {
-        active.checkpoint = next;
-      }
-    } finally {
-      this.persistence.releaseRunLease(lease);
-    }
+  attachCheckpointResponse(runId: string, checkpointId: string, responseValue: unknown): Promise<void> {
+    return attachCheckpointResponse(this.live, (run) => this.executions.get(run), runId, checkpointId, responseValue);
   }
 
   /**
@@ -789,7 +476,7 @@ export class WorkflowManager extends EventEmitter {
 
     const persisted = this.persistence.load(runId);
     if (!persisted) {
-      this.dropIfDeleted(active);
+      this.live.dropIfDeleted(active);
       return false;
     }
     if (checkpointAlreadyConsumed(persisted, opts?.checkpointId)) return true;
@@ -829,7 +516,7 @@ export class WorkflowManager extends EventEmitter {
     });
     this.runs.set(runId, managed);
     // Write before notifying: renderers read lifecycle status from the record.
-    this.persistRun(managed);
+    this.live.persistRun(managed);
     const resumeJournal = new Map(journal.map((e) => [e.index, e] as const));
     this.emit("resumed", { runId });
     // The agent count needs no seed: the script replays from call 0 and agent()
@@ -857,7 +544,7 @@ export class WorkflowManager extends EventEmitter {
     this.markStopped(managed);
     abortForLifecycleControl(managed, "stop");
     this.emit("stopped", { runId });
-    this.persistRun(managed);
+    this.live.persistRun(managed);
     return true;
   }
 
@@ -871,11 +558,11 @@ export class WorkflowManager extends EventEmitter {
     // A cheap read first, so an unknown or finished run takes no lock.
     const current = this.findRun(runId)?.status;
     if (current !== "running" && current !== "paused") return false;
-    if (!abortRecord(this.persistence, runId, () => this.dropIfDeleted(cached))) return false;
+    if (!abortRecord(this.persistence, runId, () => this.live.dropIfDeleted(cached))) return false;
     // No execution will settle the cached copy, so it may be evicted now.
-    if (cached && this.isCurrent(cached)) {
+    if (cached && this.live.isCurrent(cached)) {
       this.markStopped(cached);
-      this.terminalRuns.record(runId);
+      this.live.recordTerminalRun(runId);
     }
     this.emit("stopped", { runId });
     return true;
@@ -948,23 +635,8 @@ export class WorkflowManager extends EventEmitter {
       // A damaged record is unreadable, not deleted; list() skips it as well.
       return undefined;
     }
-    if (!run) this.dropIfDeleted(this.runs.get(runId));
+    if (!run) this.live.dropIfDeleted(this.runs.get(runId));
     return run ?? undefined;
-  }
-
-  /**
-   * Drop a settled local copy whose record another process deleted. A copy
-   * still executing holds the lease, and its next write detects the deletion;
-   * a record that exists but fails validation is damaged, not deleted.
-   */
-  private dropIfDeleted(cached: ManagedRun | undefined): void {
-    if (!cached || cached.lease) return;
-    try {
-      if (readRecordPreview(this.persistence, cached.runId)) return;
-    } catch {
-      return;
-    }
-    this.forgetDeletedRun(cached);
   }
 
   getPersistence(): RunPersistence {
@@ -995,10 +667,7 @@ export class WorkflowManager extends EventEmitter {
       heldLease = tryAcquireRunLease(this.persistence, runId);
       if (!heldLease) return false;
     }
-    this.runs.delete(runId);
-    if (managed) this.deletedRuns.add(managed);
-    // A pending throttled write must not recreate the record after deletion.
-    this.persistThrottle.cancel(runId);
+    this.live.remove(runId, managed);
     try {
       const deleted = this.persistence.delete(runId);
       // Watchers (e.g. /workflows watch) need the event to release their
@@ -1024,11 +693,11 @@ export class WorkflowManager extends EventEmitter {
     if (managed?.lease) {
       if ((managed.autoResumeAttempts ?? 0) === attempts) return;
       managed.autoResumeAttempts = attempts;
-      this.persistRun(managed);
+      this.live.persistRun(managed);
       return;
     }
     // Without a lease the local entry is only a cache: update just this field.
-    const recorded = writeAutoResumeAttempts(this.persistence, runId, attempts, () => this.dropIfDeleted(managed));
+    const recorded = writeAutoResumeAttempts(this.persistence, runId, attempts, () => this.live.dropIfDeleted(managed));
     if (recorded && managed) managed.autoResumeAttempts = attempts;
   }
 }
