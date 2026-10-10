@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -126,6 +127,76 @@ test("createWorktree gives repeated long names independent retained worktrees", 
     await removeWorktree(second);
     await removeWorktree(first);
   } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("createWorktree checks out a deep tree that fits the main checkout without core.longpaths", async () => {
+  // Without core.longpaths (Git for Windows' default) git cannot create a
+  // directory path of 248 characters or more, so every character the worktree
+  // location adds to the repository root is taken from the tracked paths.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi-wt-deep-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  const segments: string[] = [];
+  while (join(repo, ...segments).length < 200) segments.push("segment-12");
+  const deepDir = join(...segments);
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    git("config", "core.longpaths", "false");
+    mkdirSync(join(repo, deepDir), { recursive: true });
+    writeFileSync(join(repo, deepDir, "f.txt"), "deep\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+
+    const wt = await createWorktreeLive(repo, "run-1700000000000-abcdef-12-implement-the-feature");
+    assert.equal(wt.isolated, true, wt.reason);
+    assert.ok(wt.cwd.length - repo.length <= 24, `worktree path adds ${wt.cwd.length - repo.length} characters`);
+    assert.ok(existsSync(join(wt.cwd, deepDir, "f.txt")), "the deep file is checked out");
+    await removeWorktree(wt);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("createWorktree skips an id whose directory or branch is still taken", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi-wt-taken-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: "pipe" });
+  // Feed createWorktree known ids through node:crypto, which it imports.
+  const crypto = createRequire(import.meta.url)("node:crypto") as { randomBytes: (size: number) => Buffer };
+  const randomBytes = crypto.randomBytes;
+  const ids = ["aaaaaaaa", "bbbbbbbb", "cccccccc"];
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+    // A retained branch whose tree was deleted by hand, and a retained tree.
+    git("branch", "pi/wf/run-taken-aaaaaaaa");
+    const retained = join(repo, ".pi", "worktrees", "bbbbbbbb");
+    mkdirSync(retained, { recursive: true });
+    writeFileSync(join(retained, "keep.txt"), "retained\n");
+
+    crypto.randomBytes = (size) => (ids.length ? Buffer.from(ids.shift() ?? "", "hex") : randomBytes(size));
+    syncBuiltinESMExports();
+    const wt = await createWorktreeLive(repo, "run-taken").finally(() => {
+      crypto.randomBytes = randomBytes;
+      syncBuiltinESMExports();
+    });
+
+    assert.equal(wt.isolated, true, wt.reason);
+    assert.equal(wt.cwd, join(repo, ".pi", "worktrees", "cccccccc"));
+    assert.equal(wt.branch, "pi/wf/run-taken-cccccccc");
+    assert.equal(existsSync(join(repo, ".pi", "worktrees", "aaaaaaaa")), false, "a skipped id releases its directory");
+    assert.equal(readFileSync(join(retained, "keep.txt"), "utf8"), "retained\n");
+    await removeWorktree(wt);
+    assert.notEqual(git("branch", "--list", "pi/wf/run-taken-aaaaaaaa").trim(), "", "the retained branch survives");
+  } finally {
+    crypto.randomBytes = randomBytes;
+    syncBuiltinESMExports();
     rmSync(repo, { recursive: true, force: true });
   }
 });

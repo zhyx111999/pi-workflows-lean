@@ -6,8 +6,8 @@
  */
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -125,28 +125,33 @@ function slug(name: string): string {
 }
 
 /**
- * Create an isolated worktree under `<repoRoot>/.pi/worktrees/<name>` on branch
- * `pi/wf/<name>`. A unique suffix gives each live execution its own ownership;
- * retained results from earlier executions are never reused or overwritten.
- * Journal identity is independent of this path. Returns a failed Worktree on error.
+ * Create an isolated worktree at `<repoRoot>/.pi/worktrees/<id>` on branch
+ * `pi/wf/<name slug>-<id>`. Each live execution owns a fresh id, so retained
+ * results from earlier executions are never reused or overwritten. Journal
+ * identity is independent of this path. Returns a failed Worktree on error.
  */
 export async function createWorktree(
   baseCwd: string,
   name: string,
   execOptions?: WorktreeExecOptions,
 ): Promise<Worktree> {
-  const id = `${slug(name)}-${randomUUID()}`;
+  const timeoutMs = timeoutOf(execOptions);
   let repoRoot: string;
   try {
-    repoRoot = (await git(["-C", baseCwd, "rev-parse", "--show-toplevel"], timeoutOf(execOptions))).trim();
+    repoRoot = (await git(["-C", baseCwd, "rev-parse", "--show-toplevel"], timeoutMs)).trim();
   } catch (error) {
     return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, "not a git repository") };
   }
 
-  const path = join(repoRoot, ".pi", "worktrees", id);
-  const branch = `pi/wf/${id}`;
+  let path: string;
+  let branch: string;
   try {
-    await git(["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"], timeoutOf(execOptions));
+    ({ path, branch } = await reserveWorktree(repoRoot, name, timeoutMs));
+  } catch (error) {
+    return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
+  }
+  try {
+    await git(["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"], timeoutMs);
     return { isolated: true, cwd: path, branch, repoRoot };
   } catch (error) {
     // A timed-out/failed `worktree add` can leave a created branch and a
@@ -155,6 +160,49 @@ export async function createWorktree(
     await cleanupFailedWorktreeAdd(repoRoot, path, branch);
     return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
   }
+}
+
+/** Random worktree id length in bytes; two hex characters each. */
+const WORKTREE_ID_BYTES = 4;
+/** Collisions are practically impossible; this only bounds a broken environment. */
+const WORKTREE_ID_ATTEMPTS = 8;
+
+/**
+ * Claim a fresh worktree path and branch. The id stays short because every
+ * checked-out path grows by the worktree location's length, and Git for
+ * Windows cannot create paths beyond MAX_PATH unless core.longpaths is set.
+ * Creating the empty directory is atomic, so no concurrent execution can
+ * claim the same id; skipping an id whose branch survives (its tree deleted by
+ * hand) means failure cleanup only ever removes what this execution created.
+ */
+async function reserveWorktree(
+  repoRoot: string,
+  name: string,
+  timeoutMs: number,
+): Promise<{ path: string; branch: string }> {
+  const parent = join(repoRoot, ".pi", "worktrees");
+  await mkdir(parent, { recursive: true });
+  for (let attempt = 0; attempt < WORKTREE_ID_ATTEMPTS; attempt++) {
+    const id = randomBytes(WORKTREE_ID_BYTES).toString("hex");
+    const path = join(parent, id);
+    try {
+      await mkdir(path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    const branch = `pi/wf/${slug(name)}-${id}`;
+    let free = false;
+    try {
+      free = !(
+        await git(["-C", repoRoot, "for-each-ref", "--format=%(refname)", `refs/heads/${branch}`], timeoutMs)
+      ).trim();
+    } finally {
+      if (!free) await rmdir(path);
+    }
+    if (free) return { path, branch };
+  }
+  throw new Error(`no free worktree id under ${parent}`);
 }
 
 /** Honest failure text: a killed (timed-out) git is not "not a git repository". */
