@@ -6,6 +6,7 @@ import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RunRecordDeletedError } from "../src/errors.js";
 import { createRunPersistence, type PersistedRunState, type RunPersistence } from "../src/run-persistence.js";
+import { createSubagentsControlTool } from "../src/subagents-control-tool.js";
 import {
   _resetDeliveryRegistriesForTests,
   bindSessionDelivery,
@@ -13,6 +14,7 @@ import {
   resumeSessionDelivery,
   suspendSessionDelivery,
 } from "../src/task-panel.js";
+import { registerWorkflowCommands } from "../src/workflow-commands.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -78,6 +80,51 @@ function deliveryPi(): ExtensionAPI {
     on: () => () => {},
     sendMessage: () => {},
   } as unknown as ExtensionAPI;
+}
+
+/** Start a run, pause it, and wait until its execution settles and releases the lease. */
+async function settledPausedRun(manager: WorkflowManager): Promise<string> {
+  const { runId, promise } = manager.startInBackground(oneAgentScript);
+  await pause(30);
+  assert.equal(manager.pause(runId), true);
+  await promise.catch(() => {});
+  assert.equal(manager.getRun(runId)?.lease, undefined, "the paused execution settled");
+  return runId;
+}
+
+function deletedEvents(manager: WorkflowManager): string[] {
+  const deleted: string[] = [];
+  manager.on("deleted", (event: { runId: string }) => deleted.push(event.runId));
+  return deleted;
+}
+
+async function controlTool(manager: WorkflowManager, params: Record<string, unknown>) {
+  const tool = createSubagentsControlTool({ getManager: () => manager });
+  const result = await (tool.execute as (...args: unknown[]) => Promise<{ details: Record<string, unknown> }>)(
+    "control-call",
+    params,
+    undefined,
+    undefined,
+    {},
+  );
+  return result.details;
+}
+
+/** Run `/workflows <args>` against `manager`, returning what it printed and notified. */
+function workflowsCommand(manager: WorkflowManager) {
+  let handler: ((args: string, ctx: unknown) => Promise<void>) | undefined;
+  const printed: string[] = [];
+  const notified: string[] = [];
+  const pi = {
+    getCommands: () => [],
+    registerCommand: (_name: string, options: { handler: typeof handler }) => {
+      handler = options.handler;
+    },
+    sendMessage: async (message: { content: string }) => void printed.push(message.content),
+  };
+  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager);
+  const ctx = { ui: { notify: (message: string) => notified.push(message), setStatus: () => {} } };
+  return { run: (args: string) => handler?.(args, ctx), printed, notified };
 }
 
 /** Another manager on the same project stands in for a separate Pi process. */
@@ -237,5 +284,99 @@ test(
     assert.deepEqual(runFiles(owner.getPersistence(), runId), [], "stop does not write the deleted run again");
     assert.equal(owner.getRun(runId), undefined, "the stale local copy is dropped");
     assert.deepEqual(deleted, [runId]);
+  }),
+);
+
+test(
+  "session adoption drops runs another process deleted and does not count them",
+  withTempProject(async (cwd) => {
+    const owner = new WorkflowManager({ cwd, sessionId: SESSION, agent: waitingAgent() });
+    const deletedId = await settledPausedRun(owner);
+    const keptId = await settledPausedRun(owner);
+    await deleteFromAnotherManager(cwd, deletedId);
+    const deleted = deletedEvents(owner);
+
+    assert.equal(owner.adoptLiveRunsToSession("next-session", SESSION), 1, "only the surviving run is adopted");
+    assert.equal(owner.getRun(deletedId), undefined);
+    assert.deepEqual(deleted, [deletedId]);
+    assert.equal(owner.getPersistence().load(keptId)?.sessionId, "next-session");
+    assert.deepEqual(runFiles(owner.getPersistence(), deletedId), []);
+  }),
+);
+
+test(
+  "session adoption does not count an undelivered result another process deleted",
+  withTempProject(async (cwd) => {
+    const manager = new WorkflowManager({ cwd, sessionId: SESSION, agent: quickAgent() });
+    const pi = deliveryPi();
+    installResultDelivery(pi, manager);
+    bindSessionDelivery(SESSION, pi, { manager, stableSend: () => Promise.resolve() });
+    suspendSessionDelivery(SESSION);
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+    await promise;
+    assert.ok(manager.getRun(runId)?.pendingDelivery, "the result waits for its session");
+
+    await deleteFromAnotherManager(cwd, runId);
+    assert.equal(manager.adoptLiveRunsToSession("next-session", SESSION), 0);
+    assert.equal(manager.getRun(runId), undefined);
+    assert.deepEqual(runFiles(manager.getPersistence(), runId), []);
+  }),
+);
+
+test(
+  "subagents_control stop on a paused run another process deleted reports it gone, even inside the list cache",
+  withTempProject(async (cwd) => {
+    const owner = new WorkflowManager({ cwd, agent: waitingAgent() });
+    const runId = await settledPausedRun(owner);
+    owner.listAllRuns(); // the task panel's poll keeps the list cache warm
+    await deleteFromAnotherManager(cwd, runId);
+    const events: string[] = [];
+    for (const name of ["stopped", "deleted"]) owner.on(name, () => events.push(name));
+
+    const details = await controlTool(owner, { action: "stop", runId });
+    assert.equal(details.result, "error");
+    assert.equal(details.error, "run not found");
+    assert.deepEqual(events, ["deleted"], "no stopped event for a run that no longer exists");
+    assert.equal(owner.getRun(runId), undefined);
+    assert.deepEqual(runFiles(owner.getPersistence(), runId), []);
+  }),
+);
+
+for (const action of ["resume", "stop", "findRun", "recordAutoResumeAttempts"] as const) {
+  test(
+    `${action} drops a settled local copy of a run another process deleted`,
+    withTempProject(async (cwd) => {
+      const owner = new WorkflowManager({ cwd, agent: waitingAgent() });
+      const runId = await settledPausedRun(owner);
+      await deleteFromAnotherManager(cwd, runId);
+      const deleted = deletedEvents(owner);
+
+      if (action === "resume") assert.equal(await owner.resume(runId), false);
+      else if (action === "stop") assert.equal(owner.stop(runId), false);
+      else if (action === "findRun") assert.equal(owner.findRun(runId), undefined);
+      else owner.recordAutoResumeAttempts(runId, 1);
+
+      assert.equal(owner.getRun(runId), undefined);
+      assert.equal(owner.getSnapshot(runId), null);
+      assert.deepEqual(deleted, [runId]);
+      assert.deepEqual(runFiles(owner.getPersistence(), runId), []);
+    }),
+  );
+}
+
+test(
+  "/workflows and subagents_control agree that a run another process deleted is gone",
+  withTempProject(async (cwd) => {
+    const owner = new WorkflowManager({ cwd, agent: waitingAgent() });
+    const runId = await settledPausedRun(owner);
+    await deleteFromAnotherManager(cwd, runId);
+    const command = workflowsCommand(owner);
+
+    await command.run(`status ${runId}`);
+    await command.run(`resume ${runId}`);
+    await command.run(`stop ${runId}`);
+    assert.deepEqual(command.printed, [], "no stale snapshot is printed");
+    assert.deepEqual(command.notified, [`No workflow run "${runId}"`, `No run ${runId}`, `No run ${runId}`]);
+    assert.equal((await controlTool(owner, { action: "status", runId })).error, "run not found");
   }),
 );

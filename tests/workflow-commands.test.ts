@@ -49,6 +49,17 @@ function harness(
 
   const manager: Partial<WorkflowManager> = {
     listRuns: () => [],
+    findRun: (id: string) => ({
+      runId: id,
+      workflowName: "demo",
+      script: "",
+      status: "paused",
+      phases: [],
+      agents: [],
+      logs: [],
+      startedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }),
     getSnapshot: () => null,
     getRun: () => undefined,
     stop: (id: string) => {
@@ -180,17 +191,18 @@ test("/workflows stop <id> calls manager.stop", async () => {
 
 test("/workflows status <id> renders a persisted run", async () => {
   const h = harness({
-    listRuns: () => [
-      {
-        runId: "run-7",
-        workflowName: "audit",
-        status: "completed",
-        phases: ["Scan"],
-        agents: [{ id: 1, label: "scan files", status: "done", prompt: "x" }],
-        logs: [],
-        tokenUsage: { input: 10, output: 5, total: 15 },
-      },
-    ],
+    findRun: (id: string) =>
+      id === "run-7"
+        ? {
+            runId: "run-7",
+            workflowName: "audit",
+            status: "completed",
+            phases: ["Scan"],
+            agents: [{ id: 1, label: "scan files", status: "done", prompt: "x" }],
+            logs: [],
+            tokenUsage: { input: 10, output: 5, total: 15 },
+          }
+        : undefined,
   });
   await h.run("status run-7");
   assert.match(h.printed[0], /audit \(run-7\)/);

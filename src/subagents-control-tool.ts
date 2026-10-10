@@ -86,14 +86,14 @@ export function createSubagentsControlTool(
       if (input.action === "list") return listRuns(manager);
       if (input.action === "read") return readAgent(manager, input.runId, input.label);
 
-      const run = findRun(manager, input.runId);
+      const run = manager.findRun(input.runId);
       if (!run) return controlError(input.action, input.runId, "run not found", ["list"]);
       try {
         switch (input.action) {
           case "status":
             return statusOf(manager, run);
           case "stop":
-            if (!manager.stop(run.runId)) return refused("stop", run);
+            if (!manager.stop(run.runId)) return refused(manager, "stop", run);
             return actionResult("stop", "stopped", currentSummary(manager, run));
           case "resume":
             return await resumeRun(manager, run, input);
@@ -144,7 +144,7 @@ function statusOf(manager: WorkflowManager, run: PersistedRunState): ControlResu
 
 function readAgent(manager: WorkflowManager, runId: string | undefined, label: string | undefined): ControlResult {
   const run = runId
-    ? findRun(manager, runId)
+    ? manager.findRun(runId)
     : manager
         .listRuns()
         .slice()
@@ -191,7 +191,7 @@ async function resumeRun(
     resumed = await manager.resume(run.runId);
     reused = "Finished work is reused.";
   }
-  if (!resumed) return refused("resume", run);
+  if (!resumed) return refused(manager, "resume", run);
   const summary = currentSummary(manager, run);
   return result(
     `action=resume result=resumed ${formatRunSummary(summary)}\n${reused} The result is delivered here when the run finishes.`,
@@ -220,12 +220,8 @@ async function messageAgent(
   );
 }
 
-function findRun(manager: WorkflowManager, runId: string): PersistedRunState | undefined {
-  return manager.listAllRuns().find((candidate) => candidate.runId === runId);
-}
-
 function currentSummary(manager: WorkflowManager, fallback: PersistedRunState): RunSummaryDetails {
-  const current = findRun(manager, fallback.runId) ?? fallback;
+  const current = manager.findRun(fallback.runId) ?? fallback;
   return summarizeRun(current, manager.getSnapshot(current.runId));
 }
 
@@ -237,16 +233,24 @@ function actionResult(action: string, outcome: string, run: RunSummaryDetails): 
   return result(`action=${action} result=${outcome} ${formatRunSummary(run)}`, { action, result: outcome, run });
 }
 
-/** Why a stop or resume was refused, phrased as what to do instead. */
-function refused(action: "stop" | "resume", run: PersistedRunState): ControlResult {
-  const reasons: Partial<Record<RunStatus, string>> = {
-    running: "it is still running; message it, or stop it first",
-    completed: "it already finished; pass edited tasks or script to rerun it, reusing unchanged work",
-  };
-  const reason =
+/**
+ * Why a stop or resume was refused, phrased as what to do instead. Judged from
+ * the record as it is now: another process may have deleted, finished, or
+ * resumed the run since it was looked up.
+ */
+function refused(manager: WorkflowManager, action: "stop" | "resume", attempted: PersistedRunState): ControlResult {
+  const run = manager.findRun(attempted.runId);
+  if (!run) return controlError(action, attempted.runId, "run not found", ["list"]);
+  const busy = "it is busy in another process or still settling; try again shortly";
+  // A refused stop of a running or paused run means another process holds its lease.
+  const reasons: Partial<Record<RunStatus, string>> =
     action === "resume"
-      ? (reasons[run.status] ?? "it is busy in another process or still settling; try again shortly")
-      : `cannot stop a ${run.status} run`;
+      ? {
+          running: "it is still running; message it, or stop it first",
+          completed: "it already finished; pass edited tasks or script to rerun it, reusing unchanged work",
+        }
+      : { running: "it is running in another session; stop it there", paused: busy };
+  const reason = reasons[run.status] ?? (action === "resume" ? busy : `cannot stop a ${run.status} run`);
   return controlError(action, run.runId, reason, allowedActions(run.status));
 }
 
