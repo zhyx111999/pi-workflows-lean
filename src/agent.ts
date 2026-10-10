@@ -1,108 +1,40 @@
+// Runs one workflow subagent: picks its tools, model, and session, prompts it, and returns its answer.
 import { randomUUID } from "node:crypto";
-import { realpathSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
+import { realpathSync } from "node:fs";
 import {
-  type AgentSessionEvent,
   type CreateAgentSessionOptions,
-  createAgentSession,
   createCodingTools,
-  DefaultPackageManager,
-  DefaultResourceLoader,
+  type DefaultResourceLoader,
   getAgentDir,
   type ModelRegistry,
-  type ModelRuntime,
-  SessionManager,
-  SettingsManager,
+  type SessionManager,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
-import { builtFallbackRegistry, ensureFallbackRegistry, runtimeOf } from "./agent/model-registry.js";
+import { type ChildSession, openChildSession } from "./agent/child-session.js";
+import { builtFallbackRegistry, ensureFallbackRegistry } from "./agent/model-registry.js";
+import { AgentModelSelector } from "./agent/model-selection.js";
 import { throwIfProviderLimit } from "./agent/provider-limit.js";
-import { filterProviderMiddlewareExtensions, isProviderMiddlewareExtensionPath } from "./agent/provider-middleware.js";
-import { subtractSessionUsageStats, usageFromSessionProgress, usageFromStats } from "./agent/session-usage.js";
-import { resolveStructuredOutput } from "./agent/turn-result.js";
+import { SharedResourceLoaders } from "./agent/resource-loaders.js";
+import { SessionManagers } from "./agent/session-managers.js";
+import { buildSubagentTools, subagentExcludedTools } from "./agent/session-tools.js";
+import { TurnProgress } from "./agent/turn-progress.js";
+import { finalAssistantText, lastAssistantText, resolveStructuredOutput } from "./agent/turn-result.js";
 import { assertProcessesStartIn } from "./agent/windows-cwd.js";
-import { type AgentHistoryEntry, compactAgentHistory } from "./agent-history.js";
-import { type AgentUsage, agentUsageEquals } from "./agent-usage.js";
-import { pinChildCacheRetention } from "./child-cache-retention.js";
-
-export type { AgentUsage } from "./agent-usage.js";
-
-import { applyToolPolicy } from "./agent-registry.js";
+import type { AgentHistoryEntry } from "./agent-history.js";
+import type { AgentUsage } from "./agent-usage.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import {
   canonicalModelSpec,
   formatModelSpecWithThinking,
   type ModelThinkingLevel,
-  resolveModelSpecWithThinking,
   validateThinkingLevel,
 } from "./model-spec.js";
-import {
-  formatTierFallbackNotice,
-  loadModelTierConfig,
-  type ModelTierConfig,
-  type RankableModel,
-  resolveTierModel,
-} from "./model-tier-config.js";
-import {
-  applyPreSpawnModel,
-  classifyModelSource,
-  getPreSpawnModelResolver,
-  type ModelSource,
-  type PreSpawnModelResolver,
-} from "./pre-spawn-model.js";
-import { createStructuredOutputTool, type StructuredOutputCapture } from "./structured-output.js";
+import { loadModelTierConfig, type ModelTierConfig, type RankableModel } from "./model-tier-config.js";
+import type { ModelSource, PreSpawnModelResolver } from "./pre-spawn-model.js";
+import type { StructuredOutputCapture } from "./structured-output.js";
 
-const LIVE_USAGE_EMIT_INTERVAL_MS = 250;
-
-/**
- * Resolve which concrete model spec a subagent should use. Precedence, most
- * specific first:
- *   1. options.model — an explicit per-agent model (also carries agentType /
- *      phase model, which the workflow layer folds into options.model).
- *   2. options.tier  — resolved via the model-tiers config, falling back to the
- *      session's main model when the tier has no configured entry.
- *   3. SESSION MODEL (opt-in) — with the inheritMainModel setting, untagged
- *      agents instead inherit the orchestrating session's main model as of
- *      run start (no tier config needed). With no main model set, the legacy
- *      route below applies. An unavailable inherited model still degrades
- *      loudly via onModelFallback rather than throwing.
- *   4. DEFAULT TIER — when neither is set but the user has a model-tiers config,
- *      untagged agents default to the "medium" tier so a configured tier set
- *      actually affects the whole workflow (not just agents the script tagged).
- *      Fresh-install medium == the session model, so this is a no-op until the
- *      user customizes tiers via /workflows-models.
- * Returns undefined when nothing applies, so the session default is used.
- *
- * `loadConfig` is injectable for testing; it defaults to the global file.
- * WorkflowAgent passes a cwd-aware overlay loader so project tiers win.
- */
-export function resolveAgentModelSpec(
-  options: { model?: string; tier?: string },
-  mainModel: string | undefined,
-  loadConfig: () => ModelTierConfig | null = loadModelTierConfig,
-  onTierWithoutConfig?: (tier: string) => void,
-  routing?: { inheritMainModel?: boolean },
-): string | undefined {
-  if (options.model) return options.model;
-  if (options.tier) {
-    // Tier requested but unconfigured → it silently falls back to mainModel.
-    // Let the caller surface that (once) so the no-op is discoverable.
-    const config = loadConfig();
-    if (!config) onTierWithoutConfig?.(options.tier);
-    return (config ? resolveTierModel(options.tier, config) : undefined) ?? mainModel;
-  }
-  // Untagged agent with inheritance enabled: the session's current main model.
-  if (routing?.inheritMainModel && mainModel) return mainModel;
-  // Untagged agent: default to the configured medium tier when one exists.
-  const config = loadConfig();
-  if (config) {
-    const medium = resolveTierModel("medium", config);
-    if (medium) return medium;
-  }
-  return undefined;
-}
+export type { AgentUsage } from "./agent-usage.js";
 
 /** Child sessions load no host extensions unless explicitly opted in. */
 export const DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS: readonly string[] = Object.freeze([]);
@@ -112,10 +44,10 @@ export interface WorkflowAgentOptions {
   /** Extra tools available to the subagent in addition to the structured output tool. */
   tools?: ToolDefinition[];
   /**
-   * Extra tool NAMES to deny in the subagent session, on top of the always-on
-   * defaults ({@link DEFAULT_EXCLUDED_SUBAGENT_TOOLS}). Lets the host exclude
-   * other recursive-orchestration tools it registers (e.g. a pi-subagents tool)
-   * so a workflow subagent can't fan out through them either (#107).
+   * Extra tool names to deny in the subagent session, on top of the always-denied
+   * orchestration tools. Lets the host exclude other recursive-orchestration
+   * tools it registers (e.g. a pi-subagents tool) so a subagent cannot fan out
+   * through them either.
    */
   excludeTools?: string[];
   /**
@@ -134,8 +66,8 @@ export interface WorkflowAgentOptions {
    * The session's main model (`provider/modelId`). Used as a fallback when
    * resolving opts.tier and no model-tiers.json config exists, and as the
    * routing target for untagged agents when `inheritMainModel` is on.
-   * Without this, a workflow using `{ tier: "small" }` would log a warning
-   * and fall through to the session default when no config is saved yet.
+   * Without it, `{ tier: "small" }` with no saved config would fall through to
+   * the session default.
    */
   mainModel?: string;
   /**
@@ -148,7 +80,7 @@ export interface WorkflowAgentOptions {
    */
   inheritMainModel?: boolean;
   /**
-   * Optional host policy run after DW model-intent resolution and before
+   * Optional host policy run after model-intent resolution and before
    * createAgentSession. Per-instance; a per-run `AgentRunOptions.preSpawnModel`
    * overrides this, which overrides {@link setPreSpawnModelResolver}.
    */
@@ -166,77 +98,9 @@ export interface WorkflowAgentOptions {
   /**
    * Persist each subagent transcript as a real pi session file under the
    * standard sessions directory (keyed by the runner's project cwd), instead
-   * of the default in-memory session that is discarded when the run ends.
-   * Default: false (current behavior).
+   * of an in-memory session that is discarded when the run ends. Default: false.
    */
   persistAgentSessions?: boolean;
-}
-
-/**
- * List the user's currently available models (those with auth configured) with
- * the minimal fields tier ranking needs: canonical spec, output price, and
- * context window. This is the single place the SDK `Model` is projected into
- * the SDK-agnostic `RankableModel`. Best-effort: returns [] if the registry
- * can't be built (or while the disk-backed fallback is still initializing).
- */
-export function listAvailableModels(registry?: ModelRegistry): RankableModel[] {
-  try {
-    const modelRegistry = registry ?? builtFallbackRegistry();
-    if (!modelRegistry) {
-      // Kick off the async fallback build; this call reports [] and later
-      // calls (e.g. the tool's lazy promptGuidelines re-reads) see real specs.
-      void ensureFallbackRegistry().catch(() => {});
-      return [];
-    }
-    return modelRegistry.getAvailable().map((model) => ({
-      spec: canonicalModelSpec(model),
-      costOutput: model.cost?.output,
-      contextWindow: model.contextWindow,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-/**
- * List the user's currently available models as `provider/modelId` specs. Used
- * to tell the workflow author which models it may route agents to. Best-effort:
- * returns [] if the registry can't be built.
- */
-export function listAvailableModelSpecs(registry?: ModelRegistry): string[] {
-  return listAvailableModels(registry).map((model) => model.spec);
-}
-
-/**
- * Emitted at most once per process: when an agent asks for a tier but no
- * model-tiers.json exists, the tier silently falls back to the session model.
- * Surface that once (with the mapping the user would get by configuring) so the
- * no-op is discoverable. Diagnostics only — never lets a failure break a run.
- */
-let warnedTierUnconfigured = false;
-function warnTierUnconfiguredOnce(mainModel: string | undefined, registry: ModelRegistry): void {
-  if (warnedTierUnconfigured) return;
-  warnedTierUnconfigured = true;
-  try {
-    console.warn(formatTierFallbackNotice(mainModel, listAvailableModels(registry)));
-  } catch {
-    // best-effort diagnostic
-  }
-}
-
-/**
- * Emitted at most once per process when persistAgentSessions is enabled and a
- * session is actually persisted: full subagent transcripts (which may include
- * secrets or other sensitive context) are being written to disk. Surface the
- * privacy trade-off at run time, not only in the docs.
- */
-let warnedPersistSecrets = false;
-function warnPersistSecretsOnce(sessionDir: string): void {
-  if (warnedPersistSecrets) return;
-  warnedPersistSecrets = true;
-  console.warn(
-    `[workflow] persistAgentSessions is ON: full subagent transcripts (which may include secrets or other sensitive context) are being written to disk under ${sessionDir}. Disable persistAgentSessions if that isn't intended.`,
-  );
 }
 
 export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefined> {
@@ -280,50 +144,36 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    */
   thinking?: ModelThinkingLevel;
   /**
-   * Model tier name (e.g. "small", "medium", "big"). When set (and no explicit
-   * `model` is given), the model is resolved from the user's model-tiers.json
-   * config before `run()` starts, falling back to the session's main model when
-   * the tier has no configured entry. An explicit `model` always takes priority,
-   * so workflow scripts can use `{ tier: "small" }` for coarse routing without
-   * caring which concrete model backs that tier.
-   *
-   * A script-requested tier that resolves to an unavailable model spec is just
-   * as loud as an explicit `model` pin — `run()` throws MODEL_NOT_FOUND naming
-   * the tier and the spec it resolved to, e.g. `tier "big" from
-   * model-tiers.json resolves to "deadprov/x", which is not available`.
-   *
-   * That's deliberately asymmetric with the IMPLICIT default tier an untagged
-   * agent (neither `model` nor `tier` set) gets routed through: since the
-   * script never asked for that tier, a broken default degrades to the
-   * session default instead of failing every untagged agent in the run — see
-   * onModelFallback below for how that degrade stays visible.
+   * Model tier name (e.g. "small", "medium", "big"), resolved from the user's
+   * model-tiers.json when no explicit `model` is given, falling back to the
+   * session's main model when the tier has no configured entry. A requested
+   * tier that resolves to an unavailable spec throws MODEL_NOT_FOUND naming the
+   * tier and the spec, just like an explicit `model`. Only the implicit route of
+   * an untagged agent degrades instead (see onModelFallback), because the
+   * script never asked for that model.
    */
   tier?: string;
   /**
    * Provenance of `model`/`tier` as known by the caller (workflow layer).
-   * When omitted, {@link classifyModelSource} infers it from model/tier/resolved spec.
+   * When omitted, it is inferred from model/tier/resolved spec.
    */
   modelSource?: ModelSource;
   /** Per-run host policy; overrides the instance and process resolvers. */
   preSpawnModel?: PreSpawnModelResolver;
-  /** Called with the resolved model id once known (for display/telemetry).
-   * Also fires right after session creation with the session's REAL model when
-   * no spec resolved (an untagged agent's settings-default binding, an
-   * implicit-route degrade, or a requested tier that resolved to nothing) —
-   * otherwise those agents would keep displaying the pre-resolution mainModel
-   * guess for their whole lifetime. */
+  /**
+   * Called with the resolved model id once known (for display/telemetry). When
+   * no spec resolved (settings default, implicit-route degrade, or an empty
+   * tier) it fires after session creation with the session's real model, so
+   * the agent never keeps displaying the pre-resolution mainModel guess.
+   */
   onModelResolved?: (modelId: string) => void;
   /**
-   * Called (at most once per WorkflowAgent instance) when an UNTAGGED agent's
+   * Called at most once per WorkflowAgent instance when an untagged agent's
    * implicit route — the default "medium" tier, or the inherited main model
-   * when the inheritMainModel setting is on (source discriminates which) —
-   * resolves to a model spec that isn't available. This is the one case that
-   * degrades to the session default instead of throwing MODEL_NOT_FOUND (see
-   * `tier` above) — but the degrade must still land in the run's own
-   * log/event stream, not just a console.warn, or a broken implicit route
-   * silently drifts every untagged agent's model with zero trace in the run
-   * itself. In the payload, `tier` is the legacy medium-tier field and is only
-   * meaningful when `source === "medium-tier"`; key on `source` instead.
+   * when inheritMainModel is on — resolves to an unavailable spec. That case
+   * degrades to the session default instead of throwing, so the run's own
+   * log must still record it. `tier` is only meaningful when
+   * `source === "medium-tier"`; key on `source`.
    */
   onModelFallback?: (info: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
@@ -360,10 +210,9 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   systemTools?: ToolDefinition[];
   /**
    * Per-run model registry override. Takes precedence over the constructor's
-   * `modelRegistry` (WorkflowAgentOptions.modelRegistry) for both model
-   * resolution and the `createAgentSession` call this run makes. Falls back to
-   * the constructor's shared registry, then a lazily-built disk registry, when
-   * omitted.
+   * `modelRegistry` for both model resolution and this run's session, which
+   * otherwise fall back to the constructor's registry, then a lazily-built disk
+   * registry.
    */
   modelRegistry?: ModelRegistry;
   /** Re-enter a named conversation retained by this WorkflowAgent instance. */
@@ -375,81 +224,61 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
   : string;
 
 /**
- * Orchestration tools ALWAYS denied to workflow subagents. The `subagents` and
- * `subagents_control` tools are registered globally by the extension, so — unless
- * excluded — a subagent's session sees them and can start or steer independent
- * background runs. Those nested runs recursively fan out and are NOT bounded
- * by the parent run's maxAgents / concurrency / progress / accounting, and can
- * drain a shared provider quota and pile up paused runs (#107). Callers may deny
- * additional tool names via WorkflowAgentOptions.excludeTools.
+ * List the user's currently available models (those with auth configured) with
+ * the minimal fields tier ranking needs: canonical spec, output price, and
+ * context window. This is the single place the SDK `Model` is projected into
+ * the SDK-agnostic `RankableModel`. Best-effort: returns [] if the registry
+ * can't be built (or while the disk-backed fallback is still initializing).
  */
-export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["subagents", "subagents_control"];
+export function listAvailableModels(registry?: ModelRegistry): RankableModel[] {
+  try {
+    const modelRegistry = registry ?? builtFallbackRegistry();
+    if (!modelRegistry) {
+      // Start the async fallback build; this call reports [] and later calls
+      // (e.g. the tool's lazy promptGuidelines re-reads) see real specs.
+      void ensureFallbackRegistry().catch(() => {});
+      return [];
+    }
+    return modelRegistry.getAvailable().map((model) => ({
+      spec: canonicalModelSpec(model),
+      costOutput: model.cost?.output,
+      contextWindow: model.contextWindow,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** The available models as `provider/modelId` specs, for telling a workflow author where agents may route. */
+export function listAvailableModelSpecs(registry?: ModelRegistry): string[] {
+  return listAvailableModels(registry).map((model) => model.spec);
+}
+
 /** Process-global subagent id counter: unique across concurrent workflow runs. */
 let workflowAgentSeq = 0;
 
-interface ThreadSession {
-  manager: SessionManager;
-  /** Canonical cwd fixed when this named conversation starts. */
-  cwd: string;
-}
-
 /**
- * The full subagent tool denylist: the always-on defaults plus any names the
- * caller added (via WorkflowAgentOptions.excludeTools) or set on the injected
- * session options. Extracted so the merge — and its order — is unit-testable;
- * a spread-order regression that dropped the defaults would slip past a test
- * that only asserts the constant. The SDK dedupes, so overlap is harmless.
+ * Runs subagents for one workflow invocation. Production creates one instance
+ * per run, so per-instance caches (tier config, resource loaders, threads) live
+ * exactly as long as the run.
  */
-export function subagentExcludedTools(extra?: string[], sessionExclude?: string[]): string[] {
-  return [...DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ...(sessionExclude ?? []), ...(extra ?? [])];
-}
-
 export class WorkflowAgent {
   private readonly cwd: string;
   private readonly baseTools: ToolDefinition[];
   /** Extra subagent tool-name denylist, merged with the always-on defaults. */
   private readonly excludeTools: string[];
-  private readonly providerMiddlewareExtensions: readonly string[];
   private readonly sessionOptions: Partial<CreateAgentSessionOptions>;
   private readonly persistAgentSessions: boolean;
   private readonly instructions?: string;
-  private readonly mainModel?: string;
-  private readonly inheritMainModel: boolean;
-  private readonly preSpawnModel?: PreSpawnModelResolver;
   /** Shared registry from the host session, when provided. */
   private readonly sharedRegistry?: ModelRegistry;
-  /** Frozen host session file used for child-session lineage in this run. */
-  private readonly parentSessionFile?: string;
   /** Lazily built once; shares the SDK's agentDir/auth so resolved models are authed. */
   private registry?: ModelRegistry;
-  /**
-   * Memoized model-tiers.json snapshot, boxed so a legitimately-null config
-   * (file absent/invalid) is distinguishable from "not loaded yet". See
-   * loadTierConfig() below for why this is scoped per-instance.
-   */
+  /** Memoized model-tiers snapshot, boxed so a missing config (null) differs from "not read yet". */
   private tierConfigBox?: { value: ModelTierConfig | null };
-  /**
-   * Resource loaders shared by subagents using the same directory in this run. See
-   * getSharedResourceLoader — this is the #109 memory mitigation.
-   */
-  private readonly resourceLoaders = new Map<string, Promise<DefaultResourceLoader>>();
-  /**
-   * Emitted at most once per instance (~= once per run, see the class-level
-   * lifetime note above): an untagged agent's implicit route — the default
-   * "medium" tier, or the inherited main model when inheritMainModel is on —
-   * resolved to a model spec that isn't available. Deliberately per-instance
-   * rather than a MODEL_NOT_FOUND throw — an untagged agent never asked for
-   * that specific model, so a broken implicit route shouldn't fail every
-   * untagged agent in the run. See onModelFallback below for the (still-loud)
-   * degrade path.
-   */
-  private warnedImplicitRouteUnavailable = false;
-  /**
-   * Named conversations live for this WorkflowAgent instance. Production creates
-   * one instance per workflow invocation; embedders that inject and reuse an
-   * agent are responsible for choosing the longer thread lifetime deliberately.
-   */
-  private readonly threadSessions = new Map<string, ThreadSession>();
+  private readonly models: AgentModelSelector;
+  private readonly resourceLoaders: SharedResourceLoaders;
+  private readonly sessionManagers: SessionManagers;
   private readonly activeThreads = new Set<string>();
   /** Unique per-instance identity: agent ids must never collide across WorkflowAgent instances. */
   private readonly agentInstanceId = randomUUID();
@@ -458,245 +287,26 @@ export class WorkflowAgent {
     this.cwd = options.cwd ?? process.cwd();
     this.baseTools = options.tools ?? createCodingTools(this.cwd);
     this.excludeTools = options.excludeTools ?? [];
-    this.providerMiddlewareExtensions = [
-      ...(options.providerMiddlewareExtensions ?? DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS),
-    ];
     this.sessionOptions = options.session ?? {};
     this.persistAgentSessions = options.persistAgentSessions ?? false;
     this.instructions = options.instructions;
-    this.mainModel = options.mainModel;
-    this.inheritMainModel = options.inheritMainModel ?? false;
-    this.preSpawnModel = options.preSpawnModel;
     this.sharedRegistry = options.modelRegistry;
-    this.parentSessionFile = options.parentSessionFile;
-  }
-
-  /**
-   * A resource loader shared per directory within this run (#109).
-   *
-   * Without a resourceLoader, createAgentSession() builds a fresh loader per
-   * subagent and re-runs every installed extension factory. By default we keep
-   * host extensions disabled. When opted in, resolve configured paths without
-   * loading factories, then pass only allowlisted middleware paths as explicit
-   * additions to a `noExtensions: true` loader. Recursive orchestration factories
-   * never load, even if explicitly allowlisted.
-   *
-   * Extension-free loaders remain shared to avoid the churn fixed by #109.
-   * Skills, prompts, AGENTS.md context, and workflow-supplied `customTools` remain
-   * available. Other host extension-registered tools stay excluded. Allowlisted
-   * middleware must be trusted and child-safe; this is not a sandbox. Opted-in
-   * loaders are session-local: the SDK binds session actions into their runtime,
-   * so sharing one would send a child's extension actions into another child.
-   */
-  private getSharedResourceLoader(agentDir: string, cwd = this.cwd): Promise<DefaultResourceLoader> {
-    const key = JSON.stringify([agentDir, cwd]);
-    const shared = this.providerMiddlewareExtensions.length === 0;
-    const existing = shared ? this.resourceLoaders.get(key) : undefined;
-    if (existing) {
-      // LRU-by-touch: keep hot entries (base cwd) resident ahead of one-off
-      // worktree loaders when pruneSharedResourceLoaders evicts.
-      this.resourceLoaders.delete(key);
-      this.resourceLoaders.set(key, existing);
-      return existing;
-    }
-    return this.buildSharedResourceLoader(agentDir, cwd, key);
-  }
-
-  /**
-   * Bound the loader memo (audit2 #41): worktree isolation gives every agent
-   * a unique cwd, so N worktree agents would otherwise retain N
-   * fully-reloaded loaders until run end. LRU-by-touch (hits re-insert in
-   * getSharedResourceLoader) keeps the hot entries — the base cwd is touched
-   * by every default call — while one-off worktree loaders are evicted first.
-   */
-  private static readonly MAX_SHARED_RESOURCE_LOADERS = 8;
-
-  private pruneSharedResourceLoaders(): void {
-    while (this.resourceLoaders.size > WorkflowAgent.MAX_SHARED_RESOURCE_LOADERS) {
-      const oldest = this.resourceLoaders.keys().next().value;
-      if (oldest === undefined) return;
-      this.resourceLoaders.delete(oldest);
-    }
-  }
-
-  private buildSharedResourceLoader(agentDir: string, cwd: string, key: string): Promise<DefaultResourceLoader> {
-    const shared = this.providerMiddlewareExtensions.length === 0;
-    const pending = (async () => {
-      const settingsManager = this.sessionOptions.settingsManager ?? SettingsManager.create(cwd, agentDir);
-      let middlewarePaths: string[] = [];
-      const packageSources = new Map<string, string>();
-      if (this.providerMiddlewareExtensions.length > 0) {
-        await settingsManager.reload();
-        const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager });
-        const configured = await packageManager.resolve();
-        middlewarePaths = configured.extensions
-          .filter((extension) => extension.enabled)
-          .filter((extension) => {
-            const source = extension.metadata.origin === "package" ? extension.metadata.source : undefined;
-            if (source) packageSources.set(extension.path, source);
-            return isProviderMiddlewareExtensionPath(extension.path, this.providerMiddlewareExtensions, source);
-          })
-          .map((extension) => extension.path);
-      }
-      const loader = new DefaultResourceLoader({
-        cwd,
-        agentDir,
-        settingsManager,
-        noExtensions: true,
-        additionalExtensionPaths: middlewarePaths,
-        extensionsOverride: (base) =>
-          filterProviderMiddlewareExtensions(base, this.providerMiddlewareExtensions, packageSources),
-      });
-      await loader.reload();
-      return loader;
-    })().catch((err) => {
-      // Don't let a transient build failure (e.g. EMFILE during reload's disk
-      // I/O) poison every subagent AND every retry of this run — clear the memo
-      // so the next caller rebuilds instead of replaying the same rejection.
-      // An evicted older build must not delete a newer entry for this key.
-      if (shared && this.resourceLoaders.get(key) === pending) this.resourceLoaders.delete(key);
-      throw err;
+    this.models = new AgentModelSelector({
+      mainModel: options.mainModel,
+      inheritMainModel: options.inheritMainModel ?? false,
+      preSpawnModel: options.preSpawnModel,
+      loadTierConfig: () => this.loadTierConfig(),
+      listModels: listAvailableModels,
     });
-    if (shared) {
-      this.resourceLoaders.set(key, pending);
-      this.pruneSharedResourceLoaders();
-    }
-    return pending;
-  }
-
-  /**
-   * Resolve the registry for a run: an explicit per-run registry wins, then the
-   * constructor's shared registry, then a lazily-built disk registry (shared
-   * shared across calls once built). Async because omp builds registries from an
-   * async-discovered AuthStorage.
-   */
-  private async getRegistry(perRunRegistry?: ModelRegistry): Promise<ModelRegistry> {
-    if (perRunRegistry) {
-      return perRunRegistry;
-    }
-    if (this.sharedRegistry) {
-      return this.sharedRegistry;
-    }
-    if (!this.registry) {
-      this.registry = await ensureFallbackRegistry();
-    }
-    return this.registry;
-  }
-
-  /**
-   * Read+parse the cwd-aware model-tiers overlay at most once for this
-   * instance's lifetime, instead of on every run() call. `resolveAgentModelSpec`
-   * previously received `loadModelTierConfig` directly (sync existsSync +
-   * readFileSync + JSON.parse from disk), which it calls unconditionally for
-   * any agent without an explicit options.model — so a large fan-out did N
-   * redundant synchronous disk reads that blocked the event loop and stalled
-   * concurrent agents' I/O.
-   *
-   * `runWorkflow()` constructs a fresh `WorkflowAgent` per run (see
-   * `new WorkflowAgent(options)` in workflow.ts, unless a caller injects its
-   * own `options.agent` runner — a test-only escape hatch per
-   * WorkflowManagerOptions.agent's doc comment), so a WorkflowAgent instance's
-   * lifetime is one run in production. Memoizing on `this` therefore has the
-   * same scope and lifetime as the agentRegistry snapshot workflow.ts already
-   * takes once per run "for determinism" — the config file isn't expected to
-   * change mid-run, and two different runs (= two different WorkflowAgent
-   * instances) each get their own fresh read of whatever is on disk at the
-   * time, so this does not leak stale config across runs or break tests that
-   * construct fresh agents with different configs.
-   *
-   * `loader` is injectable for tests (defaults to the real disk read); it is
-   * only ever consulted once, on the first call, regardless of what is passed
-   * on later calls.
-   */
-  private loadTierConfig(loader?: () => ModelTierConfig | null): ModelTierConfig | null {
-    if (!this.tierConfigBox) {
-      const read = loader ?? (() => loadModelTierConfig({ cwd: this.cwd }));
-      this.tierConfigBox = { value: read() };
-    }
-    return this.tierConfigBox.value;
-  }
-
-  /**
-   * Session manager for one subagent run. File-backed (persisted under the
-   * standard sessions dir, keyed by the runner's project cwd — never a
-   * per-call worktree cwd) when persistAgentSessions is on; in-memory otherwise.
-   *
-   * SessionManager.create() only creates the session directory — the SDK writes
-   * the session file lazily (synchronous fs calls, uncaught) on the first
-   * assistant message, deep inside session.prompt(). A failure there would
-   * otherwise throw mid-run and abort this subagent. Probe writability up front
-   * so any create/write failure (permissions, disk full) degrades this single
-   * agent to an in-memory session instead — the run continues, just without a
-   * persisted transcript.
-   */
-  private createSessionManager(thread?: string, cwd?: string): SessionManager {
-    if (thread) {
-      // runTurn always supplies its already-canonical runCwd. Keep the legacy
-      // direct helper path (used by embedders that let SessionManager create a
-      // project directory lazily) intact when no per-call cwd was supplied.
-      const threadCwd = cwd === undefined ? this.cwd : realpathSync(cwd);
-      const existing = this.threadSessions.get(thread);
-      if (existing) {
-        if (existing.cwd !== threadCwd) {
-          throw new WorkflowError(
-            `agent thread "${thread}" cannot change cwd from "${existing.cwd}" to "${threadCwd}"`,
-            WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-            { recoverable: false },
-          );
-        }
-        return existing.manager;
-      }
-
-      const manager = this.createSessionManager();
-      this.threadSessions.set(thread, { manager, cwd: threadCwd });
-      return manager;
-    }
-
-    let manager: SessionManager;
-    if (!this.persistAgentSessions) {
-      manager = SessionManager.inMemory();
-    } else {
-      try {
-        manager = SessionManager.create(this.cwd);
-        // SessionManager.create() starts a fresh session without lineage. Reset
-        // it before createAgentSession() so the child header records the host
-        // session, while retaining the default behavior for ephemeral parents.
-        if (this.parentSessionFile) {
-          manager.newSession({ parentSession: this.parentSessionFile });
-        }
-        this.assertSessionDirWritable(manager.getSessionDir());
-        warnPersistSecretsOnce(manager.getSessionDir());
-      } catch (error) {
-        console.warn(
-          `[workflow] persistAgentSessions: could not persist this agent's session (${
-            error instanceof Error ? error.message : String(error)
-          }); continuing with an in-memory session`,
-        );
-        manager = SessionManager.inMemory();
-      }
-    }
-    return manager;
-  }
-
-  /** Best-effort write probe: throws if the session directory isn't actually writable. */
-  private assertSessionDirWritable(dir: string): void {
-    const probePath = join(dir, `.write-probe-${randomUUID()}`);
-    writeFileSync(probePath, "");
-    unlinkSync(probePath);
-  }
-  /**
-   * Unique AgentRegistry id for the next spawned subagent. Concurrent
-   * createAgentSession calls that omit agentId all default to "Main" and race
-   * on the process-global registry (omp: "Agent \"Main\" was replaced during
-   * session initialization"). Unthreaded calls embed a per-process monotonic
-   * sequence so retries and concurrent runs never reuse an id. Named threads
-   * stay stable within one WorkflowAgent instance (a thread is one continuing
-   * session) but embed the instance id, so separate instances/runs never
-   * collide in the process-global registry.
-   */
-  private agentIdFor(options: AgentRunOptions<any>, runCwd: string): string {
-    if (options.thread) return `workflow:${runCwd}:${this.agentInstanceId}:${options.thread}`;
-    return `workflow:${runCwd}:${process.pid}:${++workflowAgentSeq}`;
+    this.resourceLoaders = new SharedResourceLoaders(
+      [...(options.providerMiddlewareExtensions ?? DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS)],
+      this.sessionOptions,
+    );
+    this.sessionManagers = new SessionManagers({
+      cwd: this.cwd,
+      persist: this.persistAgentSessions,
+      parentSessionFile: options.parentSessionFile,
+    });
   }
 
   async run<TSchemaDef extends TSchema | undefined = undefined>(
@@ -709,10 +319,7 @@ export class WorkflowAgent {
       throw new WorkflowError(
         `agent thread "${thread}" is already running; same-thread calls must be sequential`,
         WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-        {
-          recoverable: false,
-          agentLabel: options.label,
-        },
+        { recoverable: false, agentLabel: options.label },
       );
     }
     if (thread) this.activeThreads.add(thread);
@@ -727,249 +334,61 @@ export class WorkflowAgent {
     prompt: string,
     options: AgentRunOptions<TSchemaDef> = {},
   ): Promise<AgentRunResult<TSchemaDef>> {
-    const capture: StructuredOutputCapture<any> = { called: false, value: undefined };
-    // Per-call cwd (e.g. a worktree) needs coding tools bound to that directory,
-    // since tools capture their cwd at construction and can't be relocated.
+    // 1. Where the agent works and which tools it gets.
     const runCwd = realpathSync(options.cwd ?? this.cwd);
     assertProcessesStartIn(runCwd, options.label);
-    let usesBaseDirectory = false;
-    try {
-      usesBaseDirectory = runCwd === realpathSync(this.cwd);
-    } catch {
-      // An explicitly selected existing directory can outlive the constructor's
-      // original directory. Its tools must not depend on that old path existing.
-    }
-    const baseTools = usesBaseDirectory ? this.baseTools : createCodingTools(runCwd);
-    // Apply the agentType tool policy BEFORE adding structured_output, so a
-    // restrictive allowlist never strips the schema tool.
-    const customTools: ToolDefinition[] = applyToolPolicy(
-      [...baseTools, ...(options.tools ?? [])],
-      options.toolNames,
-      options.disallowedToolNames,
-    );
-
-    // System tools bypass the allowlist/denylist filter (e.g. shared-store tools).
-    if (options.systemTools?.length) {
-      customTools.push(...options.systemTools);
-    }
-
-    if (options.schema) {
-      // Strict OpenAI-compatible providers (e.g. DeepSeek) reject a tool whose top-level
-      // parameters schema isn't a JSON object with a transport-level 400, before any of
-      // this file's SCHEMA_NONCOMPLIANCE/empty-output classification ever runs. Fail fast
-      // here instead, so a script's non-object opts.schema surfaces a clear workflow error.
-      const schemaType = (options.schema as { type?: unknown }).type;
-      if (schemaType !== "object") {
-        throw new WorkflowError(
-          `agent() opts.schema must be a top-level JSON object schema (type: "object") — got type: ${schemaType ?? "undefined"}; wrap array/primitive results in an object, e.g. { type: "object", properties: { items: <your schema> } }`,
-          WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
-          { recoverable: false },
-        );
-      }
-      customTools.push(createStructuredOutputTool({ schema: options.schema, capture }) as unknown as ToolDefinition);
-    }
-
-    // Per-run modelRegistry wins over the constructor's shared registry, then
-    // the lazily-built disk fallback. Used for tier diagnostics, model
-    // resolution, and the subagent session's runtime below.
-    const modelRegistry = await this.getRegistry(options.modelRegistry);
-
-    // Resolve the model spec (explicit model > tier > inherited main model /
-    // implicit medium tier > session default). This
-    // composes with phase-based routing in workflow.ts, which only supplies
-    // options.model when a phase pattern matches — so an explicit model wins.
-    let modelSpec = resolveAgentModelSpec(
-      options,
-      this.mainModel,
-      () => this.loadTierConfig(),
-      () => warnTierUnconfiguredOnce(this.mainModel, modelRegistry),
-      { inheritMainModel: this.inheritMainModel },
-    );
-
-    const modelSource = classifyModelSource({
-      model: options.model,
-      tier: options.tier,
-      resolvedModel: modelSpec,
-      modelSource: options.modelSource,
+    const capture: StructuredOutputCapture<any> = { called: false, value: undefined };
+    const customTools = buildSubagentTools({
+      codingTools: this.codingToolsFor(runCwd),
+      tools: options.tools,
+      toolNames: options.toolNames,
+      disallowedToolNames: options.disallowedToolNames,
+      systemTools: options.systemTools,
+      schema: options.schema,
+      capture,
     });
-    const resolver = options.preSpawnModel ?? this.preSpawnModel ?? getPreSpawnModelResolver();
-    let pinAfterPolicy = Boolean(options.model || options.tier);
-    let policySelectedSpec: string | undefined;
-    if (resolver) {
-      const decision = await applyPreSpawnModel(resolver, {
-        requestedModel: options.model,
-        ...(options.thinking !== undefined ? { requestedThinking: options.thinking } : {}),
-        tier: options.tier,
-        resolvedModel: modelSpec,
-        modelSource,
-        label: options.label,
-      });
-      if (decision.action === "use") {
-        modelSpec = decision.model;
-        pinAfterPolicy = true;
-        policySelectedSpec = decision.model;
-      }
-    }
 
-    // Resolve a requested model spec to a Model object. Specs use Pi CLI-style
-    // parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
-    //
-    // A given-but-unresolved spec's behavior is asymmetric by design (#131):
-    //   - options.model or options.tier was explicitly set by the script (or by
-    //     workflow.ts's phase-based routing, which only ever supplies
-    //     options.model when the user configured that phase) → throw
-    //     MODEL_NOT_FOUND naming the source. Resolution is deterministic, so
-    //     retrying the same spec is pointless (recoverable:false), and a silent
-    //     substitution would otherwise run real API calls against a different
-    //     (or unauthenticated) model while the caller believes its pin/tier was
-    //     honored.
-    //   - neither was set: the agent is UNTAGGED and only got routed through
-    //     an implicit route — the default "medium" tier (consulted because
-    //     *some other* agent's tier is configured), or the inherited main
-    //     model when inheritMainModel is on (see resolveAgentModelSpec). This
-    //     agent never asked for that model, so a broken implicit route
-    //     degrades to the session default instead of failing every untagged
-    //     agent in the run — but the degrade still needs to be loud
-    //     (onModelFallback, with source naming the route), not a silent
-    //     continuation.
-    const isExplicitRequest = pinAfterPolicy;
-    let resolvedModel: Model<any> | undefined;
-    let resolvedThinkingLevel: CreateAgentSessionOptions["thinkingLevel"] | undefined;
-    if (modelSpec) {
-      const resolved = resolveModelSpecWithThinking(modelSpec, modelRegistry, {
-        preferredProvider: this.mainModel?.split("/", 1)[0],
-      });
-      if (resolved.warning) console.warn(`[workflow] ${resolved.warning}`);
-      if (!resolved.model) {
-        if (isExplicitRequest) {
-          // Policy `use` pins the spec: name that spec, not the original tier/model.
-          // Otherwise a session/default `use` would report `tier "undefined"`.
-          const message = policySelectedSpec
-            ? `Model "${modelSpec}" selected by preSpawnModel policy was not found. Use /workflows-models to choose an available model.`
-            : options.model
-              ? (resolved.error ??
-                `Model "${modelSpec}" not found. Use /workflows-models to choose an available model.`)
-              : `tier "${options.tier}" from model-tiers.json resolves to "${modelSpec}", which is not available. Use /workflows-models to choose an available model.`;
-          throw new WorkflowError(message, WorkflowErrorCode.MODEL_NOT_FOUND, {
-            recoverable: false,
-            agentLabel: options.label,
-          });
-        }
-        if (!this.warnedImplicitRouteUnavailable) {
-          this.warnedImplicitRouteUnavailable = true;
-          options.onModelFallback?.({
-            tier: "medium",
-            requestedSpec: modelSpec,
-            source: this.inheritMainModel && this.mainModel ? "inherit-main" : "medium-tier",
-          });
-        }
-      } else {
-        resolvedModel = resolved.model;
-        resolvedThinkingLevel = resolved.thinkingLevel ?? options.thinking;
-        options.onModelResolved?.(
-          resolved.thinkingLevel !== undefined || options.thinking === undefined
-            ? (resolved.resolvedSpec ?? canonicalModelSpec(resolved.model))
-            : formatModelSpecWithThinking(
-                resolved.resolvedSpec ?? canonicalModelSpec(resolved.model),
-                options.thinking,
-              ),
-        );
-      }
-    }
-    resolvedThinkingLevel ??= options.thinking;
+    // 2. Which model it runs on.
+    const modelRegistry = await this.getRegistry(options.modelRegistry);
+    const choice = await this.models.select(options, modelRegistry);
 
+    // 3. The session it runs in. Persisted sessions are keyed by the runner's
+    //    project cwd, not runCwd, so short-lived worktree agents still group
+    //    under the project.
     const agentDir = getAgentDir();
-    // Key persisted sessions by the runner's project cwd (this.cwd), NOT the
-    // per-call runCwd: agents working in short-lived git worktrees should still
-    // group under the project's session dir instead of scattering across
-    // temporary worktree paths.
     const sessionManager = this.createSessionManager(options.thread, runCwd);
     const effectiveSessionManager =
       options.thread || !this.sessionOptions.sessionManager ? sessionManager : this.sessionOptions.sessionManager;
-    // Capture the child identity from SessionManager immediately, before the
-    // first prompt/usage event. In-memory sessions intentionally report no file.
+    // Report the child identity before the first prompt or usage event.
     options.onSessionCreated?.({
       sessionId: effectiveSessionManager.getSessionId(),
       sessionFile: effectiveSessionManager.isPersisted() ? effectiveSessionManager.getSessionFile() : undefined,
     });
     const threadLeaf = options.thread ? sessionManager.getLeafId() : null;
-    // Host split: pi >= 0.80.8 createAgentSession takes modelRuntime, not a
-    // registry — hand over the registry's backing runtime so subagents share
-    // the host catalog and auth. omp's fork is auth-storage-backed (registry
-    // has no `.runtime`; it takes modelRegistry instead). Never spread
-    // `modelRuntime: undefined` — it would shadow createAgentSession's own
-    // default runtime.
-    const modelRuntime = runtimeOf(modelRegistry) as ModelRuntime | undefined;
-    let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    let child: ChildSession;
     try {
-      ({ session } = await createAgentSession({
+      child = await openChildSession({
         cwd: runCwd,
+        cwdIsExplicit: options.cwd !== undefined,
         agentDir,
+        agentId: this.agentIdFor(options, runCwd),
         sessionManager,
-        // Use real SettingsManager to inherit user's default provider/model settings.
-        // SettingsManager.inMemory() doesn't load ~/.pi/settings.json, so subagents
-        // would fall back to the first available model (e.g. openai-codex) which may
-        // not have valid auth, causing silent empty responses.
-        settingsManager: SettingsManager.create(runCwd, agentDir),
+        keepSessionManager: Boolean(options.thread),
         customTools,
-        // Shared per-run loader with opt-in provider middleware (#109) — see
-        // getSharedResourceLoader. An injected resourceLoader (tests / embedders)
-        // wins and skips the shared build entirely; the ...this.sessionOptions
-        // spread below re-applies the same injected value harmlessly.
-        resourceLoader: this.sessionOptions.resourceLoader ?? (await this.getSharedResourceLoader(agentDir, runCwd)),
-        // Host split (see modelRuntime above): stock pi takes modelRuntime;
-        // omp's fork takes modelRegistry. Spread-cast keeps the runtime value
-        // while satisfying the upstream CreateAgentSessionOptions type.
-        ...(modelRuntime ? { modelRuntime } : { modelRegistry }),
-        ...this.sessionOptions,
-        ...(options.cwd !== undefined ? { cwd: runCwd } : {}),
-        // The computed AgentRegistry id must win over any injected
-        // sessionOptions value: a stable embedder-supplied agentId would
-        // collide across runs in the process-global registry. `agentId` is
-        // omp-fork-only (absent from upstream 0.83 types this package builds
-        // against); spread-cast keeps the runtime value while satisfying the
-        // upstream CreateAgentSessionOptions type.
-        ...{ agentId: this.agentIdFor(options, runCwd) },
-        // Named threads must retain their own manager even when an embedder
-        // supplied a default manager for ordinary one-shot calls — the
-        // sessionOptions spread above would otherwise overwrite the cached
-        // thread manager with the injected one, breaking turn continuity and
-        // failed-turn rollback.
-        ...(options.thread ? { sessionManager } : {}),
-        // Per-call model/thinking wins over any sessionOptions defaults.
-        ...(resolvedModel ? { model: resolvedModel } : {}),
-        ...(resolvedThinkingLevel ? { thinkingLevel: resolvedThinkingLevel } : {}),
-        // Deny recursive-orchestration tools in the subagent (#107). Placed after
-        // the sessionOptions spread so it always applies; folds in any denylist
-        // the caller set on sessionOptions rather than dropping it.
+        sharedResourceLoader: () => this.getSharedResourceLoader(agentDir, runCwd),
+        modelRegistry,
+        model: choice.model,
+        thinkingLevel: choice.thinkingLevel,
         excludeTools: subagentExcludedTools(this.excludeTools, this.sessionOptions.excludeTools),
-      }));
+        injected: this.sessionOptions,
+      });
     } catch (error) {
       if (options.thread) this.restoreThreadLeaf(sessionManager, threadLeaf);
       throw error;
     }
-    pinChildCacheRetention(session.agent);
-    const disposeSession = async () => {
-      try {
-        // dispose() alone does not emit shutdown; give opted-in factories a
-        // chance to release session-local listeners and other resources.
-        await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
-      } catch {
-        // Cleanup must not replace the original result or failure.
-      } finally {
-        session.dispose();
-      }
-    };
-    // Child sessions do not auto-bind a supplied ResourceLoader. Bind middleware
-    // before the first provider request (also supports injected resource loaders).
-    try {
-      await session.bindExtensions({});
-    } catch (error) {
-      await disposeSession();
-      if (options.thread) this.restoreThreadLeaf(sessionManager, threadLeaf);
-      throw error;
-    }
+    const { session } = child;
 
+    // 4. The turn itself.
     const usageBeforeTurn = options.thread ? session.getSessionStats() : undefined;
     // This turn's own transcript, collected from message_end events below rather
     // than sliced out of session.messages with a pre-prompt() length snapshot.
@@ -982,9 +401,8 @@ export class WorkflowAgent {
     // schema path's repair re-prompts, which run on this same session.
     const turnMessages: unknown[] = [];
 
-    // Name the persisted session so it's identifiable in session pickers.
-    // Skip when an injected session.sessionManager override won (tests/embedders),
-    // and name a threaded session only on its first turn.
+    // Name a persisted session for session pickers: only when this agent owns
+    // the manager, and for a thread only on its first turn. Best-effort.
     if (
       this.persistAgentSessions &&
       (!this.sessionOptions.sessionManager || options.thread) &&
@@ -998,68 +416,18 @@ export class WorkflowAgent {
       }
     }
 
-    let removeAbortListener: (() => void) | undefined;
-    let removeHistoryListener: (() => void) | undefined;
-    let removeTurnListener: (() => void) | undefined;
-    let lastHistoryEmit = 0;
+    const progress = new TurnProgress(session, options, usageBeforeTurn);
     let threadTurnSucceeded = false;
-    let removeSessionListener: (() => void) | undefined;
     let unregisterSteer: (() => void) | undefined;
-    let lastUsageProgressEmit = 0;
-    let lastProgressUsage: AgentUsage | undefined;
-    const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
-    const maybeEmitHistory = () => {
-      if (!options.onHistory) return;
-      const now = Date.now();
-      if (now - lastHistoryEmit < 250) return;
-      lastHistoryEmit = now;
-      emitHistory();
-    };
-    const emitUsageProgress = (event: AgentSessionEvent) => {
-      if (!options.onUsageProgress) {
-        return;
-      }
-      const now = Date.now();
-      if (
-        event.type === "message_update" &&
-        lastProgressUsage &&
-        now - lastUsageProgressEmit < LIVE_USAGE_EMIT_INTERVAL_MS
-      ) {
-        return;
-      }
-      const usage = usageFromSessionProgress(
-        subtractSessionUsageStats(session.getSessionStats(), usageBeforeTurn),
-        event,
-      );
-      if (!usage || (lastProgressUsage && agentUsageEquals(lastProgressUsage, usage))) {
-        return;
-      }
-      lastUsageProgressEmit = now;
-      lastProgressUsage = usage;
-      options.onUsageProgress(usage);
-    };
-    const emitSessionProgress = (event: AgentSessionEvent) => {
-      maybeEmitHistory();
-      try {
-        emitUsageProgress(event);
-      } catch {
-        // Usage progress is best-effort; never let stats failure interrupt the agent.
-      }
-    };
+    let removeAbortListener: (() => void) | undefined;
+    let removeProgressListener: (() => void) | undefined;
+    let removeTurnListener: (() => void) | undefined;
     try {
-      // When no spec resolved (untagged → settings-default binding, an
-      // implicit-route degrade, or a requested tier that resolved to
-      // nothing), the display so far shows the pre-resolution mainModel guess
-      // and nothing corrects it — onModelResolved above only fires for agents
-      // WITH a resolvable spec. Report the session's REAL bound model now
-      // that it exists, so /workflows, the persisted run record, and the
-      // journal stop displaying a model the agent never ran (#167's fix
-      // covered the spec'd paths only). Inside the lifecycle try so a
-      // throwing host callback cannot leak the session (finally disposes it).
-      if (!resolvedModel && session.model) {
-        options.onModelResolved?.(
-          formatModelSpecWithThinking(canonicalModelSpec(session.model), resolvedThinkingLevel),
-        );
+      // With no resolved spec, the display still shows the pre-resolution
+      // mainModel guess; report the model the session actually bound. Inside
+      // the try so a throwing host callback cannot leak the session.
+      if (!choice.model && session.model) {
+        options.onModelResolved?.(formatModelSpecWithThinking(canonicalModelSpec(session.model), choice.thinkingLevel));
       }
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
       unregisterSteer = options.registerSteer?.((text) => session.steer(text));
@@ -1068,8 +436,8 @@ export class WorkflowAgent {
         options.signal.addEventListener("abort", onAbort, { once: true });
         removeAbortListener = () => options.signal?.removeEventListener("abort", onAbort);
       }
-      if (options.onHistory || options.onUsageProgress) {
-        removeSessionListener = session.subscribe(emitSessionProgress);
+      if (progress.live) {
+        removeProgressListener = session.subscribe(progress.onEvent);
       }
       removeTurnListener = session.subscribe((event) => {
         if (event.type === "message_end") turnMessages.push(event.message);
@@ -1079,10 +447,9 @@ export class WorkflowAgent {
 
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
 
-      // The SDK buries a provider usage/quota limit in the assistant message rather
-      // than throwing; detect it here (before the schema/empty-text branches) so it
-      // is classified as a recoverable checkpoint, not a SCHEMA_NONCOMPLIANCE failure
-      // (schema path) or a silent empty-output null (non-schema path).
+      // The SDK reports a provider usage/quota limit inside the assistant message
+      // instead of throwing. Check it before the result branches so it pauses the
+      // run rather than reading as SCHEMA_NONCOMPLIANCE or an empty answer.
       throwIfProviderLimit(session.messages, options.label);
 
       if (options.schema) {
@@ -1093,12 +460,8 @@ export class WorkflowAgent {
         return result;
       }
 
-      // Unstructured result: require assistant text AFTER the last tool result.
-      // Text emitted before it is stale progress (the agent's last real action was
-      // a tool call) — accepting it would report an incomplete run as successful
-      // and suppress the AGENT_EMPTY_OUTPUT retry (#111). A threaded session's
-      // restored transcript never enters turnMessages, so an empty turn cannot
-      // reuse an old answer.
+      // A threaded session's restored transcript never enters turnMessages, so
+      // an empty turn cannot reuse an old answer.
       const text = this.finalAssistantText(turnMessages);
       if (!text.trim()) {
         throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
@@ -1111,39 +474,85 @@ export class WorkflowAgent {
     } finally {
       unregisterSteer?.();
       removeAbortListener?.();
-      removeHistoryListener?.();
       removeTurnListener?.();
-      removeSessionListener?.();
-      try {
-        emitHistory();
-      } catch {
-        // History is diagnostic only; never let it mask the real result/error.
-      }
+      removeProgressListener?.();
+      progress.emitFinalHistory();
       if (options.thread && !threadTurnSucceeded) {
         this.restoreThreadLeaf(sessionManager, threadLeaf);
       }
-      // Read real usage before disposing — dispose tears down the session state.
-      if (options.onUsage) {
-        try {
-          const stats = session.getSessionStats();
-          const usage = usageFromStats(subtractSessionUsageStats(stats, usageBeforeTurn));
-          if (usage) options.onUsage(usage);
-        } catch {
-          // Usage is best-effort; never let stats failure mask the real result/error.
-        }
-      }
-      await disposeSession();
+      progress.reportFinalUsage();
+      await child.dispose();
     }
   }
 
+  /** Coding tools bound to `runCwd`; tools capture their cwd at construction and cannot be moved. */
+  private codingToolsFor(runCwd: string): ToolDefinition[] {
+    try {
+      if (runCwd === realpathSync(this.cwd)) return this.baseTools;
+    } catch {
+      // An explicitly selected existing directory can outlive the constructor's
+      // original directory. Its tools must not depend on that old path existing.
+    }
+    return createCodingTools(runCwd);
+  }
+
+  /** A per-run registry wins, then the host's shared registry, then the disk-backed fallback. */
+  private async getRegistry(perRunRegistry?: ModelRegistry): Promise<ModelRegistry> {
+    if (perRunRegistry) {
+      return perRunRegistry;
+    }
+    if (this.sharedRegistry) {
+      return this.sharedRegistry;
+    }
+    if (!this.registry) {
+      this.registry = await ensureFallbackRegistry();
+    }
+    return this.registry;
+  }
+
+  /**
+   * The cwd-aware model-tiers overlay, read once per instance. Every untagged
+   * or tiered agent consults it, and a synchronous disk read per agent would
+   * stall a large fan-out. One instance per run means each run still sees the
+   * file as it was when the run started. `loader` is for tests and only matters
+   * on the first call.
+   */
+  private loadTierConfig(loader?: () => ModelTierConfig | null): ModelTierConfig | null {
+    if (!this.tierConfigBox) {
+      const read = loader ?? (() => loadModelTierConfig({ cwd: this.cwd }));
+      this.tierConfigBox = { value: read() };
+    }
+    return this.tierConfigBox.value;
+  }
+
+  private getSharedResourceLoader(agentDir: string, cwd = this.cwd): Promise<DefaultResourceLoader> {
+    return this.resourceLoaders.get(agentDir, cwd);
+  }
+
+  private createSessionManager(thread?: string, cwd?: string): SessionManager {
+    return this.sessionManagers.forCall(thread, cwd);
+  }
+
+  /** Roll a thread back to its leaf before a failed turn, so the next turn continues from there. */
   private restoreThreadLeaf(sessionManager: SessionManager, leafId: string | null): void {
     if (leafId) sessionManager.branch(leafId);
     else sessionManager.resetLeaf();
   }
 
+  /**
+   * Unique id in the SDK's process-global agent registry. Concurrent sessions
+   * created without one all default to "Main" and replace each other there.
+   * One-shot calls embed a per-process sequence, so retries and concurrent runs
+   * never reuse an id; a named thread keeps one id per instance because it is
+   * one continuing session.
+   */
+  private agentIdFor(options: AgentRunOptions<any>, runCwd: string): string {
+    if (options.thread) return `workflow:${runCwd}:${this.agentInstanceId}:${options.thread}`;
+    return `workflow:${runCwd}:${process.pid}:${++workflowAgentSeq}`;
+  }
+
   private buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string {
     const parts = [this.instructions, options.instructions, prompt].filter(Boolean);
-
     if (structured) {
       parts.push(
         [
@@ -1155,51 +564,14 @@ export class WorkflowAgent {
         ].join("\n"),
       );
     }
-
     return parts.join("\n\n");
   }
 
   private lastAssistantText(messages: unknown[]): string {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i] as Partial<AssistantMessage> | undefined;
-      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      const text = message.content
-        .filter((part): part is TextContent => part.type === "text")
-        .map((part) => part.text)
-        .join("");
-      if (text.trim()) return text;
-    }
-    return "";
+    return lastAssistantText(messages);
   }
 
-  /**
-   * The unstructured agent's FINAL answer: assistant text that appears after the
-   * last tool result. Text before the final tool result is stale progress (the
-   * agent's last real action was a tool call, not answering), so returning it
-   * would mask an incomplete run and suppress AGENT_EMPTY_OUTPUT retries (#111).
-   *
-   * Distinct from lastAssistantText(), which stays deliberately lenient — the
-   * schema path's prose-JSON recovery (resolveStructuredOutput) may need to read
-   * the structured payload out of any assistant message, not only the terminal one.
-   */
   private finalAssistantText(messages: unknown[]): string {
-    // Locate the last tool result; only assistant text strictly after it counts.
-    let lastToolResult = -1;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if ((messages[i] as { role?: string } | undefined)?.role === "toolResult") {
-        lastToolResult = i;
-        break;
-      }
-    }
-    for (let i = messages.length - 1; i > lastToolResult; i--) {
-      const message = messages[i] as Partial<AssistantMessage> | undefined;
-      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      const text = message.content
-        .filter((part): part is TextContent => part.type === "text")
-        .map((part) => part.text)
-        .join("");
-      if (text.trim()) return text;
-    }
-    return "";
+    return finalAssistantText(messages);
   }
 }
