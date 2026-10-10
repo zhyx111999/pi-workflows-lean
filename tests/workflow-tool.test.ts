@@ -86,12 +86,12 @@ test("createWorkflowTool promptSnippet describes delegation and optional composi
   assert.doesNotMatch(snippet, /required script header|export const meta/i);
 });
 
-test("createWorkflowTool keeps permanent guidance to the single upstream gate", () => {
+test("createWorkflowTool keeps permanent guidance to a single gate that defers to the parent prompt", () => {
   const guidance = createWorkflowTool().promptGuidelines;
 
   assert.deepEqual(guidance, [WORKFLOW_GATE_GUIDELINE]);
-  assert.match(guidance[0], /ONLY call it when the user explicitly opts in/i);
-  assert.match(guidance[0], /you may briefly offer it \(with a rough cost\)/i);
+  assert.match(guidance[0], /background subagents/i);
+  assert.match(guidance[0], /decided by the note appended to the user message/i);
   assert.doesNotMatch(guidance[0], /export const meta|parallel\(\) requires functions/i);
 });
 
@@ -168,13 +168,13 @@ test("createWorkflowTool declares `args` as an explicitly typed object, not a ty
   );
 });
 
-test("createWorkflowTool keeps background behavior in the parameter schema", () => {
+test("createWorkflowTool documents `background` as ignored in the parameter schema", () => {
   const tool = createWorkflowTool();
   const description = parameterDescription(tool, "background");
 
-  assert.match(description, /Default: true/i);
-  assert.match(description, /result is delivered back.*when it finishes/i);
-  assert.match(description, /false only when.*result inline.*same turn/i);
+  assert.match(description, /^Ignored\./);
+  assert.match(description, /always run in the background/i);
+  assert.match(description, /result is delivered back when the run finishes/i);
   assert.doesNotMatch(tool.promptGuidelines.join(" "), /runs are background by default/i);
 });
 
@@ -203,12 +203,9 @@ test("createWorkflowTool schema exposes resource controls and large-fan-out auth
   assert.match(parameterDescription(tool, "concurrency"), /Maximum concurrent agents/i);
   assert.match(parameterDescription(tool, "agentRetries"), /Retry attempts/i);
   assert.match(parameterDescription(tool, "maxAgents"), /1000.*safety/i);
-  assert.match(
-    parameterDescription(tool, "maxAgents"),
-    /verify=reviewers.*judgePanel=entries×judges.*completenessCheck=1/i,
-  );
+  assert.match(parameterDescription(tool, "maxAgents"), /count each planned agent\(\) call/i);
+  assert.doesNotMatch(parameterDescription(tool, "maxAgents"), /verify|judgePanel|completenessCheck/);
   assert.match(parameterDescription(tool, "maxAgents"), /retries add no slots/i);
-  assert.match(parameterDescription(tool, "maxAgents"), /lower.*dynamic fan-out/i);
   assert.match(parameterDescription(tool, "maxAgents"), /large fan-outs.*explicit user intent/i);
 });
 
@@ -529,14 +526,10 @@ return { a, b, synthesis }`;
 
 const validArgsByBuiltinName: Record<string, unknown> = {
   "deep-research": { question: "what is pi?" },
-  "adversarial-review": { task: "investigate this" },
-  "code-review": { diff: "some diff" },
-  "multi-perspective": { topic: "a topic" },
-  "codebase-audit": { scope: "src/", checks: ["security"] },
 };
 
 test(
-  "workflow tool: `name` resolves each of the 5 built-in patterns and starts a run",
+  "workflow tool: `name` resolves each built-in pattern and starts a run",
   withToolTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: toolFakeAgent("ok") });
     manager.on("error", () => {});
@@ -655,61 +648,25 @@ test(
 );
 
 test(
-  "workflow tool: a failing script leaves no pending progress render behind (audit2 r1 m1/m2)",
+  "workflow tool: `background: false` is ignored — the run starts in the background without progress updates",
   withToolTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: toolFakeAgent() });
-    const tool = createWorkflowTool({ cwd, manager });
-    const updates: unknown[] = [];
-    // log() arms the coalesced render timer; the script never calls agent() →
-    // the tool throws agentCount===0 — no stray post-failure update may fire.
-    const logOnlyScript = `export const meta = { name: 'log_only', description: 'log only' }
-log('progress without agents')
-return 'never reaches agents'`;
-    await assert.rejects(() =>
-      tool.execute(
-        "tl1",
-        { script: logOnlyScript, background: false },
-        undefined,
-        (u: unknown) => updates.push(u),
-        undefined,
-      ),
-    );
-    const updatesAtThrow = updates.length;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.equal(updates.length, updatesAtThrow, "no stray render after the tool already rejected");
-  }),
-);
-
-test(
-  "workflow tool: the non-abort error path renders the latest coalesced progress frame (audit2 r1 m2)",
-  withToolTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({
-      cwd,
-      agent: {
-        async run() {
-          throw new WorkflowError("boom", WorkflowErrorCode.AGENT_FAILED, { recoverable: false });
-        },
-      },
-    });
+    const manager = new WorkflowManager({ cwd, agent: toolFakeAgent("ok") });
     manager.on("error", () => {});
     const tool = createWorkflowTool({ cwd, manager });
-    const updates: string[] = [];
-    // log() then a non-recoverable agent failure inside the 100ms coalesce
-    // window: flushProgress must render the pending frame, not drop it.
-    const failScript = `export const meta = { name: 'fail_fast', description: 'fail fast' }
-log('about to fail')
-await agent('x')
-return 'unreachable'`;
-    await assert.rejects(() =>
-      tool.execute(
-        "tl2",
-        { script: failScript, background: false },
-        undefined,
-        (u: { content?: Array<{ text?: string }> }) => updates.push(u?.content?.[0]?.text ?? ""),
-        undefined,
-      ),
+    const updates: unknown[] = [];
+    const res = await tool.execute(
+      "fg-ignored",
+      { script: resumeToolScript, background: false },
+      undefined,
+      (u: unknown) => updates.push(u),
+      undefined,
     );
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.ok(updates.length >= 1, "the pending coalesced frame was flushed (rendered) on the error path");
+    const details = res.details as { runId?: string; background?: boolean };
+    assert.ok(details.runId, "returns the run ID immediately");
+    assert.equal(details.background, true);
+    assert.match((res.content[0] as { text: string }).text, /started in the background/);
+    assert.ok(manager.getRun(details.runId), "the run is tracked by the manager");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(updates, [], "the tool call never streams progress");
   }),
 );
