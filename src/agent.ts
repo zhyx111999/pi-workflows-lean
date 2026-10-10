@@ -693,6 +693,12 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   onModelFallback?: (info: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
   onHistory?: (history: AgentHistoryEntry[]) => void;
+  /**
+   * Called once the child session can take instructions, with a function that
+   * queues one into it (AgentSession.steer). The returned function runs before
+   * the session is disposed, so a host never steers a finished session.
+   */
+  registerSteer?: (steer: (text: string) => Promise<void>) => () => void;
   /** Run this agent in a different working directory (e.g. an isolated worktree). */
   cwd?: string;
   /**
@@ -734,15 +740,15 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
   : string;
 
 /**
- * Orchestration tools ALWAYS denied to workflow subagents. The `workflow` and
- * `workflow_control` tools are registered globally by the extension, so — unless
- * excluded — a subagent's session sees them and can start its own independent
- * background workflows. Those nested runs recursively fan out and are NOT bounded
+ * Orchestration tools ALWAYS denied to workflow subagents. The `subagents` and
+ * `subagents_control` tools are registered globally by the extension, so — unless
+ * excluded — a subagent's session sees them and can start or steer independent
+ * background runs. Those nested runs recursively fan out and are NOT bounded
  * by the parent run's maxAgents / concurrency / progress / accounting, and can
  * drain a shared provider quota and pile up paused runs (#107). Callers may deny
  * additional tool names via WorkflowAgentOptions.excludeTools.
  */
-export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["workflow", "workflow_control"];
+export const DEFAULT_EXCLUDED_SUBAGENT_TOOLS = ["subagents", "subagents_control"];
 /** Process-global subagent id counter: unique across concurrent workflow runs. */
 let workflowAgentSeq = 0;
 
@@ -1362,6 +1368,7 @@ export class WorkflowAgent {
     let lastHistoryEmit = 0;
     let threadTurnSucceeded = false;
     let removeSessionListener: (() => void) | undefined;
+    let unregisterSteer: (() => void) | undefined;
     let lastUsageProgressEmit = 0;
     let lastProgressUsage: AgentUsage | undefined;
     const emitHistory = () => options.onHistory?.(compactAgentHistory(session.messages));
@@ -1419,6 +1426,7 @@ export class WorkflowAgent {
         );
       }
       if (options.signal?.aborted) throw new Error("Subagent was aborted");
+      unregisterSteer = options.registerSteer?.((text) => session.steer(text));
       if (options.signal) {
         const onAbort = () => void session.abort();
         options.signal.addEventListener("abort", onAbort, { once: true });
@@ -1465,6 +1473,7 @@ export class WorkflowAgent {
       threadTurnSucceeded = true;
       return text as AgentRunResult<TSchemaDef>;
     } finally {
+      unregisterSteer?.();
       removeAbortListener?.();
       removeHistoryListener?.();
       removeTurnListener?.();

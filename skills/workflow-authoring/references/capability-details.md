@@ -24,11 +24,10 @@ Every exact fact below is projected from the installed extension's capability co
 - `cwd`: string (optional; non-empty absolute existing directory; resolved to its real path; coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host; cannot combine with worktree isolation)
 - `thread`: string (optional; non-empty name; same-name calls must be sequential)
 - `agentType`: string (optional; must come from provided context; dynamic reference: agent-types)
-- `timeoutMs`: number | null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)
-- `retries`: number (optional; default: run retry count; finite values are floored and clamped to 0..3)
 - Constraint: recoverable failures return null after retries; nonrecoverable failures throw
 - Constraint: schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries
-- Constraint: per-agent retries override invocation retries; retries are floored and clamped to 0..3
+- Constraint: run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)
+- Constraint: every agent() and checkpoint() call consumes one of the run's defaultMaxAgents slots (default 1000); execution retries consume none
 - Constraint: resume replays only the longest unchanged prefix; the first miss and every later call execute live
 - Constraint: a named thread retains its full Pi transcript and session identity only within one uninterrupted workflow invocation
 - Constraint: threaded calls are live-execution resume barriers and are never journaled
@@ -65,80 +64,17 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: a null stage result is passed to the next stage; authors must guard missing coverage explicitly
 - Constraint: recoverable stage failures become null; nonrecoverable failures throw
 
-<a id="workflow"></a>
-## workflow
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `workflow(savedName, childArgs?) => Promise<unknown>`
-- Constraint: one nested level
-- Constraint: shares limiter, counters, token accounting, and store
-- Constraint: nested workflows do not reuse the parent resume journal
-
-<a id="loopuntildry"></a>
-## loopUntilDry
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>`
-- Option shape: `loop-until-dry-options`
-- `round`: (roundIndex: number) => unknown[] | Promise<unknown[]> (required)
-- `key`: (item: unknown) => string (optional; default: JSON.stringify)
-- `consecutiveEmpty`: number (optional; default: 2; authors should provide a finite integer; runtime clamps below 1)
-- `maxRounds`: number (optional; default: 50; authors should provide a finite positive integer)
-- Constraint: roundIndex is zero-based; null, non-array, or duplicate-only round results count as empty
-- Constraint: token-budget or agent-limit capacity exhaustion returns the accumulated partial array instead of throwing
-- Constraint: the returned array does not report whether termination came from dryness, maxRounds, or capacity exhaustion
-- Constraint: authors must retain failed-round identity and truthful termination state outside the helper
-
-<a id="retry"></a>
-## retry
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>`
-- Option shape: `retry-options`
-- `attempts`: number (optional; default: 3; authors must provide a finite integer; runtime clamps values below 1 to 1)
-- `until`: (result: unknown) => boolean (optional; default: accept first result when omitted; must be synchronous; use gate for asynchronous validation)
-- Constraint: attempt is zero-based and attempts counts total thunk calls
-- Constraint: until is synchronous; returning a Promise is truthy and accepts the first result
-- Constraint: omitting until accepts the first result regardless of attempts
-- Constraint: stops when until(result) is true; exhaustion returns only the last result without attempt metadata
-- Constraint: authors must supply a finite attempts bound when overriding the default
-
-<a id="gate"></a>
-## gate
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>`
-- Option shape: `gate-options`
-- `attempts`: number (optional; default: 3; authors must provide a finite integer; runtime clamps values below 1 to 1)
-- Constraint: feedback is undefined on the first thunk call and then receives the previous validator feedback string
-- Constraint: attempt is zero-based for the thunk while the returned attempts count is one-based
-- Constraint: a value is accepted when the validator returns an object with a truthy ok property; a bare boolean is not accepted
-- Constraint: exhaustion returns ok false with the last value and the bounded attempts count
-- Constraint: authors must supply a finite attempts bound when overriding the default
-
 <a id="checkpoint"></a>
 ## checkpoint
 
 - Classification: `runtime-global`
 - Support: `supported`
-- Signature: `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>`
-- Option shape: `checkpoint-options`
-- `default`: unknown (optional; default: true)
-- `headless`: "default" | "abort" (optional; default: "default")
-- `kind`: "confirm" | "input" | "select" (optional; default: "confirm")
-- `choices`: string[] (optional)
-- `timeoutMs`: number (optional)
-- Constraint: every extension entry point starts the run in the background without a human prompt, so a prompt checkpoint returns options.default (true when omitted) or aborts the run when headless is "abort"
-- Constraint: a confirm callback is consulted only when an embedding host passes one to runWorkflow; kind, choices, and timeoutMs are declared-only and affect only resume identity
+- Signature: `checkpoint({ kind, checkpointId, payload }) => Promise<unknown>`
 - Constraint: consumes one agent slot and no tokens
 - Constraint: journaled answers replay only within an unchanged resume prefix
-- Constraint: object checkpoints accept an open kind identifier, persist their JSON payload, and pause the run
-- Constraint: a controller attaches a lossless-JSON response to the run and checkpoint before workflow_control resumes with only the exact run ID and checkpoint ID
-- Constraint: status exposes only checkpoint ID, kind, and status; the durable response never enters model-visible output
+- Constraint: accepts an open kind identifier, persists its JSON payload, and pauses the run
+- Constraint: subagents_control resume answers a waiting checkpoint with its exact checkpointId and a lossless-JSON response, attached durably before the run continues
+- Constraint: subagents_control status shows the waiting checkpoint's ID, kind, and a bounded payload preview, never its response
 - Constraint: durable checkpoint responses resume the same run ID, are journaled before continuation, and reject stale or conflicting delivery
 
 <a id="log"></a>
@@ -153,10 +89,7 @@ Every exact fact below is projected from the installed extension's capability co
 
 - Classification: `runtime-global`
 - Support: `supported`
-- Signature: `phase(title, options?) => void`
-- Option shape: `phase-options`
-- `budget`: number (optional; positive soft pre-call token gate)
-- Constraint: phase budgets are soft pre-call gates
+- Signature: `phase(title) => void`
 
 <a id="args"></a>
 ## args
@@ -179,16 +112,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Support: `supported`
 - Signature: `process: { cwd(): string }`
 
-<a id="budget"></a>
-## budget
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `budget: { total, spent(), remaining() }`
-- Constraint: frozen view over shared soft token accounting
-- Constraint: spend accrues after agents finish, so in-flight work can overshoot
-- Constraint: nested workflows share the same accounting
-
 <a id="console"></a>
 ## console
 
@@ -197,88 +120,43 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `console: { log, info, warn, error }`
 - Constraint: new workflows should use log()
 
-<a id="tool-input-script"></a>
+<a id="subagents-input-tasks"></a>
+## tasks
+
+- Classification: `subagents-tool-input`
+- Support: `supported`
+- Signature: `tasks?: Array<{ label: string; task: string; model?: string }>`
+- Constraint: exactly one of tasks, script, or name per call
+- Constraint: one subagent per task, all in parallel; labels must be unique and non-blank
+- Constraint: returns one text report with a section per label, in task order
+- Constraint: subagents_control resume with an edited list reuses every task whose label, task, and model are unchanged, wherever it moved; edited and new tasks run
+
+<a id="subagents-input-script"></a>
 ## script
 
-- Classification: `workflow-tool-input`
+- Classification: `subagents-tool-input`
 - Support: `supported`
 - Signature: `script?: string`
-- Constraint: required raw JavaScript workflow source unless `name` is given
+- Constraint: exactly one of tasks, script, or name per call
+- Constraint: raw JavaScript workflow source
+- Constraint: subagents_control resume with an edited script replays unchanged positional agent calls until the first changed or inserted call
 
-<a id="tool-input-name"></a>
+<a id="subagents-input-name"></a>
 ## name
 
-- Classification: `workflow-tool-input`
+- Classification: `subagents-tool-input`
 - Support: `supported`
 - Signature: `name?: string`
+- Constraint: exactly one of tasks, script, or name per call
 - Constraint: resolves a project/user saved workflow first, then a built-in pattern
-- Constraint: mutually exclusive with resumeFromRunId
 
-<a id="tool-input-args"></a>
+<a id="subagents-input-args"></a>
 ## args
 
-- Classification: `workflow-tool-input`
+- Classification: `subagents-tool-input`
 - Support: `supported`
-- Signature: `args?: unknown`
-
-<a id="tool-input-background"></a>
-## background
-
-- Classification: `workflow-tool-input`
-- Support: `compatibility`
-- Signature: `background?: boolean`
-- Constraint: ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes
-- Constraint: kept in the schema so calls that still send it are not rejected
-
-<a id="tool-input-maxagents"></a>
-## maxAgents
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `maxAgents?: number = 1000`
-- Constraint: default, not a hard product maximum
-- Constraint: counts logical agent() and checkpoint() calls across the shared nested run tree
-- Constraint: agent execution retries do not consume extra logical slots; retry(), gate(), and loopUntilDry callbacks must be budgeted from their bounded planned calls
-
-<a id="tool-input-concurrency"></a>
-## concurrency
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `concurrency?: number`
-- Constraint: runtime clamps to 1..16
-
-<a id="tool-input-agentretries"></a>
-## agentRetries
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `agentRetries?: number = configured value or 0`
-- Constraint: floored and clamped to 0..3
-
-<a id="tool-input-agenttimeoutms"></a>
-## agentTimeoutMs
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `agentTimeoutMs?: number = configured default or unbounded`
-
-<a id="tool-input-tokenbudget"></a>
-## tokenBudget
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `tokenBudget?: number = configured default or unlimited`
-- Constraint: soft pre-call gate; in-flight work can overshoot
-
-<a id="tool-input-resumefromrunid"></a>
-## resumeFromRunId
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `resumeFromRunId?: string`
-- Constraint: resumes a prior incomplete run with an edited script
-- Constraint: unchanged positional agent calls replay from cache until the first changed or inserted call
+- Signature: `args?: object`
+- Constraint: the args global of a script or named workflow; ignored with tasks
 
 <a id="metadata"></a>
 ## export const meta

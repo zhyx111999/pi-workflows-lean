@@ -6,7 +6,7 @@
  * into a runnable script (and, where a pattern needs it, an exec context such
  * as web tools). Both entry points a model or user can reach a built-in
  * through — the `/deep-research`-style slash commands (builtin-commands.ts)
- * and the `workflow` tool's `name` input (workflow-tool.ts) — resolve through
+ * and the `subagents` tool's `name` input (subagents-tool.ts) — resolve through
  * this one registry, so the two paths can never drift apart and the
  * per-pattern generator scripts are written exactly once.
  */

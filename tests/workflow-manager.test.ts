@@ -766,75 +766,9 @@ return results`;
 );
 
 test(
-  "manager attributes concurrent parent and nested agents by opaque agent identity",
+  "manager agentTimeoutMs bounds each agent attempt",
   withTempCwd(async (cwd) => {
-    let started = 0;
-    let releaseBothStarted: () => void = () => {};
-    const bothStarted = new Promise<void>((resolve) => {
-      releaseBothStarted = resolve;
-    });
-    let releaseAgents: () => void = () => {};
-    const agentsReleased = new Promise<void>((resolve) => {
-      releaseAgents = resolve;
-    });
-    const childScript = `export const meta = { name: 'child', description: 'nested child' }
-return await agent('child work', { label: 'worker' })`;
-    const manager = new WorkflowManager({
-      cwd,
-      loadSavedWorkflow: (name) => (name === "child" ? childScript : undefined),
-      agent: {
-        async run(prompt, options) {
-          started++;
-          if (started === 2) {
-            releaseBothStarted();
-          }
-          await bothStarted;
-          const total = prompt === "parent work" ? 10 : 100;
-          const usage = { input: 0, output: total, total, cost: 0, cacheRead: 0, cacheWrite: 0 };
-          options?.onUsageProgress?.(usage);
-          await agentsReleased;
-          options?.onUsage?.(usage);
-          return prompt;
-        },
-      },
-    });
-    const parentScript = `export const meta = { name: 'parent', description: 'parent and nested child' }
-const results = await parallel([
-  () => agent('parent work', { label: 'worker' }),
-  () => workflow('child'),
-])
-return results`;
-
-    const { runId, promise } = manager.startInBackground(parentScript);
-    while (true) {
-      const agents = manager.getRun(runId)?.snapshot.agents;
-      if (agents?.length === 2 && agents.every((agent) => agent.tokens !== undefined)) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-    assert.deepEqual(
-      manager.getRun(runId)?.snapshot.agents.map((agent) => [agent.prompt, agent.tokens]),
-      [
-        ["parent work", 10],
-        ["child work", 100],
-      ],
-    );
-
-    releaseAgents();
-    await promise;
-    assert.equal(
-      manager.getRun(runId)?.snapshot.agents.every((agent) => agent.status === "done"),
-      true,
-    );
-    assert.equal(manager.getRun(runId)?.snapshot.tokenUsage?.total, 110);
-  }),
-);
-
-test(
-  "manager defaultAgentTimeoutMs applies when run options omit agentTimeoutMs",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
+    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), agentTimeoutMs: 5 });
 
     const result = await manager.runSync(oneAgentScript);
 
@@ -842,29 +776,16 @@ test(
     const agent = manager.listRuns()[0]?.agents[0];
     assert.equal(agent?.status, "error");
     assert.match(agent?.error ?? "", /timed out after 5ms/);
-    assert.match(agent?.error ?? "", /raise or omit timeoutMs\/agentTimeoutMs/);
+    assert.match(agent?.error ?? "", /raise defaultAgentTimeoutMs in the workflow settings/);
   }),
 );
 
 test(
-  "run option agentTimeoutMs overrides manager defaultAgentTimeoutMs",
+  "reconfigureAfterReload refreshes run limits without replacing the live manager",
   withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
+    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), agentTimeoutMs: 5 });
 
-    const result = await manager.runSync(oneAgentScript, undefined, { agentTimeoutMs: null });
-
-    assert.equal((result.result as { a: unknown }).a, "slow");
-    const agent = manager.listRuns()[0]?.agents[0];
-    assert.equal(agent?.status, "done");
-  }),
-);
-
-test(
-  "reconfigureAfterReload refreshes defaults without replacing the live manager",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(25), defaultAgentTimeoutMs: 5 });
-
-    manager.reconfigureAfterReload({ defaultAgentTimeoutMs: 100 });
+    manager.reconfigureAfterReload({ agentTimeoutMs: 100 });
     const result = await manager.runSync(oneAgentScript);
 
     assert.equal((result.result as { a: unknown }).a, "slow");
@@ -899,7 +820,7 @@ test(
         });
       },
     };
-    const manager = new WorkflowManager({ cwd, agent: hangingUntilAborted, defaultAgentTimeoutMs: 20 });
+    const manager = new WorkflowManager({ cwd, agent: hangingUntilAborted, agentTimeoutMs: 20 });
 
     const result = await manager.runSync(oneAgentScript);
 
@@ -911,36 +832,6 @@ test(
     // The key #109 property: the timeout aborted the subagent, so run()'s finally
     // disposes its session instead of leaking it while it streams on.
     assert.equal(sawAbort, true, "the timing-out subagent must receive an abort");
-  }),
-);
-
-test(
-  "manager defaultTokenBudget applies when run options omit tokenBudget (#68)",
-  withTempCwd(async (cwd) => {
-    // Each agent reports 100 tokens against a default budget of 50: the first
-    // agent completes (budget checked before start), the second throws.
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 100 }), defaultTokenBudget: 50 });
-    // Deliberately NO "error" listener: an unlistened EventEmitter "error" emit
-    // throws, which used to abort the catch block mid-way — surfacing as
-    // ERR_UNHANDLED_ERROR instead of the real error and leaking the run lease.
-    await assert.rejects(manager.runSync(twoAgentScript), (err: unknown) => {
-      assert.ok(err instanceof WorkflowError, `expected WorkflowError, got ${(err as Error)?.constructor?.name}`);
-      assert.equal(err.code, WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED);
-      return true;
-    });
-    // The failure was persisted and the lease released (a fresh save succeeds).
-    const run = manager.listRuns()[0];
-    assert.equal(run?.status, "failed");
-  }),
-);
-
-test(
-  "run option tokenBudget overrides manager defaultTokenBudget",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 100 }), defaultTokenBudget: 50 });
-    // Explicit null = "no budget" beats the configured default.
-    const result = await manager.runSync(twoAgentScript, undefined, { tokenBudget: null });
-    assert.equal(result.agentCount, 2);
   }),
 );
 
@@ -1016,7 +907,7 @@ test(
 );
 
 test(
-  "resume re-resolves the run's toolset tag and keeps its start-time tokenBudget",
+  "resume re-resolves the run's toolset tag",
   withTempCwd(async (cwd) => {
     // Agent where 'first' completes (journaling it) and 'second' hangs on its
     // first attempt — so the run can be paused mid-'second' and resumed, at
@@ -1038,7 +929,6 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent,
-      defaultTokenBudget: 50,
       toolsets: {
         webby: () => {
           toolsetResolutions++;
@@ -1047,13 +937,7 @@ test(
       },
     });
 
-    // Explicit no-budget + a named toolset. (With the 100-token usage above, the
-    // 50-token default would exhaust this two-agent run — so mere completion
-    // already proves the explicit null won.)
-    const { runId, promise } = manager.startInBackground(twoAgentScript, undefined, {
-      tokenBudget: null,
-      toolset: "webby",
-    });
+    const { runId, promise } = manager.startInBackground(twoAgentScript, undefined, { toolset: "webby" });
     promise.catch(() => {}); // pause aborts the in-flight execution — expected
     // Wait until 'second' is in flight, then pause the run.
     for (let i = 0; i < 200 && secondAttempts === 0; i++) {
@@ -1065,11 +949,9 @@ test(
 
     const persisted = manager.getPersistence().load(runId);
     assert.equal(persisted?.status, "paused");
-    assert.equal(persisted?.tokenBudget, null, "explicit null budget persists (not the 50 default)");
     assert.equal(persisted?.toolset, "webby", "toolset tag persists with the run");
 
-    // Resume: the run must keep its start-time context — no budget (not the
-    // manager's current default) and the same re-resolved toolset.
+    // Resume: the run must re-resolve the same toolset.
     assert.equal(await manager.resume(runId), true);
     // resume() executes detached — poll until the run leaves "running".
     for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
@@ -1077,18 +959,18 @@ test(
     }
     assert.equal(toolsetResolutions, 2, "resume re-resolves the toolset tag");
     const resumed = manager.getPersistence().load(runId);
-    assert.equal(resumed?.status, "completed", "resume completes without TOKEN_BUDGET_EXHAUSTED");
-    assert.equal(resumed?.tokenBudget, null, "resume keeps the start-time budget, not the current default");
+    assert.equal(resumed?.status, "completed", "resume completes");
     assert.equal(resumed?.toolset, "webby");
   }),
 );
 
 test(
-  "resume with a higher maxAgents raises the persisted ceiling and finishes the journaled suffix",
+  "a run that hit maxAgents finishes on resume once the limit is raised",
   withTempCwd(async (cwd) => {
-    // Sequential workers fill the cap; synthesis needs one more slot. Without an
-    // explicit raise, resume keeps maxAgents: 2 and fails again; with raise, the
-    // two workers replay from the journal and only synthesis runs live.
+    // Sequential workers fill the cap; synthesis needs one more slot. Every
+    // execution uses the manager's current limits, so raising maxAgents (a
+    // settings change applied on reload) and resuming replays the workers
+    // from the journal and runs only synthesis live.
     const livePrompts: string[] = [];
     const agent = {
       async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
@@ -1097,267 +979,59 @@ test(
         return `${prompt}-ok`;
       },
     };
-    const manager = new WorkflowManager({ cwd, agent });
+    const manager = new WorkflowManager({ cwd, agent, maxAgents: 2 });
     manager.on("error", () => {});
-    const script = `export const meta = { name: 'raise_cap', description: 'raise maxAgents on resume' }
+    const script = `export const meta = { name: 'raise_cap', description: 'raise maxAgents before resume' }
 const a = await agent('worker-a', { label: 'a' })
 const b = await agent('worker-b', { label: 'b' })
 const synthesis = await agent('synthesis', { label: 'synthesis' })
 return { a, b, synthesis }`;
+    const settle = async (runId: string) => {
+      for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
 
-    const first = await manager.runSync(script, undefined, { maxAgents: 2 }).catch((err: unknown) => err);
+    const first = await manager.runSync(script).catch((err: unknown) => err);
     assert.ok(first instanceof WorkflowError);
     assert.equal(first.code, WorkflowErrorCode.AGENT_LIMIT_EXCEEDED);
     const runId = manager.listRuns().find((r) => r.workflowName === "raise_cap")?.runId;
     assert.ok(runId, "failed run should still be listed");
     assert.match(
       first.message,
-      new RegExp(`resumeFromRunId="${runId}".*same script.*maxAgents: N \\(N>2\\)`),
-      "AGENT_LIMIT text must include the concrete resume recipe",
+      new RegExp(`Raise defaultMaxAgents.*resume run "${runId}"`),
+      "AGENT_LIMIT text names the setting and the run to resume",
     );
     const failed = manager.getPersistence().load(runId);
     assert.equal(failed?.status, "failed");
-    assert.equal(failed?.maxAgents, 2);
     assert.ok((failed?.journal?.length ?? 0) >= 2, "workers should be journaled before the cap error");
-    const liveBeforeResume = livePrompts.length;
-    assert.equal(liveBeforeResume, 2, "only the two workers should have run live");
+    assert.deepEqual(livePrompts, ["worker-a", "worker-b"]);
 
-    assert.equal(await manager.resume(runId, { maxAgents: 3 }), true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    // Same limit: the resumed run replays the workers and stops at the cap again.
+    assert.equal(await manager.resume(runId), true);
+    await settle(runId);
+    const stillFailed = manager.getPersistence().load(runId);
+    assert.equal(stillFailed?.status, "failed");
+    assert.deepEqual(livePrompts, ["worker-a", "worker-b"], "workers replay from the journal");
+
+    // Older records persisted their start-time limits; they must not pin the cap.
+    assert.ok(stillFailed);
+    manager.getPersistence().save({
+      ...stillFailed,
+      maxAgents: 2,
+      concurrency: 1,
+      agentRetries: 3,
+    } as typeof stillFailed);
+    manager.reconfigureAfterReload({ maxAgents: 3 });
+    assert.equal(await manager.resume(runId), true);
+    await settle(runId);
 
     const done = manager.getPersistence().load(runId);
-    assert.equal(done?.status, "completed", "raised ceiling must let synthesis finish");
-    assert.equal(done?.maxAgents, 3, "raised maxAgents must persist for later resumes");
-    assert.deepEqual(
-      livePrompts.slice(liveBeforeResume),
-      ["synthesis"],
-      "workers must replay from journal; only synthesis runs live",
-    );
-
-    // Omit override → keep raised cap; a lower request must not shrink it.
-    const again = manager.getPersistence().load(runId);
-    assert.equal(again?.maxAgents, 3);
-    // Build a fresh failed-at-cap run to assert a non-raise is refused.
-    livePrompts.length = 0;
-    const secondManager = new WorkflowManager({ cwd, agent });
-    secondManager.on("error", () => {});
-    await secondManager.runSync(script, undefined, { maxAgents: 2 }).catch(() => {});
-    const runId2 = secondManager.listRuns().find((r) => r.workflowName === "raise_cap")?.runId;
-    assert.ok(runId2);
-    assert.equal(await secondManager.resume(runId2, { maxAgents: 1 }), false);
-    const notLowered = secondManager.getPersistence().load(runId2);
-    assert.equal(notLowered?.maxAgents, 2, "resume must never lower the persisted ceiling");
-    assert.equal(notLowered?.status, "failed", "non-raise resume is refused; run stays failed at the old cap");
-
-    // prior === undefined: effective prior is MAX_AGENTS_PER_RUN. Resume with 50
-    // must refuse rather than pin a lower ceiling onto a never-set run.
-    const uncapped = new WorkflowManager({ cwd, agent });
-    uncapped.on("error", () => {});
-    const uncappedId = "uncapped-max-agents";
-    uncapped.getPersistence().save({
-      runId: uncappedId,
-      workflowName: "raise_cap",
-      script,
-      args: undefined,
-      status: "failed",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-    assert.equal(await uncapped.resume(uncappedId, { maxAgents: 50 }), false);
-    assert.equal(
-      uncapped.getPersistence().load(uncappedId)?.maxAgents,
-      undefined,
-      "resume must not pin 50 over an implicit 1000 default",
-    );
-  }),
-);
-
-test(
-  "resume re-resolves the run's maxAgents/agentTimeoutMs and keeps its start-time values (#A1)",
-  withTempCwd(async (cwd) => {
-    // 'a' hangs on its first invocation (pause point), then on its second
-    // invocation (post-resume) resolves slower than the run's OWN frozen
-    // agentTimeoutMs (30ms) but well under the manager's defaultAgentTimeoutMs
-    // (5000ms) — it only times out if agentTimeoutMs survived resume.
-    let aAttempts = 0;
-    const zeroUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
-    const agent = {
-      async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
-        if (prompt === "a") {
-          aAttempts++;
-          if (aAttempts === 1) return new Promise(() => {}); // hang until paused
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          options?.onUsage?.(zeroUsage);
-          return "a-result";
-        }
-        options?.onUsage?.(zeroUsage);
-        return `${prompt}-result`;
-      },
-    };
-    const manager = new WorkflowManager({ cwd, agent, defaultAgentTimeoutMs: 5000 });
-    manager.on("error", () => {});
-
-    // Three agents fanned out via parallel() with maxAgents: 3 so the cap is
-    // fully consumed by the fan-out itself (each reserves a slot atomically,
-    // in call order, before any of them actually run) — a 4th call ('after')
-    // then only succeeds if the cap has silently reverted to the ~1000 default.
-    const script = `export const meta = { name: 'cap_demo', description: 'agent cap across resume' }
-const xs = await parallel(['a','b','c'].map((label) => () => agent(label, { label })))
-const after = await agent('after', { label: 'after' })
-return { xs, after }`;
-
-    const { runId, promise } = manager.startInBackground(script, undefined, { maxAgents: 3, agentTimeoutMs: 30 });
-    promise.catch(() => {});
-    // Pause well before 'a's own 30ms agentTimeoutMs would fire on the ORIGINAL
-    // execution too (it's frozen for the whole run, not just post-resume) — 5ms
-    // is enough for 'b'/'c' (no artificial delay) to complete and journal.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    assert.equal(aAttempts, 1, "'a' should be in flight before pausing");
-    assert.equal(manager.pause(runId), true);
-
-    const paused = manager.getPersistence().load(runId);
-    assert.equal(paused?.status, "paused");
-    assert.equal(paused?.maxAgents, 3, "maxAgents persists with the run");
-    assert.equal(paused?.agentTimeoutMs, 30, "agentTimeoutMs persists with the run");
-    assert.ok((paused?.journal?.length ?? 0) >= 2, "'b' and 'c' should be journaled before pause");
-
-    assert.equal(await manager.resume(runId), true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(done?.status, "completed", "the raised limit lets synthesis finish");
+    assert.deepEqual(livePrompts.slice(2), ["synthesis"], "only synthesis runs live");
+    for (const key of ["maxAgents", "agentTimeoutMs", "concurrency", "agentRetries"]) {
+      assert.equal(Object.hasOwn(done ?? {}, key), false, `${key} is no longer persisted`);
     }
-
-    const resumed = manager.getPersistence().load(runId);
-    const aAgent = resumed?.agents.find((ag) => ag.label === "a");
-    assert.match(
-      aAgent?.error ?? "",
-      /timed out after 30ms/,
-      "agentTimeoutMs must survive resume, not reset to the manager default",
-    );
-    // The resumed run must still enforce maxAgents: 3 — the 4th call ('after',
-    // after a/b/c already reserved a slot each in the fan-out) must throw
-    // AGENT_LIMIT_EXCEEDED, failing the run, not silently pass under a
-    // reverted-to-default cap of ~1000.
-    assert.equal(resumed?.status, "failed", "maxAgents must survive resume, not reset to the 1000 default");
-    const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.error?.code, WorkflowErrorCode.AGENT_LIMIT_EXCEEDED);
-  }),
-);
-
-test(
-  "resuming a legacy persisted run (no agentTimeoutMs field) falls back to the manager's CURRENT default, not null",
-  withTempCwd(async (cwd) => {
-    // A run persisted before this fix existed never had an agentTimeoutMs
-    // field at all — and its only real timeout, both at its original start
-    // AND under pre-fix resume(), was always the manager's default (pre-fix
-    // resume never threaded agentTimeoutMs through, so it fell straight to
-    // this.defaultAgentTimeoutMs via executeRun's fallback chain). Falling
-    // back to null here would silently grant such a run an unbounded timeout
-    // it never had. Use a slow agent so only a real 20ms enforcement times it
-    // out — an unbounded (null) fallback would let it complete instead.
-    const manager = new WorkflowManager({ cwd, agent: delayedAgent(60), defaultAgentTimeoutMs: 20 });
-    const pers = manager.getPersistence();
-    const runId = "legacy-no-agent-timeout-1";
-    pers.save({
-      runId,
-      workflowName: "legacy",
-      script: oneAgentScript,
-      args: undefined,
-      status: "paused",
-      phases: [],
-      agents: [],
-      logs: [],
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      // Deliberately no maxAgents/agentTimeoutMs/concurrency/agentRetries —
-      // simulates a run persisted by pre-A1 code.
-    });
-
-    const resumed = await manager.resume(runId);
-    assert.equal(resumed, true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    const persisted = manager.getPersistence().load(runId);
-    assert.equal(
-      persisted?.agentTimeoutMs,
-      20,
-      "resume must apply the manager's current defaultAgentTimeoutMs for a legacy run, not leave it unbounded",
-    );
-    const agent = persisted?.agents.find((a) => a.label === "a");
-    assert.match(agent?.error ?? "", /timed out after 20ms/, "the legacy run's agent must actually time out at 20ms");
-  }),
-);
-
-test(
-  "resume seeds the token-spend counter from the persisted total, so the budget holds cumulatively (#A2)",
-  withTempCwd(async (cwd) => {
-    // 'first' completes normally (spends 100). 'second' hangs on its first
-    // attempt (pause point), then on its second attempt (post-resume) spends
-    // 60 more — 100 + 60 = 160, over the 150 budget, but neither half alone
-    // would trip it. 'third' only runs if the budget wrongly reset to 0 at
-    // resume; it must instead be blocked before it even starts.
-    let secondAttempts = 0;
-    const zeroUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    const agent = {
-      async run(prompt: string, options?: { onUsage?: (usage: AgentUsage) => void; signal?: AbortSignal }) {
-        if (prompt === "first") {
-          options?.onUsage?.({ ...zeroUsage, total: 100 });
-          return "first-result";
-        }
-        if (prompt === "second") {
-          if (++secondAttempts === 1) {
-            return new Promise((resolve, reject) => {
-              void resolve;
-              options?.signal?.addEventListener("abort", () => reject(new Error("paused")), { once: true });
-            });
-          }
-          options?.onUsage?.({ ...zeroUsage, total: 60 });
-          return "second-result";
-        }
-        options?.onUsage?.({ ...zeroUsage, total: 1 });
-        return "third-result";
-      },
-    };
-    const manager = new WorkflowManager({ cwd, agent });
-    manager.on("error", () => {});
-
-    const script = `export const meta = { name: 'seed_demo', description: 'three sequential agents' }
-const a = await agent('first', { label: 'first' })
-const b = await agent('second', { label: 'second' })
-const c = await agent('third', { label: 'third' })
-return { a, b, c }`;
-
-    const { runId, promise } = manager.startInBackground(script, undefined, { tokenBudget: 150 });
-    promise.catch(() => {});
-    for (let i = 0; i < 200 && secondAttempts === 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(secondAttempts, 1, "'second' should be in flight before pausing");
-    assert.equal(manager.pause(runId), true);
-
-    const paused = manager.getPersistence().load(runId);
-    assert.equal(paused?.status, "paused");
-    assert.equal(paused?.tokenUsage?.total, 100, "pre-pause spend (agent 1) is persisted, not lost mid-run");
-
-    assert.equal(await manager.resume(runId), true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    const resumed = manager.getPersistence().load(runId);
-    // The cumulative spend (100 + 60 = 160) must be reflected...
-    assert.equal(resumed?.tokenUsage?.total, 160, "final tokenUsage reflects both the pre-pause and post-resume spend");
-    // ...and must have tripped the budget once the SUM exceeded it — the run
-    // fails with TOKEN_BUDGET_EXHAUSTED on 'third', not a reset-to-zero pass.
-    assert.equal(resumed?.status, "failed", "the tokenBudget must hold cumulatively across resume");
-    const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.error?.code, WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED);
   }),
 );
 
@@ -1383,7 +1057,7 @@ test(
         return new Promise(() => {}); // 'b' hangs until paused
       },
     };
-    const manager = new WorkflowManager({ cwd, agent });
+    const manager = new WorkflowManager({ cwd, agent, agentRetries: 1 });
     manager.on("error", () => {});
 
     const script = `export const meta = { name: 'retry_spend_demo', description: 'retry spend' }
@@ -1391,7 +1065,7 @@ const a = await agent('a', { label: 'a' })
 const b = await agent('b', { label: 'b' })
 return { a, b }`;
 
-    const { runId, promise } = manager.startInBackground(script, undefined, { agentRetries: 1 });
+    const { runId, promise } = manager.startInBackground(script);
     promise.catch(() => {});
     for (let i = 0; i < 200 && aAttempts < 2; i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
@@ -1412,15 +1086,15 @@ return { a, b }`;
 );
 
 test(
-  "manager forwards exec concurrency and agentRetries to runtime",
+  "manager forwards its concurrency and agentRetries to the runtime",
   withTempCwd(async (cwd) => {
     let active = 0;
     let maxActive = 0;
     const callsByPrompt = new Map<string, number>();
     const manager = new WorkflowManager({
       cwd,
-      concurrency: 8,
-      defaultAgentRetries: 0,
+      concurrency: 1,
+      agentRetries: 1,
       agent: {
         async run(prompt: string) {
           active++;
@@ -1437,33 +1111,11 @@ test(
 const xs = await parallel(['a','b'].map((p) => () => agent(p, { label: p })))
 return xs`;
 
-    const result = await manager.runSync(script, undefined, { concurrency: 1, agentRetries: 1 });
+    const result = await manager.runSync(script);
 
     assert.deepEqual(result.result, ["ok:a", "ok:b"]);
-    assert.equal(maxActive, 1, "exec concurrency should override the manager default");
-    assert.deepEqual([...callsByPrompt.values()], [2, 2], "exec agentRetries should be forwarded");
-  }),
-);
-
-test(
-  "manager defaultAgentRetries applies when run options omit agentRetries",
-  withTempCwd(async (cwd) => {
-    let calls = 0;
-    const manager = new WorkflowManager({
-      cwd,
-      defaultAgentRetries: 1,
-      agent: {
-        async run() {
-          calls++;
-          return calls === 1 ? "" : "ok";
-        },
-      },
-    });
-
-    const result = await manager.runSync(oneAgentScript);
-
-    assert.equal((result.result as { a: unknown }).a, "ok");
-    assert.equal(calls, 2);
+    assert.equal(maxActive, 1, "manager concurrency should cap parallel agents");
+    assert.deepEqual([...callsByPrompt.values()], [2, 2], "manager agentRetries should be forwarded");
   }),
 );
 
@@ -2345,7 +1997,7 @@ return { a, b }`;
 );
 
 test(
-  "resume replays parent and nested journals without duplicate token spend",
+  "resume replays journaled calls without duplicate token spend",
   withTempCwd(async (cwd) => {
     let parentRuns = 0;
     let childRuns = 0;
@@ -2356,11 +2008,6 @@ test(
     });
     const manager = new WorkflowManager({
       cwd,
-      loadSavedWorkflow: (name) =>
-        name === "child"
-          ? `export const meta = { name: 'child', description: 'nested child' }
-return await agent('child', { label: 'child' })`
-          : undefined,
       agent: {
         async run(prompt, options) {
           if (prompt === "parent") {
@@ -2378,7 +2025,7 @@ return await agent('child', { label: 'child' })`
             markAfterStarted();
             return new Promise((resolve, reject) => {
               void resolve;
-              options?.signal?.addEventListener("abort", () => reject(new Error("paused after nested work")), {
+              options?.signal?.addEventListener("abort", () => reject(new Error("paused after child work")), {
                 once: true,
               });
             });
@@ -2389,9 +2036,9 @@ return await agent('child', { label: 'child' })`
       },
     });
     manager.on("error", () => {});
-    const script = `export const meta = { name: 'nested_resume', description: 'nested journal resume' }
+    const script = `export const meta = { name: 'journal_resume', description: 'journal resume' }
 const parent = await agent('parent', { label: 'parent' })
-const child = await workflow('child')
+const child = await agent('child', { label: 'child' })
 const after = await agent('after', { label: 'after' })
 return { parent, child, after }`;
 
@@ -2416,7 +2063,7 @@ return { parent, child, after }`;
 );
 
 test(
-  "edited parent call invalidates nested and suffix journal replay",
+  "an edited call invalidates journal replay for every later call",
   withTempCwd(async (cwd) => {
     const runs = { parent: 0, child: 0, after: 0 };
     let markAfterStarted: () => void = () => {};
@@ -2425,8 +2072,6 @@ test(
     });
     const manager = new WorkflowManager({
       cwd,
-      loadSavedWorkflow: () => `export const meta = { name: 'child', description: 'nested child' }
-return await agent('child', { label: 'child' })`,
       agent: {
         async run(prompt, options) {
           if (prompt.startsWith("parent")) {
@@ -2444,7 +2089,7 @@ return await agent('child', { label: 'child' })`,
             markAfterStarted();
             return new Promise((resolve, reject) => {
               void resolve;
-              options?.signal?.addEventListener("abort", () => reject(new Error("paused after nested work")), {
+              options?.signal?.addEventListener("abort", () => reject(new Error("paused after child work")), {
                 once: true,
               });
             });
@@ -2457,9 +2102,9 @@ return await agent('child', { label: 'child' })`,
     manager.on("error", () => {});
     const script = (
       parentPrompt: string,
-    ) => `export const meta = { name: 'nested_edit', description: 'nested edit resume' }
+    ) => `export const meta = { name: 'suffix_edit', description: 'edited prefix resume' }
 const parent = await agent('${parentPrompt}', { label: 'parent' })
-const child = await workflow('child')
+const child = await agent('child', { label: 'child' })
 const after = await agent('after', { label: 'after' })
 return { parent, child, after }`;
 
@@ -3727,7 +3372,7 @@ test(
     // fan-out where one sibling ('failer') throws a non-recoverable error
     // while another ('straggler') is still in flight: Promise.all rejects
     // immediately but does NOT cancel 'straggler'). That gap is now closed at
-    // the ROOT — runWorkflow's own run-fatal handling (SharedRuntime.
+    // the ROOT — runWorkflow's own run-fatal handling (RuntimeState.
     // runFatalController, see workflow.ts) fires the instant 'failer's error
     // escapes the top-level script, and every in-flight agent (including
     // 'straggler') links its abort controller to that signal. So 'straggler'
@@ -3744,7 +3389,7 @@ test(
     // below), it just never has to fire for THIS scenario anymore.
     // managed.controller.signal itself still never aborts here (asserted
     // below) — the two abort signals are deliberately independent (see
-    // SharedRuntime.runFatalController's doc comment).
+    // RuntimeState.runFatalController's doc comment).
     let stragglerSettles = 0;
     const agent = {
       async run(prompt: string, options?: { onUsage?: (u: AgentUsage) => void }) {
@@ -3817,8 +3462,8 @@ test(
     // required a run to reach "failed" WITHOUT managed.controller ever
     // aborting AND its straggler's onAgentJournal still firing after the
     // fact — exactly the gap item 1 (run-fatal abort, see
-    // SharedRuntime.runFatalController in workflow.ts) closes: ANY error that
-    // fails a top-level run now seals that SAME execution's shared runtime
+    // RuntimeState.runFatalController in workflow.ts) closes: ANY error that
+    // fails a run now seals that SAME execution's runtime state
     // before its own catch returns, so a sibling straggler within THAT
     // execution — like 'straggler' below — trips throwIfAborted() the moment
     // it resolves and NEVER reaches onAgentJournal (see the flow proven
@@ -4837,7 +4482,7 @@ test(
 );
 
 /** Runner that records prompts and pauses (usage limit) on a third, later call. */
-function nestedPauseResumeRunner() {
+function pauseOnThirdCallRunner() {
   const seen: string[] = [];
   const state = { failThird: true };
   return {
@@ -4859,74 +4504,90 @@ function nestedPauseResumeRunner() {
 }
 
 test(
-  "manager resume: both a nested child's AND the parent's own index-0 journal entries cache-hit, not re-run live (M6)",
+  "resume drops journal entries that a legacy nested workflow() frame recorded",
   withTempCwd(async (cwd) => {
-    // Regression coverage for the manager-level journal dedup keying. The
-    // nested child's agent('inner-call') and the parent's own
-    // agent('outer-call') both land at callIndex 0 in their respective
-    // frames and BOTH journal successfully during the SAME live execution —
-    // this is exactly the shape that collides if managed.journal's dedup
-    // filter matched on `index` alone (not `(index, runId)`): whichever of
-    // the two journals SECOND would evict the other from managed.journal,
-    // so the persisted journal silently ends up with only one of the two
-    // entries. A third call then fails (usage limit) to force a pause with
-    // that (possibly corrupted) journal on disk, and resume must show BOTH
-    // completed calls cache-hitting — not just whichever survived a buggy
-    // dedup.
-    const { seen, state, runner } = nestedPauseResumeRunner();
+    // Releases that could nest saved workflows journaled child-frame calls
+    // under the child's runId, with indexes restarting at 0. Such an entry must
+    // neither displace the run's own index-0 entry nor survive the resume.
+    const { seen, state, runner } = pauseOnThirdCallRunner();
     const manager = new WorkflowManager({ cwd, agent: runner });
     manager.on("paused", () => {});
     manager.on("error", () => {});
-
-    const script = `export const meta = { name: 'nested_pause_resume', description: 'nested resume' }
-const inner = await workflow(\`
-  export const meta = { name: 'nested_pause_resume_inner', description: 'inner' }
-  const x = await agent('inner-call', { label: 'inner' })
-  return x
-\`, {})
-const outer = await agent('outer-call', { label: 'outer' })
+    const script = `export const meta = { name: 'legacy_journal', description: 'legacy nested journal entries' }
+const first = await agent('first-call', { label: 'first' })
 const third = await agent('third-call', { label: 'third' })
-return { inner, outer, third }`;
+return { first, third }`;
 
-    // First run: the nested child's index-0 call AND the parent's own
-    // index-0 call both complete and journal; the parent's third call hits
-    // a usage limit -> run pauses.
     const { runId, promise } = manager.startInBackground(script);
     await promise.catch(() => {});
     assert.equal(manager.getRun(runId)?.status, "paused", "run pauses on the third call's usage limit");
-    assert.equal(seen.filter((p) => p === "inner-call").length, 1, "the nested child's agent ran once before pause");
-    assert.equal(seen.filter((p) => p === "outer-call").length, 1, "the parent's own agent ran once before pause");
+    const persistence = manager.getPersistence();
+    const paused = persistence.load(runId);
+    assert.ok(paused?.journal?.length === 1);
+    const own = paused.journal[0];
+    persistence.save({
+      ...paused,
+      journal: [
+        { ...own, runId },
+        { index: 0, runId: `${runId}-nested1`, hash: "child-frame-hash", result: "child-frame-result" },
+      ] as typeof paused.journal,
+    });
 
-    const persisted = manager.listRuns().find((r) => r.runId === runId);
-    assert.equal(
-      persisted?.journal?.length,
-      2,
-      "BOTH the child's and the parent's completed index-0 calls must be journaled — neither may have evicted the other",
-    );
-
-    // Resume: let the third call succeed this time.
     state.failThird = false;
     const seenBeforeResume = seen.length;
-    const resumed = await manager.resume(runId);
-    assert.equal(resumed, true);
-    await new Promise((r) => setTimeout(r, 80));
+    assert.equal(await manager.resume(runId), true);
+    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
 
     const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.status, "completed", "resumed run completes");
-    assert.equal(finalRun?.result?.result?.inner, "ran:inner-call");
-    assert.equal(finalRun?.result?.result?.outer, "ran:outer-call");
-    assert.equal(finalRun?.result?.result?.third, "ran:third-call");
+    assert.equal(finalRun?.status, "completed");
+    assert.equal(finalRun?.result?.result?.first, "ran:first-call");
+    assert.deepEqual(seen.slice(seenBeforeResume), ["third-call"], "the run's own journaled call replays");
+    assert.deepEqual(
+      finalRun?.journal.map((entry) => [entry.index, Object.keys(entry).includes("runId")]),
+      [
+        [0, false],
+        [1, false],
+      ],
+      "the child-frame entry is gone and the obsolete frame tag is not carried forward",
+    );
+  }),
+);
 
-    const promptsDuringResume = seen.slice(seenBeforeResume);
-    assert.ok(
-      !promptsDuringResume.includes("inner-call"),
-      "the nested child's journaled call must cache-hit on resume, not re-run live",
-    );
-    assert.ok(
-      !promptsDuringResume.includes("outer-call"),
-      "the parent's own journaled call must cache-hit on resume, not re-run live",
-    );
-    assert.ok(promptsDuringResume.includes("third-call"), "the parent's previously-failed third call re-runs live");
+test(
+  "resume ignores budget fields that older releases persisted on the run",
+  withTempCwd(async (cwd) => {
+    const { state, runner } = pauseOnThirdCallRunner();
+    const manager = new WorkflowManager({ cwd, agent: runner });
+    manager.on("paused", () => {});
+    manager.on("error", () => {});
+    const script = `export const meta = { name: 'legacy_budget', description: 'legacy budget fields' }
+const first = await agent('first-call', { label: 'first' })
+const third = await agent('third-call', { label: 'third' })
+return { first, third }`;
+
+    const { runId, promise } = manager.startInBackground(script);
+    await promise.catch(() => {});
+    const persistence = manager.getPersistence();
+    const paused = persistence.load(runId);
+    assert.equal(paused?.status, "paused");
+    // A 1-token budget would block every live call if it were still honoured.
+    persistence.save({
+      ...paused,
+      tokenBudget: 1,
+      phaseBudgets: { [`${runId}:Main`]: { budget: 1, startSpent: 0, warned: true } },
+    } as typeof paused);
+
+    state.failThird = false;
+    assert.equal(await manager.resume(runId), true);
+    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const completed = persistence.load(runId);
+    assert.equal(completed?.status, "completed");
+    assert.equal(Object.hasOwn(completed ?? {}, "tokenBudget"), false);
+    assert.equal(Object.hasOwn(completed ?? {}, "phaseBudgets"), false);
   }),
 );
 
@@ -6525,108 +6186,6 @@ await agent('NEW-B')`;
       logs.some((l) => l.includes("no usable results")),
       "stale seeded history must not suppress the all-empty warning",
     );
-  }),
-);
-
-test(
-  "phase sub-budgets persist and hold cumulatively across a checkpoint pause/resume (audit2 #4)",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 60 }) });
-    manager.on("error", () => {});
-    const script = `export const meta = { name: 'phase_resume', description: 'phase resume' }
-phase('p', { budget: 60 })
-const a = await agent('a')
-await checkpoint({ kind: 'hold', checkpointId: 'h-1', payload: {} })
-let blocked = false
-try { await agent('b') } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { a, blocked }`;
-
-    const started = manager.startInBackground(script);
-    await assert.rejects(started.promise, /checkpoint/i);
-
-    // The declared phase budget must be on the persisted record (frame-namespaced).
-    const pausedRecord = manager.getPersistence().load(started.runId);
-    assert.deepEqual(pausedRecord?.phaseBudgets?.[`${started.runId}:p`], { budget: 60, startSpent: 0, warned: false });
-
-    await manager.attachCheckpointResponse(started.runId, "h-1", {});
-    const completed = once(manager, "complete");
-    assert.equal(await manager.resume(started.runId, { checkpointId: "h-1" }), true);
-    await completed;
-
-    const final = manager.getPersistence().load(started.runId);
-    assert.equal(
-      final?.result && (final.result as { blocked?: boolean }).blocked,
-      true,
-      "after resume, 'b' must be blocked: the phase ceiling (60) holds against the CUMULATIVE spend (60 pre-pause) instead of re-basing",
-    );
-    assert.deepEqual(
-      final?.agents.map((a) => a.prompt),
-      ["a"],
-      "'a' replayed in place from the journal and 'b' never ran (no 'b' row)",
-    );
-  }),
-);
-
-test(
-  "a run paused with its token budget exhausted still RESUMES: journaled replays are free (audit2 #1)",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 60 }) });
-    manager.on("error", () => {});
-    const script = `export const meta = { name: 'budget_resume', description: 'budget resume' }
-const a = await agent('a')
-await checkpoint({ kind: 'hold', checkpointId: 'h-1', payload: {} })
-let blocked = false
-try { await agent('b') } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { a, blocked }`;
-
-    const started = manager.startInBackground(script, undefined, { tokenBudget: 60 });
-    await assert.rejects(started.promise, /checkpoint/i);
-
-    await manager.attachCheckpointResponse(started.runId, "h-1", {});
-    const completed = once(manager, "complete");
-    assert.equal(await manager.resume(started.runId, { checkpointId: "h-1" }), true);
-    await completed;
-
-    const final = manager.getPersistence().load(started.runId);
-    assert.equal(final?.status, "completed", "the run must resume past the exhausted budget via free replays");
-    assert.equal(
-      final?.result && (final.result as { blocked?: boolean }).blocked,
-      true,
-      "the gate still fires at the first LIVE (paid) call",
-    );
-    assert.deepEqual(
-      final?.agents.map((a) => a.prompt),
-      ["a"],
-      "'a' replayed in place (budget gate must not strand the replay)",
-    );
-  }),
-);
-
-test(
-  "nested frames MERGE into the persisted phase-budget table (parent entries survive a child declaration)",
-  withTempCwd(async (cwd) => {
-    const child = `export const meta = { name: 'childwf', description: 'c' }
-phase('childphase', { budget: 50 })
-const r = await agent('child task')
-return { child: r }`;
-    const parent = `export const meta = { name: 'parentwf', description: 'p' }
-phase('parentphase', { budget: 100 })
-const a = await agent('parent task')
-const nested = await workflow('childwf')
-return { a, nested }`;
-    const manager = new WorkflowManager({
-      cwd,
-      agent: fakeAgent({ total: 10 }),
-      loadSavedWorkflow: (name: string) => (name === "childwf" ? child : undefined),
-    });
-    manager.on("error", () => {});
-    const { runId, promise } = manager.startInBackground(parent);
-    await promise;
-    const persisted = manager.getPersistence().load(runId);
-    assert.ok(persisted?.phaseBudgets?.[`${runId}:parentphase`], "parent entry survives the child's declaration");
-    assert.ok(persisted?.phaseBudgets?.[`${runId}-nested1:childphase`], "child entry recorded under its own frame key");
-    assert.equal(persisted?.phaseBudgets?.[`${runId}:parentphase`]?.budget, 100);
-    assert.equal(persisted?.phaseBudgets?.[`${runId}-nested1:childphase`]?.budget, 50);
   }),
 );
 

@@ -57,10 +57,9 @@ export interface PersistedAgentState {
   sessionFile?: string;
 }
 
-/** Serialized journal entry; runId is absent on legacy numeric-only journals. */
+/** Serialized journal entry, keyed by the call's lexical index. */
 export interface PersistedJournalEntry {
   index: number;
-  runId?: string;
   hash: string;
   result: unknown;
   storeDelta?: Record<string, unknown>;
@@ -109,14 +108,6 @@ export interface PersistedRunState {
   /** Durable workflow-controlled suspension and its at-most-once response. */
   checkpoint?: WorkflowCheckpoint;
   phases: string[];
-  /**
-   * Per-phase soft sub-budgets declared so far in this run's lifetime, keyed by
-   * `${frameRunId}:${phaseTitle}` (nested workflow() frames have stable runIds
-   * across resume) -> ceiling + the run-wide spent baseline at declaration.
-   * Persisted so a resumed execution ADOPTS the original baseline instead of
-   * re-basing (audit2 #4) — a phase ceiling holds cumulatively across resume.
-   */
-  phaseBudgets?: Record<string, { budget: number; startSpent: number; warned?: boolean }>;
   currentPhase?: string;
   agents: PersistedAgentState[];
   logs: string[];
@@ -137,11 +128,8 @@ export interface PersistedRunState {
   };
   /**
    * Cached agent/checkpoint results for resume, keyed by deterministic call
-   * index. `runId` namespaces `index` (a nested workflow() call restarts its
-   * own callSeq at 0) — absent on journals persisted before that namespacing
-   * existed; see PersistedJournalEntry.runId in workflow.ts / the manager's
-   * resume() for the resume-time legacy-degradation behavior. `storeDelta` is
-   * this call's SharedStore write delta, replayed additively on resume.
+   * index. `storeDelta` is this call's SharedStore write delta, replayed
+   * additively on resume.
    */
   journal?: PersistedJournalEntry[];
   /**
@@ -151,46 +139,11 @@ export interface PersistedRunState {
    */
   autoResume?: boolean;
   /**
-   * The run's resolved hard token budget, fixed at start (per-run value, else
-   * the manager default at the time). Resume re-applies THIS value — never the
-   * current default — so an explicit no-budget (`null`) or custom cap survives
-   * a pause/resume cycle. Absent on legacy runs (resumed unbudgeted).
-   */
-  tokenBudget?: number | null;
-  /**
    * Named toolset tag (WorkflowManagerOptions.toolsets). ToolDefinitions are
    * functions and can't be serialized, so this tag is how a resumed run (e.g.
    * /deep-research with web tools) re-resolves the tool set it started with.
    */
   toolset?: string;
-  /**
-   * The run's resolved cap on total agents, fixed at start (per-run value,
-   * else undefined so runWorkflow applies its own MAX_AGENTS_PER_RUN default).
-   * Resume re-applies THIS value — never the manager's current default — same
-   * rationale as tokenBudget. Absent on legacy runs (resumed with no cap
-   * carried forward, i.e. runWorkflow's own default applies).
-   */
-  maxAgents?: number;
-  /**
-   * The run's resolved per-agent timeout, fixed at start (per-run value, else
-   * the manager default at the time). Absent on legacy runs — unlike
-   * tokenBudget, a legacy run's real timeout was never "no timeout" by
-   * omission; it was always the manager's default (pre-A1 resume always fell
-   * back to it), so resume applies the manager's CURRENT default for such
-   * runs rather than null, preserving both the run's original semantics and
-   * pre-fix resume behavior.
-   */
-  agentTimeoutMs?: number | null;
-  /**
-   * The run's resolved concurrency, fixed at start (per-run value, else the
-   * manager's concurrency at the time). Same rationale as tokenBudget.
-   */
-  concurrency?: number;
-  /**
-   * The run's resolved agent-retry count, fixed at start (per-run value, else
-   * the manager default at the time). Same rationale as tokenBudget.
-   */
-  agentRetries?: number;
   /**
    * Auto-resume attempt counter for the current usage_limit pause-cycle.
    * Owned by WorkflowManager (written on every persistRun; the scheduler

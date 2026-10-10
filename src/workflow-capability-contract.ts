@@ -23,13 +23,7 @@ export interface OptionDescriptor {
 
 /** Reusable option group referenced by capability descriptors. */
 export interface OptionShape {
-  id:
-    | "agent-options"
-    | "checkpoint-options"
-    | "phase-options"
-    | "loop-until-dry-options"
-    | "retry-options"
-    | "gate-options";
+  id: "agent-options";
   options: readonly OptionDescriptor[];
 }
 
@@ -98,17 +92,12 @@ export interface WorkflowRuntimeImplementations {
   agent: unknown;
   parallel: unknown;
   pipeline: unknown;
-  workflow: unknown;
-  loopUntilDry: unknown;
-  retry: unknown;
-  gate: unknown;
   checkpoint: unknown;
   log: unknown;
   phase: unknown;
   args: unknown;
   cwd: unknown;
   process: unknown;
-  budget: unknown;
   console: unknown;
 }
 
@@ -172,55 +161,8 @@ const AGENT_OPTIONS: OptionShape = {
     ]),
     option("thread", "string", true, null, ["non-empty name; same-name calls must be sequential"]),
     option("agentType", "string", true, null, ["must come from provided context"], "agent-types"),
-    option("timeoutMs", "number | null", true, "run timeout, finite ms in [1, 2^31-1]; null disables"),
-    option("retries", "number", true, "run retry count", ["finite values are floored and clamped to 0..3"]),
   ],
 };
-const CHECKPOINT_OPTIONS: OptionShape = {
-  id: "checkpoint-options",
-  options: [
-    option("default", "unknown", true, "true"),
-    option("headless", '"default" | "abort"', true, '"default"'),
-    option("kind", '"confirm" | "input" | "select"', true, '"confirm"'),
-    option("choices", "string[]", true),
-    option("timeoutMs", "number", true),
-  ],
-};
-const PHASE_OPTIONS: OptionShape = {
-  id: "phase-options",
-  options: [option("budget", "number", true, null, ["positive soft pre-call token gate"])],
-};
-const LOOP_UNTIL_DRY_OPTIONS: OptionShape = {
-  id: "loop-until-dry-options",
-  options: [
-    option("round", "(roundIndex: number) => unknown[] | Promise<unknown[]>", false),
-    option("key", "(item: unknown) => string", true, "JSON.stringify"),
-    option("consecutiveEmpty", "number", true, "2", [
-      "authors should provide a finite integer; runtime clamps below 1",
-    ]),
-    option("maxRounds", "number", true, "50", ["authors should provide a finite positive integer"]),
-  ],
-};
-const RETRY_OPTIONS: OptionShape = {
-  id: "retry-options",
-  options: [
-    option("attempts", "number", true, "3", [
-      "authors must provide a finite integer; runtime clamps values below 1 to 1",
-    ]),
-    option("until", "(result: unknown) => boolean", true, "accept first result when omitted", [
-      "must be synchronous; use gate for asynchronous validation",
-    ]),
-  ],
-};
-const GATE_OPTIONS: OptionShape = {
-  id: "gate-options",
-  options: [
-    option("attempts", "number", true, "3", [
-      "authors must provide a finite integer; runtime clamps values below 1 to 1",
-    ]),
-  ],
-};
-
 interface RuntimeDescriptorOptions {
   signature?: string;
   support?: CapabilitySupport;
@@ -247,24 +189,21 @@ const runtimeGlobal = (name: string, options: RuntimeDescriptorOptions = {}): Ca
   dynamicReference: null,
 });
 
-const toolInput = (
-  name: string,
-  signature: string,
-  constraints: readonly string[] = NONE,
-  support: CapabilitySupport = CapabilitySupport.SUPPORTED,
-): CapabilityDescriptor => ({
-  id: `workflow.tool-input.${name}`,
+const subagentsInput = (name: string, signature: string, constraints: readonly string[]): CapabilityDescriptor => ({
+  id: `workflow.subagents-input.${name}`,
   label: name,
-  classification: CapabilityClassification.WORKFLOW_TOOL_INPUT,
-  support,
+  classification: CapabilityClassification.SUBAGENTS_TOOL_INPUT,
+  support: CapabilitySupport.SUPPORTED,
   origin: CapabilityOrigin.TOOL_ADAPTER,
   signature,
   optionShape: null,
   constraints,
   runtimeBinding: null,
-  detailsAnchor: `tool-input-${name.toLowerCase()}`,
+  detailsAnchor: `subagents-input-${name.toLowerCase()}`,
   dynamicReference: null,
 });
+
+const ONE_START_MODE = "exactly one of tasks, script, or name per call";
 
 const capabilities: readonly CapabilityDescriptor[] = [
   runtimeGlobal("agent", {
@@ -273,7 +212,8 @@ const capabilities: readonly CapabilityDescriptor[] = [
     constraints: [
       "recoverable failures return null after retries; nonrecoverable failures throw",
       "schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries",
-      "per-agent retries override invocation retries; retries are floored and clamped to 0..3",
+      "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)",
+      "every agent() and checkpoint() call consumes one of the run's defaultMaxAgents slots (default 1000); execution retries consume none",
       "resume replays only the longest unchanged prefix; the first miss and every later call execute live",
       "a named thread retains its full Pi transcript and session identity only within one uninterrupted workflow invocation",
       "threaded calls are live-execution resume barriers and are never journaled",
@@ -307,115 +247,43 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "recoverable stage failures become null; nonrecoverable failures throw",
     ],
   }),
-  runtimeGlobal("workflow", {
-    signature: "workflow(savedName, childArgs?) => Promise<unknown>",
-    constraints: [
-      "one nested level",
-      "shares limiter, counters, token accounting, and store",
-      "nested workflows do not reuse the parent resume journal",
-    ],
-  }),
-  runtimeGlobal("loopUntilDry", {
-    signature:
-      "loopUntilDry(options: { round: (roundIndex: number) => unknown[] | Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>",
-    optionShape: "loop-until-dry-options",
-    constraints: [
-      "roundIndex is zero-based; null, non-array, or duplicate-only round results count as empty",
-      "token-budget or agent-limit capacity exhaustion returns the accumulated partial array instead of throwing",
-      "the returned array does not report whether termination came from dryness, maxRounds, or capacity exhaustion",
-      "authors must retain failed-round identity and truthful termination state outside the helper",
-    ],
-  }),
-  runtimeGlobal("retry", {
-    signature:
-      "retry(thunk: (attempt: number) => unknown | Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>",
-    optionShape: "retry-options",
-    constraints: [
-      "attempt is zero-based and attempts counts total thunk calls",
-      "until is synchronous; returning a Promise is truthy and accepts the first result",
-      "omitting until accepts the first result regardless of attempts",
-      "stops when until(result) is true; exhaustion returns only the last result without attempt metadata",
-      "authors must supply a finite attempts bound when overriding the default",
-    ],
-  }),
-  runtimeGlobal("gate", {
-    signature:
-      "gate(thunk: (feedback: string | undefined, attempt: number) => unknown | Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } | Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>",
-    optionShape: "gate-options",
-    constraints: [
-      "feedback is undefined on the first thunk call and then receives the previous validator feedback string",
-      "attempt is zero-based for the thunk while the returned attempts count is one-based",
-      "a value is accepted when the validator returns an object with a truthy ok property; a bare boolean is not accepted",
-      "exhaustion returns ok false with the last value and the bounded attempts count",
-      "authors must supply a finite attempts bound when overriding the default",
-    ],
-  }),
   runtimeGlobal("checkpoint", {
-    signature: "checkpoint(prompt, options?) | checkpoint({ kind, checkpointId, payload }) => Promise<unknown>",
-    optionShape: "checkpoint-options",
+    signature: "checkpoint({ kind, checkpointId, payload }) => Promise<unknown>",
     constraints: [
-      'every extension entry point starts the run in the background without a human prompt, so a prompt checkpoint returns options.default (true when omitted) or aborts the run when headless is "abort"',
-      "a confirm callback is consulted only when an embedding host passes one to runWorkflow; kind, choices, and timeoutMs are declared-only and affect only resume identity",
       "consumes one agent slot and no tokens",
       "journaled answers replay only within an unchanged resume prefix",
-      "object checkpoints accept an open kind identifier, persist their JSON payload, and pause the run",
-      "a controller attaches a lossless-JSON response to the run and checkpoint before workflow_control resumes with only the exact run ID and checkpoint ID",
-      "status exposes only checkpoint ID, kind, and status; the durable response never enters model-visible output",
+      "accepts an open kind identifier, persists its JSON payload, and pauses the run",
+      "subagents_control resume answers a waiting checkpoint with its exact checkpointId and a lossless-JSON response, attached durably before the run continues",
+      "subagents_control status shows the waiting checkpoint's ID, kind, and a bounded payload preview, never its response",
       "durable checkpoint responses resume the same run ID, are journaled before continuation, and reject stale or conflicting delivery",
     ],
   }),
   runtimeGlobal("log", { signature: "log(message) => void" }),
-  runtimeGlobal("phase", {
-    signature: "phase(title, options?) => void",
-    optionShape: "phase-options",
-    constraints: ["phase budgets are soft pre-call gates"],
-  }),
+  runtimeGlobal("phase", { signature: "phase(title) => void" }),
   runtimeGlobal("args", { signature: "args: unknown", allowsUndefined: true }),
   runtimeGlobal("cwd", { signature: "cwd: string" }),
   runtimeGlobal("process", { signature: "process: { cwd(): string }" }),
-  runtimeGlobal("budget", {
-    signature: "budget: { total, spent(), remaining() }",
-    constraints: [
-      "frozen view over shared soft token accounting",
-      "spend accrues after agents finish, so in-flight work can overshoot",
-      "nested workflows share the same accounting",
-    ],
-  }),
   runtimeGlobal("console", {
     signature: "console: { log, info, warn, error }",
     support: CapabilitySupport.COMPATIBILITY,
     constraints: ["new workflows should use log()"],
   }),
-  toolInput("script", "script?: string", ["required raw JavaScript workflow source unless `name` is given"]),
-  toolInput("name", "name?: string", [
+  subagentsInput("tasks", "tasks?: Array<{ label: string; task: string; model?: string }>", [
+    ONE_START_MODE,
+    "one subagent per task, all in parallel; labels must be unique and non-blank",
+    "returns one text report with a section per label, in task order",
+    "subagents_control resume with an edited list reuses every task whose label, task, and model are unchanged, wherever it moved; edited and new tasks run",
+  ]),
+  subagentsInput("script", "script?: string", [
+    ONE_START_MODE,
+    "raw JavaScript workflow source",
+    "subagents_control resume with an edited script replays unchanged positional agent calls until the first changed or inserted call",
+  ]),
+  subagentsInput("name", "name?: string", [
+    ONE_START_MODE,
     "resolves a project/user saved workflow first, then a built-in pattern",
-    "mutually exclusive with resumeFromRunId",
   ]),
-  toolInput("args", "args?: unknown"),
-  toolInput(
-    "background",
-    "background?: boolean",
-    [
-      "ignored: every run starts in the background, the call returns its run ID, and the result is delivered when the run finishes",
-      "kept in the schema so calls that still send it are not rejected",
-    ],
-    CapabilitySupport.COMPATIBILITY,
-  ),
-  toolInput("maxAgents", "maxAgents?: number = 1000", [
-    "default, not a hard product maximum",
-    "counts logical agent() and checkpoint() calls across the shared nested run tree",
-    "agent execution retries do not consume extra logical slots; retry(), gate(), and loopUntilDry callbacks must be budgeted from their bounded planned calls",
-  ]),
-  toolInput("concurrency", "concurrency?: number", ["runtime clamps to 1..16"]),
-  toolInput("agentRetries", "agentRetries?: number = configured value or 0", ["floored and clamped to 0..3"]),
-  toolInput("agentTimeoutMs", "agentTimeoutMs?: number = configured default or unbounded"),
-  toolInput("tokenBudget", "tokenBudget?: number = configured default or unlimited", [
-    "soft pre-call gate; in-flight work can overshoot",
-  ]),
-  toolInput("resumeFromRunId", "resumeFromRunId?: string", [
-    "resumes a prior incomplete run with an edited script",
-    "unchanged positional agent calls replay from cache until the first changed or inserted call",
-  ]),
+  subagentsInput("args", "args?: object", ["the args global of a script or named workflow; ignored with tasks"]),
   {
     id: "workflow.script.metadata",
     label: "export const meta",
@@ -524,7 +392,7 @@ export const WORKFLOW_CAPABILITY_DEFINITION: WorkflowCapabilityDefinition = {
     format: { kind: "present-at", version: "2.0.0" },
     content: { kind: "present-at", version: packageJson.version },
   },
-  optionShapes: [AGENT_OPTIONS, CHECKPOINT_OPTIONS, PHASE_OPTIONS, LOOP_UNTIL_DRY_OPTIONS, RETRY_OPTIONS, GATE_OPTIONS],
+  optionShapes: [AGENT_OPTIONS],
   capabilities,
   dynamicReferences: [
     {

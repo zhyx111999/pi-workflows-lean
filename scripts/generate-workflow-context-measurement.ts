@@ -10,15 +10,18 @@ const root = resolve(import.meta.dirname, "..");
 const check = process.argv.includes("--check");
 const measurement = check ? measureWorkflowContextSurfaces() : writeWorkflowContextMeasurement(root);
 const {
-  permanentWorkflowPrompt,
-  providerVisibleWorkflowToolDefinition,
+  permanentToolPrompt,
+  providerVisibleToolDefinitions,
   registeredSkillsDiscovery,
   workflowAuthoringSkillCorpus,
   representativeAuthoringProfiles,
 } = measurement.surfaces;
 
-console.log(`Permanent workflow prompt: ${permanentWorkflowPrompt.bytes} bytes`);
-console.log(`Provider-visible workflow tool definition: ${providerVisibleWorkflowToolDefinition.bytes} bytes`);
+console.log(`Permanent tool prompt: ${permanentToolPrompt.bytes} bytes`);
+console.log(`Provider-visible tool definitions: ${providerVisibleToolDefinitions.bytes} bytes`);
+for (const tool of providerVisibleToolDefinitions.tools) {
+  console.log(`  - ${tool.name}: ${tool.bytes} bytes`);
+}
 console.log(
   `Registered skills discovery (all ${registeredSkillsDiscovery.skills.length}): ${registeredSkillsDiscovery.bytes} bytes`,
 );

@@ -5,10 +5,8 @@
  *    renders progress, results, phases, agents, logs, tokens, cost
  * 2. createWidgetWorkflowDisplay / createToolUpdateWorkflowDisplay —
  *    the lifecycle: update → complete → clear
- * 3. Tool result formatting — markdown JSON code blocks for final reports
- * 4. deliverText — how background-run results are formatted for the user
- * 5. backgroundStartedText — the "started in background" message
- * 6. Pure helper functions: preview, shorten, statusIcon, statusLine
+ * 3. deliverText — how background-run results are formatted for the user
+ * 4. Pure helper functions: preview, shorten, statusIcon, statusLine
  */
 
 import assert from "node:assert/strict";
@@ -60,10 +58,6 @@ async function loadDisplay() {
 
 async function loadTaskPanel() {
   return import("../src/task-panel.js");
-}
-
-async function loadTool() {
-  return import("../src/workflow-tool.js");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -563,23 +557,6 @@ describe("createToolUpdateWorkflowDisplay lifecycle", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Tool result formatting (markdown JSON code blocks)
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("workflow tool result formatting", () => {
-  it("tool result includes markdown JSON code block formatting", () => {
-    // The execute() function in workflow-tool.ts wraps the final result in
-    // a markdown ```json code block so it renders nicely in the conversation.
-    // This test verifies the formatting pattern.
-    const result = { ok: true, items: 3 };
-    const formatted = `\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
-    assert.ok(formatted.includes("```json"), "should use json code block");
-    assert.ok(formatted.endsWith("```"), "should close code block");
-    assert.ok(formatted.includes('"ok": true'), "should contain data");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // Pure helpers: preview, shorten, statusIcon, statusLine
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -778,37 +755,6 @@ describe("deliverText", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// backgroundStartedText
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("backgroundStartedText", () => {
-  it("includes workflow name and run ID", async () => {
-    const { backgroundStartedText } = await loadTool();
-    const text = backgroundStartedText("deep-research", "run-xyz");
-    assert.ok(text.includes("deep-research"), "should contain deep-research");
-    assert.ok(text.includes("run-xyz"), "should contain run-xyz");
-  });
-
-  it("tells the user the workflow is in the background", async () => {
-    const { backgroundStartedText } = await loadTool();
-    const text = backgroundStartedText("audit", "r-1");
-    assert.ok(text.includes("background"), "should say background");
-  });
-
-  it("tells user they can wait or do other things", async () => {
-    const { backgroundStartedText } = await loadTool();
-    const text = backgroundStartedText("audit", "r-1");
-    assert.ok(text.includes("wait here") || text.includes("other things"), "should mention options");
-  });
-
-  it("mentions /workflows status command for tracking", async () => {
-    const { backgroundStartedText } = await loadTool();
-    const text = backgroundStartedText("audit", "r-1");
-    assert.ok(text.includes("/workflows"), "should mention /workflows");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
 // createWorkflowSnapshot / recomputeWorkflowSnapshot
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -929,25 +875,6 @@ describe("TUI rendering has no markdown syntax", () => {
     const snap = createWorkflowSnapshot(fakeMeta());
     const text = renderWorkflowText(snap, true);
     assert.ok(!text.includes("##"), "completed text should not have heading markers");
-  });
-
-  it("renderResult fallback strips markdown from content text", async () => {
-    const { createWorkflowTool } = await loadTool();
-    const tool = createWorkflowTool();
-    const theme = {
-      fg: () => (s: string) => s,
-      bold: (s: string) => s,
-    };
-    const resultWithMarkdown = {
-      content: [{ type: "text", text: "**bold** and `code` and ## header" }],
-      details: { some: "data" }, // no 'name' → triggers fallback
-      isError: false,
-    };
-    // If snapshot.name is missing, the function should still produce
-    // a Text component without crashing
-    assert.doesNotThrow(() => {
-      tool.renderResult(resultWithMarkdown as never, { isPartial: false }, theme as never);
-    });
   });
 });
 

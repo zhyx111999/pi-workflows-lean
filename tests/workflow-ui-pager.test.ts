@@ -307,7 +307,9 @@ test("short pagers and long run lists stay within their viewport", () => {
   assert.match(lines.join("\n"), /workflow-19/);
 });
 
-test("cold journal rehydration keeps nested and parent call indexes separate", () => {
+test("cold journal rehydration keeps a legacy nested frame's call indexes apart from the run's own", () => {
+  // Releases that could nest saved workflows tagged child-frame journal entries
+  // with the child's runId; their rows must still show the right results.
   const persisted = {
     runId: "parent-run",
     workflowName: "nested",

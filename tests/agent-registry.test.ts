@@ -630,7 +630,7 @@ return r`;
       persistLogs: false,
       runId: "agenttype-edit-run",
       agentRegistry: editedRegistry,
-      resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e])),
+      resumeJournal: new Map(journal.map((e) => [e.index, e])),
     });
     assert.equal(second.seen.length, 1, "edited definition busts the cache and re-runs live");
     assert.equal(second.seen[0].model, "vendor/changed-model");
@@ -655,7 +655,7 @@ return r`;
       persistLogs: false,
       runId: "agenttype-unchanged-run",
       agentRegistry: registry,
-      resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e])),
+      resumeJournal: new Map(journal.map((e) => [e.index, e])),
     });
     assert.equal(second.seen.length, 0, "unchanged definition → cache hit → no live run");
   });

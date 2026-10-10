@@ -76,6 +76,7 @@ export type {
   RunStatus,
 } from "./run-persistence.js";
 export { createRunPersistence, generateRunId } from "./run-persistence.js";
+export type { AgentStatusDetails, RunSummaryDetails } from "./run-report.js";
 export {
   parseCommandArgs,
   registerAllSavedWorkflows,
@@ -84,6 +85,15 @@ export {
 export { SharedStore } from "./shared-store.js";
 export type { StructuredOutputCapture, StructuredOutputToolOptions } from "./structured-output.js";
 export { createStructuredOutputTool } from "./structured-output.js";
+export type { SubagentTask } from "./subagent-tasks.js";
+export type {
+  SubagentsControlAction,
+  SubagentsControlInput,
+  SubagentsControlToolHost,
+} from "./subagents-control-tool.js";
+export { createSubagentsControlTool, SUBAGENTS_CONTROL_TOOL_NAME } from "./subagents-control-tool.js";
+export type { SubagentsInput, SubagentsToolHost } from "./subagents-tool.js";
+export { createSubagentsTool, SUBAGENTS_TOOL_NAME } from "./subagents-tool.js";
 export {
   bindSessionDelivery,
   deliverText,
@@ -109,7 +119,6 @@ export { createWebFetchTool, createWebSearchTool, createWebTools } from "./web-t
 export type {
   AgentOptions,
   JournalEntry,
-  SharedRuntime,
   WorkflowCheckpoint,
   WorkflowCheckpointInput,
   WorkflowMeta,
@@ -143,12 +152,6 @@ export {
   WorkflowCapabilityContractError,
 } from "./workflow-capability-contract.js";
 export { registerWorkflowCommands } from "./workflow-commands.js";
-export type {
-  WorkflowControlInput,
-  WorkflowControlRunDetails,
-  WorkflowControlToolOptions,
-} from "./workflow-control-tool.js";
-export { createWorkflowControlTool } from "./workflow-control-tool.js";
 export {
   buildForcedWorkflowPrompt,
   installParentPromptHook,
@@ -172,7 +175,12 @@ export {
   isSafeSavedWorkflowName,
   resolveSavedScriptPath,
 } from "./workflow-saved.js";
-export type { WorkflowSettings, WorkflowSettingsOptions, WorkflowSettingsStore } from "./workflow-settings.js";
+export type {
+  WorkflowRunLimits,
+  WorkflowSettings,
+  WorkflowSettingsOptions,
+  WorkflowSettingsStore,
+} from "./workflow-settings.js";
 export {
   getProjectLocalWorkflowSettingsPath,
   getWorkflowProjectSettingsPath,
@@ -180,9 +188,8 @@ export {
   loadWorkflowSettings,
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
+  workflowRunLimits,
 } from "./workflow-settings.js";
-export type { WorkflowToolInput, WorkflowToolOptions } from "./workflow-tool.js";
-export { backgroundStartedText, createWorkflowTool } from "./workflow-tool.js";
 export {
   keyToAction,
   type NavAction,

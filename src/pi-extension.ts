@@ -13,6 +13,8 @@ import {
   type WorkflowReloadRuntime,
 } from "./extension-reload.js";
 import { registerAllSavedWorkflows } from "./saved-commands.js";
+import { createSubagentsControlTool } from "./subagents-control-tool.js";
+import { createSubagentsTool } from "./subagents-tool.js";
 import {
   bindSessionDelivery,
   dropSessionDelivery,
@@ -23,13 +25,10 @@ import {
 import { UsageLimitScheduler } from "./usage-limit-scheduler.js";
 import { createWebTools } from "./web-tools.js";
 import { registerWorkflowCommands } from "./workflow-commands.js";
-import { createWorkflowControlTool } from "./workflow-control-tool.js";
 import { installParentPromptHook, registerWorkflowProgressCommands } from "./workflow-editor.js";
 import { WorkflowManager } from "./workflow-manager.js";
-import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
-import { loadWorkflowSettings, saveWorkflowSettingsForCwd } from "./workflow-settings.js";
-import { createWorkflowTailTool, WORKFLOW_TAIL_TOOL_NAME } from "./workflow-tail-tool.js";
-import { createWorkflowTool } from "./workflow-tool.js";
+import { createWorkflowStorage } from "./workflow-saved.js";
+import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 
 export { installHostSessionCapture } from "./task-panel.js";
@@ -89,19 +88,15 @@ export function sessionFileCwd(sessionFile: string | undefined): string | undefi
   }
 }
 
-function buildManagerOptions(cwd: string, storage: WorkflowStorage) {
+function buildManagerOptions(cwd: string) {
   const settings = loadWorkflowSettings({ cwd });
   return {
-    loadSavedWorkflow: (name: string) => storage.load(name)?.script,
     toolsets: {
       "web-research": () => [...createCodingTools(cwd), ...createWebTools()],
     },
     excludeSubagentTools: settings.excludeSubagentTools,
     providerMiddlewareExtensions: settings.providerMiddlewareExtensions,
-    defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
-    defaultTokenBudget: settings.defaultTokenBudget ?? null,
-    concurrency: settings.defaultConcurrency,
-    defaultAgentRetries: settings.defaultAgentRetries,
+    ...workflowRunLimits(settings),
     persistAgentSessions: settings.persistAgentSessions,
     inheritMainModel: settings.inheritMainModel,
   };
@@ -118,7 +113,7 @@ export default function extension(pi: ExtensionAPI) {
   // any foreign live runs that rode in via handoff.
   let cwd = resolve(process.cwd());
   let storage = createWorkflowStorage(cwd);
-  let managerOptions = buildManagerOptions(cwd, storage);
+  let managerOptions = buildManagerOptions(cwd);
 
   // Process-wide handoff slot (not cwd-keyed): the previous generation may have
   // been bound to ctx.cwd while this factory only sees process.cwd(). Claim
@@ -135,7 +130,7 @@ export default function extension(pi: ExtensionAPI) {
     if (claimedCwd !== cwd) {
       cwd = claimedCwd;
       storage = createWorkflowStorage(cwd);
-      managerOptions = buildManagerOptions(cwd, storage);
+      managerOptions = buildManagerOptions(cwd);
     }
   }
 
@@ -151,25 +146,10 @@ export default function extension(pi: ExtensionAPI) {
   // that race before bind leave a disk pending marker and flush on bind.
   installResultDelivery(pi, manager, { loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }) });
 
-  const workflowTool = createWorkflowTool({
-    getManager,
-    getCwd,
-    getStorage,
-    get manager() {
-      return manager;
-    },
-    get cwd() {
-      return cwd;
-    },
-    get storage() {
-      return storage;
-    },
-  });
-  const workflowControlTool = createWorkflowControlTool({ getManager });
-  const workflowTailTool = createWorkflowTailTool({ getManager });
-  pi.registerTool(workflowTool);
-  pi.registerTool(workflowControlTool);
-  pi.registerTool(workflowTailTool);
+  const subagentsTool = createSubagentsTool({ getManager, getCwd, getStorage });
+  const subagentsControlTool = createSubagentsControlTool({ getManager });
+  pi.registerTool(subagentsTool);
+  pi.registerTool(subagentsControlTool);
 
   let usageLimitScheduler = new UsageLimitScheduler(manager);
 
@@ -266,7 +246,7 @@ export default function extension(pi: ExtensionAPI) {
 
       cwd = sessionCwd;
       storage = createWorkflowStorage(cwd);
-      managerOptions = buildManagerOptions(cwd, storage);
+      managerOptions = buildManagerOptions(cwd);
       manager = new WorkflowManager({ cwd, ...managerOptions });
       installResultDelivery(pi, manager, { loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }) });
       usageLimitScheduler.dispose();
@@ -275,7 +255,7 @@ export default function extension(pi: ExtensionAPI) {
       // Manager already owns the session project; just align the local cwd/storage.
       cwd = sessionCwd;
       storage = createWorkflowStorage(cwd);
-      managerOptions = buildManagerOptions(cwd, storage);
+      managerOptions = buildManagerOptions(cwd);
       manager.reconfigureAfterReload(managerOptions);
     }
 
@@ -297,8 +277,7 @@ export default function extension(pi: ExtensionAPI) {
     manager.setModelRegistry(ctx.modelRegistry);
 
     const active = pi.getActiveTools();
-    const workflowTools = [workflowTool.name, workflowControlTool.name, WORKFLOW_TAIL_TOOL_NAME];
-    const missing = workflowTools.filter((name) => !active.includes(name));
+    const missing = [subagentsTool.name, subagentsControlTool.name].filter((name) => !active.includes(name));
     if (missing.length) pi.setActiveTools([...active, ...missing]);
 
     // Bind + adopt before binding delivery so a flushed completion is tagged

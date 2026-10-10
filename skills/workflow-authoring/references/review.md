@@ -1,6 +1,6 @@
 # Workflow review checklist
 
-Review author-visible behavior, not formatting preferences. When behavior depends on a control helper, consult only its exact [retry](retry-helper.md) or [specialized](specialized-helpers.md) helper contract before correcting the script.
+Review author-visible behavior, not formatting preferences.
 
 ## Envelope and contract
 
@@ -27,11 +27,9 @@ Review author-visible behavior, not formatting preferences. When behavior depend
 
 ## Lifecycle
 
-- Are runtime retries and semantic retries separately bounded?
-- Are loops, agents, concurrency, timeout, and token spend bounded appropriately?
-- Are budget claims honest about soft gates and in-flight overshoot?
-- Do prompt checkpoints rely only on their headless `default` or `headless: "abort"` behavior?
-- Does nesting stay one level and account for shared limits/store?
+- Are semantic retries bounded in the script, separately from the runtime retries set in settings?
+- Are loops and fan-out bounded appropriately for the configured agent cap?
+- Does every checkpoint use a stable, unique `checkpointId` and a JSON payload?
 - Would lexical call order remain stable under resume?
 
 ## Compatibility and publication

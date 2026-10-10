@@ -24,15 +24,15 @@ Run one test file with `npx tsx --test tests/<name>.test.ts`. After changing `sr
 | After changing | Run | Rewrites |
 | --- | --- | --- |
 | `src/workflow-capability-contract.ts` | `npm run docs:generate` | the capability table in `README.md` and `docs/workflow-authoring.md`, and `skills/workflow-authoring/references/capabilities.md` and `capability-details.md` |
-| the `workflow` tool prompt or schema text, any skill file, or `pi.skills` | `npm run context:generate` | `docs/workflow-context-surfaces.json` |
+| the `subagents` or `subagents_control` tool prompt or schema text, any skill file, or `pi.skills` | `npm run context:generate` | `docs/workflow-context-surfaces.json` |
 
 Commit generated files in the same commit as the change that produced them.
 
 ## Runtime changes
 
-- Keep the contract equal to the runtime. `tests/workflow-capability-contract.test.ts` compares the declared globals with what `runWorkflow` injects and the declared tool inputs with the `workflow` tool schema.
+- Keep the contract equal to the runtime. `tests/workflow-capability-contract.test.ts` compares the declared globals with what `runWorkflow` injects and the declared tool inputs with the `subagents` tool schema.
 - Fake-agent tests do not exercise the real SDK path. When a change affects how agents run (retries, timeouts, model routing, token accounting, concurrency, resume), also try it in a real Pi session.
-- Settings in `~/.pi/workflows/settings.json` are user data: new settings must be optional, and settings files that still contain removed keys must keep loading. Document new settings and `workflow` tool parameters in `README.md`.
+- Settings in `~/.pi/workflows/settings.json` are user data: new settings must be optional, and settings files that still contain removed keys must keep loading. Document new settings and tool parameters in `README.md`.
 
 ## Commits
 

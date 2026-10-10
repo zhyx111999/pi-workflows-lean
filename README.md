@@ -31,7 +31,7 @@ Run `/reload` in Pi, then ask naturally:
 Run a workflow to audit every route under src/routes/ for missing auth checks.
 ```
 
-Pi writes and starts the workflow in the background. A live panel tracks progress while you keep working, and the final result is delivered back into the conversation automatically.
+Pi starts subagents in the background — a task list for independent work, or a workflow script for multi-step work. A live panel tracks progress while you keep working, and the final result is delivered back into the conversation automatically.
 
 Keyword triggering is on by default: use the bounded word **workflow** or **workflows** in a message to arm workflow mode — the assistant then handles a request by fanning it out across agents, but still answers plainly if you're only asking *about* workflows (the trigger authorizes the tool, it doesn't force it). Or run `/workflows run <prompt>` explicitly. Identifier-like text and paths such as `myworkflow`, `workflow_name`, and `src/workflow-editor.ts` do not trigger. You can change the keyword with `/workflows-trigger set pi-workflow` or disable it with `/workflows-trigger off`.
 
@@ -72,14 +72,16 @@ return await agent(
 
 ## Why use it
 
-- **Real parallel orchestration** — fan out up to 16 concurrent and 1000 total subagents from one orchestration script.
+- **Real parallel orchestration** — fan out up to 16 concurrent and, by default, 1000 total subagents from one orchestration script.
 - **Per-agent model routing** — use `small`, `medium`, or `big` tiers, or choose an exact provider/model and thinking level.
-- **Journaled resume** — replay completed agents after interruption without rerunning them or spending their tokens again. The orchestrator can also resume with an **edited script** (`resumeFromRunId`): unchanged `agent()` calls replay from cache and only edited/new ones re-run — so a single bad prompt no longer means paying to re-run the whole workflow.
+- **Task lists without a script** — pass `tasks: [{ label, task, model? }]` and each task runs in its own subagent, all in parallel.
+- **Journaled resume** — replay completed agents after interruption without rerunning them or spending their tokens again. The orchestrator can also resume with an **edited task list or script**: unchanged work replays from cache and only edited/new work re-runs — so a single bad prompt no longer means paying to re-run the whole run.
+- **Steer running subagents** — queue an extra instruction into a subagent while it works, without restarting it.
 - **Git worktree isolation** — parallel agents edit on separate branches with `isolation: "worktree"`. Kept by default for merge; pass `keepWorktree: false` to delete (tests).
-- **Measured usage** — report real tokens and cost from each subagent session; add run, phase, or agent budgets only when you want them. When a provider session ends without reporting usage, the affected totals are heuristic character estimates and UI token surfaces render them with a `~` prefix (e.g. `~640 tok`) — never silently as metered figures. (Script-facing `budget.spent()/remaining()` are raw numbers and cannot carry the marker.)
+- **Measured usage** — report real tokens and cost from each subagent session. When a provider session ends without reporting usage, the affected totals are heuristic character estimates and UI token surfaces render them with a `~` prefix (e.g. `~640 tok`) — never silently as metered figures.
 - **Visible background runs** — track phases, agents, models, fresh/cache tokens, cost, and live tok/s from the progress panel or `/workflows` navigator.
-- **Control helpers** — `retry()`, `gate()`, `loopUntilDry()`, and `checkpoint()` are optional script helpers. Cross-check helpers are not included.
-- **Reusable workflows** — save any run as a command and call saved workflows from other workflows.
+- **Plain control flow** — loops, semantic retries, and stopping rules are ordinary JavaScript around `agent()`; `checkpoint()` is the only pause helper. Cross-check helpers are not included.
+- **Reusable workflows** — save any run as a command and run saved workflows by name.
 
 ## Supported workflow capabilities
 
@@ -88,29 +90,19 @@ The installed extension generates this compact index from its executable capabil
 <!-- BEGIN GENERATED SUPPORTED WORKFLOW CAPABILITIES -->
 | Name | Classification | Signature | Options and defaults |
 | --- | --- | --- | --- |
-| agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional)<br>`timeoutMs`: number \| null (optional; default: run timeout, finite ms in [1, 2^31-1]; null disables)<br>`retries`: number (optional; default: run retry count) |
+| agent | runtime-global | `agent(prompt, options?) => Promise<string \| structured value \| null>` | `label`: string (optional; default: derived from phase and call count)<br>`phase`: string (optional; default: current phase)<br>`schema`: plain JSON Schema (optional)<br>`model`: string (optional)<br>`thinking`: "off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max" (optional)<br>`tier`: string (optional)<br>`isolation`: "worktree" \| false (optional)<br>`keepWorktree`: boolean (optional; default: true)<br>`cwd`: string (optional)<br>`thread`: string (optional)<br>`agentType`: string (optional) |
 | parallel | runtime-global | `parallel(thunks) => Promise<Array<unknown \| null>>` | — |
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
-| workflow | runtime-global | `workflow(savedName, childArgs?) => Promise<unknown>` | — |
-| loopUntilDry | runtime-global | `loopUntilDry(options: { round: (roundIndex: number) => unknown[] \| Promise<unknown[]>; key?: (item: unknown) => string; consecutiveEmpty?: number; maxRounds?: number }) => Promise<unknown[]>` | `round`: (roundIndex: number) => unknown[] \| Promise<unknown[]> (required)<br>`key`: (item: unknown) => string (optional; default: JSON.stringify)<br>`consecutiveEmpty`: number (optional; default: 2)<br>`maxRounds`: number (optional; default: 50) |
-| retry | runtime-global | `retry(thunk: (attempt: number) => unknown \| Promise<unknown>, options?: { attempts?: number; until?: (result: unknown) => boolean }) => Promise<unknown>` | `attempts`: number (optional; default: 3)<br>`until`: (result: unknown) => boolean (optional; default: accept first result when omitted) |
-| gate | runtime-global | `gate(thunk: (feedback: string \| undefined, attempt: number) => unknown \| Promise<unknown>, validator: (value: unknown) => { ok: boolean; feedback?: string } \| Promise<{ ok: boolean; feedback?: string }>, options?: { attempts?: number }) => Promise<{ ok: boolean; value: unknown; attempts: number }>` | `attempts`: number (optional; default: 3) |
-| checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
+| checkpoint | runtime-global | `checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | — |
 | log | runtime-global | `log(message) => void` | — |
-| phase | runtime-global | `phase(title, options?) => void` | `budget`: number (optional) |
+| phase | runtime-global | `phase(title) => void` | — |
 | args | runtime-global | `args: unknown` | — |
 | cwd | runtime-global | `cwd: string` | — |
 | process | runtime-global | `process: { cwd(): string }` | — |
-| budget | runtime-global | `budget: { total, spent(), remaining() }` | — |
-| script | workflow-tool-input | `script?: string` | — |
-| name | workflow-tool-input | `name?: string` | — |
-| args | workflow-tool-input | `args?: unknown` | — |
-| maxAgents | workflow-tool-input | `maxAgents?: number = 1000` | — |
-| concurrency | workflow-tool-input | `concurrency?: number` | — |
-| agentRetries | workflow-tool-input | `agentRetries?: number = configured value or 0` | — |
-| agentTimeoutMs | workflow-tool-input | `agentTimeoutMs?: number = configured default or unbounded` | — |
-| tokenBudget | workflow-tool-input | `tokenBudget?: number = configured default or unlimited` | — |
-| resumeFromRunId | workflow-tool-input | `resumeFromRunId?: string` | — |
+| tasks | subagents-tool-input | `tasks?: Array<{ label: string; task: string; model?: string }>` | — |
+| script | subagents-tool-input | `script?: string` | — |
+| name | subagents-tool-input | `name?: string` | — |
+| args | subagents-tool-input | `args?: object` | — |
 <!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->
 
 ## Built-in workflows
@@ -121,11 +113,20 @@ The installed extension generates this compact index from its executable capabil
 
 `/deep-research` is also reachable by name without a slash command. A saved workflow of the same name wins over the built-in.
 
-## Commands and run control
+## Tools and run control
 
-Pi can manage background runs directly with the `workflow_control` tool instead of asking you to type a command. It supports `list`, `status`, `pause`, `resume`, and `stop`; run-specific actions use the canonical run ID returned when the workflow starts. Status output includes the run state, current phase, agent counts, active labels, and recorded token total.
+The model works through two tools, so you never need to type a command:
 
-Some providers fill in every optional tool field. Fields that do not apply are discarded instead of rejected: `list` ignores `runId` and `checkpointId`, and only `resume` uses `checkpointId`. Resume still requires an exact checkpoint ID when the run is waiting for a durable checkpoint response.
+| Tool | Purpose |
+| --- | --- |
+| `subagents` | Start a background run from exactly one of `tasks` (one subagent per `{ label, task, model? }`, all in parallel, unique labels), `script` (a JavaScript workflow), or `name` (a saved or built-in workflow, with `args`). Returns the run ID at once; the result is delivered back into the conversation when the run finishes. |
+| `subagents_control` | `list` runs; `status` of one run (each subagent's state, the current phase, a waiting checkpoint with its payload); `read` the last 8000 characters of one subagent (default: latest run, latest updated subagent); `stop` a run; `resume` a run; `message` a running subagent. |
+
+`resume` continues a paused or failed run. With an edited `tasks` list, every task whose label, task, and model are unchanged reuses its result wherever it moved, and only edited or new tasks run. With an edited `script`, unchanged `agent()` calls replay up to the first edit (see [Determinism and limits](#determinism-and-limits)). A run waiting at a checkpoint resumes with its `checkpointId` and a JSON `response`, which is stored durably before the run continues. Completed and stopped runs do not resume; start a new run instead.
+
+`message` queues text into a running subagent's session with Pi's steering; it arrives before the subagent's next model call. A subagent that finishes first never sees it, and finished work changes only through `resume`.
+
+Some providers fill in every optional tool field. Fields that do not apply to the chosen mode or action are dropped, and null or empty values count as omitted; unknown fields and missing required fields are errors.
 
 Deleting a run is final across processes. Deletion removes the record, its sidecars, exported results, and run log. Another Pi session that still holds the run in memory drops its copy and its undelivered result instead of recreating the record.
 
@@ -150,13 +151,8 @@ Agent details use a compact summary by default: completed agents show their fina
 | `agent(prompt, opts)` | Spawn an isolated subagent; optionally validate its result with JSON Schema |
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently and preserve input order |
 | `pipeline(items, ...stages)` | Fan items through sequential stages |
-| `phase(title, { budget? })` | Group work in the live view and optionally set a phase budget |
-| `retry(thunk, opts)` | Rerun a step until a condition accepts it |
-| `gate(thunk, validator, opts)` | Rerun a step with validator feedback |
-| `loopUntilDry(opts)` | Repeat a round until it stops adding items |
-| `workflow(name, args)` | Run a saved workflow inline |
-| `checkpoint(prompt, opts)` | Journaled pause; background runs use the headless default |
-| `budget` | Inspect tokens spent and remaining (raw numbers; UI surfaces mark heuristic estimates with `~`) |
+| `phase(title)` | Group work in the live view |
+| `checkpoint({ kind, checkpointId, payload })` | Durable pause until a controller supplies a response |
 
 | Agent option | Description |
 | --- | --- |
@@ -167,7 +163,6 @@ Agent details use a compact summary by default: completed agents show their fina
 | `keepWorktree` | Default `true` (kept for merge). `false` deletes after the call (test runs) |
 | `schema` | JSON Schema for a validated structured result |
 | `label` / `phase` | Display label and phase override |
-| `timeoutMs` / `retries` | Optional per-agent timeout and recoverable-failure retries |
 
 Host setting / SDK option (not an `agent()` call option): `providerMiddlewareExtensions: string[]` opts child sessions into trusted provider/auth extensions; default `[]`.
 
@@ -209,15 +204,24 @@ Use `/workflows-models` to edit them interactively; it is cwd-aware and can save
 
 Untagged `agent()` calls (no `model`, no `tier`, and no agentType/phase routing) use the configured `medium` tier, or the Pi settings default when no tiers are saved. Set `"inheritMainModel": true` in `~/.pi/workflows/settings.json` (or a project overlay) to instead have untagged agents inherit the orchestrating session's main model — the model in effect when the run starts; a mid-run `/model` switch applies to subsequent runs; when the session has no main model, legacy routing applies — with no tier config required. Explicit `model`/`tier` tags are unaffected, and an unavailable inherited model degrades to the settings default with a run-visible warning instead of throwing.
 
-Omitted `tokenBudget` and `agentTimeoutMs` values use configured `defaultTokenBudget` and `defaultAgentTimeoutMs` settings; without them, runs are unlimited and have no hard per-agent timeout. Add per-run or per-agent values when you need explicit gates. `concurrency` is clamped to 16; `agentRetries` retries only recoverable failures. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific. `defaultTokenBudget` is a soft pre-call gate, and a project-level override of `null` cancels a global budget.
+Run limits come only from settings; neither a tool call nor a script can override them:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `defaultConcurrency` | 8 | Agents running at once, clamped to 1–16 |
+| `defaultMaxAgents` | 1000 | Logical `agent()` and `checkpoint()` calls per run; retries add none |
+| `defaultAgentRetries` | 0 | Retries after a recoverable agent failure, clamped to 0–3 |
+| `defaultAgentTimeoutMs` | none | Hard timeout per agent attempt; unset or `null` means no timeout |
+
+Changes apply after `/reload` or in a new session. Every execution, including a resumed one, uses the current values, so a run that stopped at the agent cap finishes after you raise `defaultMaxAgents` and resume it. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific.
 
 Child sessions intentionally disable host extensions to avoid per-child factory churn and recursive orchestration. Some providers require extension request/auth hooks in addition to a shared model registry. To opt in, set `"providerMiddlewareExtensions": ["example-provider-adapter"]` in `~/.pi/workflows/settings.json` (also available on `WorkflowAgent`, `runWorkflow`, and `WorkflowManager` SDK options). Omitted or `[]` keeps all host extensions disabled. Names match an extension filename without its JS/TS suffix, an exact npm package identity, or a resolved local/Git package source name, case-insensitively; ancestor directory names do not authorize descendants; only enabled resources are considered, and project resources still require Pi project trust. `pi-dynamic-workflows`, `workflow`, and `pi-subagents` are always excluded, even if allowlisted. Only allow trusted, child-safe middleware: the allowlist enables whole extensions, not a hook-only sandbox, and opted-in factories and runtimes are isolated per child session and receive session_shutdown before disposal. Extension-free resource loaders remain shared. Explicit SDK resource-loader injection remains authoritative and bypasses this discovery filter.
 
-A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `agentRetries: 1-2` rather than treating an isolated empty output as a failed run. Because an exhausted recoverable failure resolves to `null` rather than throwing, a run whose **every** agent came back empty still reports `completed`; when that happens the runtime logs a prominent `⚠ Workflow produced no usable results` warning (naming the empty agents and pointing at `agentRetries` and output-token limits) so an all-null fleet can't be mistaken for success.
+A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `defaultAgentRetries` to 1–2 rather than treating an isolated empty output as a failed run. Because an exhausted recoverable failure resolves to `null` rather than throwing, a run whose **every** agent came back empty still reports `completed`; when that happens the runtime logs a prominent `⚠ Workflow produced no usable results` warning (naming the empty agents and pointing at `defaultAgentRetries` and output-token limits) so an all-null fleet can't be mistaken for success.
 
-Pausing and resuming a run keeps the limits it started with — `maxAgents`, `agentTimeoutMs`, `concurrency`, and `agentRetries` carry over instead of falling back to defaults, and `tokenBudget` tracking is cumulative across the pause, so a run can't reset its spend by pausing and resuming.
+Token totals stay cumulative across a pause and resume.
 
-Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the final wait for agents that ignore cancellation. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a `workflow` tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
+Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the final wait for agents that ignore cancellation. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
 
 </details>
 
@@ -269,7 +273,7 @@ The default `workflow` also matches `workflows`; a custom word matches exactly. 
 | Isolated subagent contexts | Fresh in-memory Pi sessions; results remain in variables |
 | Structured outputs | JSON Schema validation with bounded repair |
 | Background runs | Non-blocking run, live panel, and automatic result delivery |
-| Resume | Journaled replay of the unchanged completed prefix, including edit-and-resume with a revised script (`resumeFromRunId`) |
+| Resume | Journaled replay, including edit-and-resume with a revised task list or script |
 | Model selection | Per-agent and per-phase routing across authenticated providers |
 | Additional Pi features | Worktree isolation, real cost accounting, and deep research |
 
@@ -279,26 +283,17 @@ The default `workflow` also matches `workflows`; a custom word matches exactly. 
 
 Workflow scripts run in a Node `vm` sandbox. `Date.now()`, `Math.random()`, `new Date()`, `require`, `import`, filesystem access, and network access are unavailable inside the orchestration script. Subagents use their assigned tools; keeping the orchestrator deterministic is what makes journal replay reliable.
 
-Journal replay — including edit-and-resume via `resumeFromRunId` — matches cached agent results by **positional call index** (the order in which `agent()` calls execute), the same contract Claude Code uses. Editing an `agent()` prompt in place reuses the cache up to that call and re-runs it and everything after. Inserting, removing, or reordering an `agent()` call before others shifts their positions and invalidates the cache from that point on (mismatched calls simply re-run — no crash). To preserve the cached prefix, keep the earlier still-good `agent()` calls unchanged and in the same order.
+Script journal replay — including edit-and-resume with an edited script — matches cached agent results by **positional call index** (the order in which `agent()` calls execute), the same contract Claude Code uses. Editing an `agent()` prompt in place reuses the cache up to that call and re-runs it and everything after. Inserting, removing, or reordering an `agent()` call before others shifts their positions and invalidates the cache from that point on (mismatched calls simply re-run — no crash). To preserve the cached prefix, keep the earlier still-good `agent()` calls unchanged and in the same order.
 
-Only a call that finishes with a real result is journaled — a call whose every attempt ended in a recoverable failure (including one that only ever produced `AGENT_EMPTY_OUTPUT`) is never cached. Resuming such a run with `resumeFromRunId` therefore replays every earlier, already-succeeded call from cache and re-runs only that one call and everything lexically after it — cheap and exactly targeted, not a full re-run of the fleet.
+Only a call that finishes with a real result is journaled — a call whose every attempt ended in a recoverable failure (including one that only ever produced `AGENT_EMPTY_OUTPUT`) is never cached. Resuming such a run therefore replays every earlier, already-succeeded call from cache and re-runs only that one call and everything lexically after it — cheap and exactly targeted, not a full re-run of the fleet.
 
-## Upgrading to 3.0
-
-3.0 is a milestone release. The one behavior change to know about:
-
-- **Keyword triggering now _authorizes_ the workflow tool instead of _forcing_ it.** In 2.x, typing the trigger word (default `workflow`) rewrote your message into a directive that forced a background workflow. In 3.0 it _arms_ the tool and the model decides: a real, decomposable request is fanned out across agents, but a message that only mentions workflows — a question, a filename, a passing reference — is answered normally. Nothing to configure. If you relied on the word always kicking off a run, use `/workflows run <prompt>` for the explicit path. Keyword triggering stays on by default; `/workflows-trigger off` disables it and `/workflows-trigger set <word>` changes the word.
-
-Everything else is additive or a fix: the `workflow_control` tool (list/status/pause/resume/stop), edited-script resume, auto-resume on provider usage limits, and persistence/perf hardening. Requires pi ≥ 0.80.8.
-
-Library API note: the unused `createSharedStoreTools` export was removed — use `createAgentStoreTools`.
+Task lists do not depend on position: their tasks are independent, so every task with a journaled result replays on resume wherever it sits in the list, and only the rest run.
 
 ## Upgrading past 3.2
 
-Two behavior changes to know about:
+One behavior change to know about:
 
 - **Subagents no longer load host extensions by default.** Each run now builds one shared, extension-free resource loader for all of its subagents (a memory-leak mitigation). Skills, prompts, and `AGENTS.md` context still load, and the coding tools and any toolset (e.g. `web-research`) you hand a subagent are unaffected. What subagents lose is **host-extension-registered tools** — MCP bridges, browser tools, or anything else another installed extension adds. If an `agentType` names one of those tools in its allowlist, that entry now matches nothing. This also means a subagent can no longer recurse into another orchestration extension, even one not covered by the existing tool denylist.
-- **Checkpoints persisted before this release re-run once.** `checkpoint()`'s resume-identity hash now also covers `default`, `headless`, and `timeoutMs`, so changing any of them between runs correctly invalidates a stale cached answer. This is a one-time effect: any checkpoint cached under the old hash simply re-prompts once and then caches normally again.
 
 ## Host: customize worker model before session creation
 

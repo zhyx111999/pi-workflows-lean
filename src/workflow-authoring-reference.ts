@@ -59,7 +59,7 @@ function publishedFacts(): readonly StaticCapabilityFact[] {
     (fact) =>
       fact.support === CapabilitySupport.SUPPORTED &&
       (fact.classification === CapabilityClassification.RUNTIME_GLOBAL ||
-        fact.classification === CapabilityClassification.WORKFLOW_TOOL_INPUT),
+        fact.classification === CapabilityClassification.SUBAGENTS_TOOL_INPUT),
   );
 }
 
@@ -153,7 +153,7 @@ export function renderWorkflowCapabilityReference(): string {
 Contract format: \`${definition.versions.format.version}\`<br>
 Contract content / skill / extension: \`${definition.versions.content.version}\`
 
-This compact generated index covers supported runtime globals and workflow-tool inputs. For constraints, compatibility behavior, internal boundaries, and dynamic-reference ownership, follow the [exhaustive generated facts](capability-details.md).
+This compact generated index covers supported runtime globals and \`subagents\` tool inputs. For constraints, compatibility behavior, internal boundaries, and dynamic-reference ownership, follow the [exhaustive generated facts](capability-details.md).
 
 ## Supported capability index
 

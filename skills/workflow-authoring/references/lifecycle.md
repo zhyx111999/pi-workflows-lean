@@ -1,38 +1,32 @@
 # Lifecycle, limits, and resume
 
-## Bounds and budget
+## Bounds
 
-Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script. `maxAgents` counts logical `agent()` and `checkpoint()` calls across the shared run tree, including nested workflows. Agent execution retries do not add slots, but each bounded `retry()`, `gate()`, or `loopUntilDry()` callback call that invokes `agent()` does. Treat invocation-level `agentTimeoutMs` and `tokenBudget` as opt-in user constraints, not precautionary defaults. Omit `tokenBudget` unless the user supplies a cap or explicitly asks you to choose one. If asked to choose, allow for every planned agent call, retry, and synthesis step, with headroom. A tight gate can terminate coverage; it does not reduce work already in flight. An omitted `agentTimeoutMs` uses the configured `defaultAgentTimeoutMs` and is otherwise unbounded. An omitted `tokenBudget` uses the configured `defaultTokenBudget` and is otherwise unlimited.
-
-Enter a phase budget with `phase("Name", { budget: N })`; phase metadata does not carry budgets. `N` is a token allowance, not a call or round count: size it for the intended agent work instead of copying a small iteration limit. Token and phase budgets are soft pre-call gates. Spend lands after agents finish, so concurrent work can overshoot. A phase budget gates later calls in that phase; it neither reserves tokens nor cancels active calls. `budget.spent()` and `budget.remaining()` include nested work.
+Bound loops, fan-out, and semantic retries inside the script. Run limits come only from the workflow settings: `defaultConcurrency` (1–16), `defaultAgentRetries` (0–3, recoverable failures only), `defaultAgentTimeoutMs` (unset means no hard timeout), and `defaultMaxAgents` (default 1000). Neither a script nor a workflow call can override them. `defaultMaxAgents` counts logical `agent()` and `checkpoint()` calls; agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. A run that stops at the cap finishes by raising the setting and resuming it. Token usage is measured and reported, never capped.
 
 ## Checkpoints
 
-A checkpoint consumes an agent slot but no tokens. Every workflow run starts in the background and the `workflow` tool ignores `background`, so the prompt overload `checkpoint(prompt, options?)` never reaches a human: it returns the declared `default` (or `true` when omitted), or aborts the run when `headless: "abort"` is selected. Use it only to record a deliberate default decision. `kind`, `choices`, and `timeoutMs` are declared but have no effect beyond resume identity.
-
-The durable `checkpoint({ kind, checkpointId, payload })` overload instead pauses the run until a host controller persists a response and resumes the exact checkpoint ID. It does not choose a headless default or display UI. See [specialized helpers](specialized-helpers.md) for the controller handoff and replay contract.
+A checkpoint consumes an agent slot but no tokens. Every run starts in the background, so nothing prompts a human mid-run. `checkpoint({ kind, checkpointId, payload })` pauses the run until a response is stored for that exact checkpoint ID and the run resumes; it displays no UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
 
 Checkpoint answers are journaled and can replay during an unchanged resume prefix. Do not describe checkpoints as guaranteed arbitrary forms or as remote steering.
 
 ## Retry and recoverable failure
 
-Recoverable execution failures retry according to the per-agent option or invocation-time tool input, then return `null`. Nonrecoverable failures throw without becoming `null`. The logical `retry()` combinator is separate: it performs new agent calls and returns its last result when exhausted unless the script records and handles that outcome.
+Recoverable execution failures retry `defaultAgentRetries` times, then return `null`. Nonrecoverable failures throw without becoming `null`. A semantic retry written as a script loop is separate: each attempt is a new agent call, and the script must record and handle exhaustion itself.
 
 Always retain `{ id, status, result }` or an equivalent ledger for each intended work unit. Filtering `null` before recording identity turns an execution failure into invisible missing coverage.
 
-`AGENT_EMPTY_OUTPUT` (whitespace-only text from a schema-less call) is recoverable and retries like any other transient failure. Some models occasionally produce it on an otherwise-working first attempt; a fleet built on such a model should set `agentRetries: 1-2` rather than treat one occurrence as a failed run. A `schema` call never trips this check — schema noncompliance is its own, nonrecoverable failure (see [serialization](#serialization)).
+`AGENT_EMPTY_OUTPUT` (whitespace-only text from a schema-less call) is recoverable and retries like any other transient failure. Some models occasionally produce it on an otherwise-working first attempt; a fleet built on such a model needs `defaultAgentRetries` of 1–2 rather than treating one occurrence as a failed run. A `schema` call never trips this check — schema noncompliance is its own, nonrecoverable failure (see [serialization](#serialization)).
 
 ## Resume
 
-Resume replays only the longest unchanged prefix of journaled calls. Once one call is new, changed, or unusable, that call and all later calls execute live. Stable lexical call ordering, prompts, labels, routing options, and inputs therefore matter. Retry chains can cascade after an upstream miss. Nested workflows do not reuse the parent's resume journal.
+Resume replays only the longest unchanged prefix of journaled calls. Once one call is new, changed, or unusable, that call and all later calls execute live. Stable lexical call ordering, prompts, labels, routing options, and inputs therefore matter. Semantic retry loops can cascade after an upstream miss.
+
+To revise a paused or failed run, call `subagents_control` with `action: "resume"`, its `runId`, and the edited `script`; the run keeps its ID and its result is delivered when it finishes. Completed and stopped runs do not resume.
 
 Only a call that finishes with a real result is journaled. A call whose every attempt was recoverable (including one that only ever produced `AGENT_EMPTY_OUTPUT`) contributes no journal entry, so resuming that run reruns exactly that call and everything lexically after it live; the earlier, already-succeeded prefix still replays from cache.
 
 The runtime blocks common accidental nondeterminism, but this is not a security boundary. Pass timestamps, randomness, and external decisions through `args`.
-
-## Nesting and shared state
-
-`workflow(savedName, childArgs)` runs sequentially inline, allows one nested level, and shares limiter, counters, token accounting, and shared store with the parent. It is not independent capacity. Use only a saved-workflow name provided by context; do not guess registry entries or pass raw scripts as a new authoring pattern even where compatibility behavior accepts them.
 
 ## Serialization
 

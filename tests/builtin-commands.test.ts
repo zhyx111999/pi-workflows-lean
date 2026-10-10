@@ -215,7 +215,7 @@ test("registerBuiltinWorkflows creates handlers with expected structure", () => 
 // extensions/workflow.ts), and registerSavedWorkflow skips a name that's
 // already registered — so without a dynamic check here, a saved workflow
 // named e.g. "deep-research" would never actually run from its slash command,
-// contradicting the `workflow` tool's `name` path (where saved always wins).
+// contradicting the `subagents` tool's `name` path (where saved always wins).
 // These tests pin "saved wins" on the slash-command path too.
 
 test("a saved workflow shadows the built-in slash command of the same name", async () => {

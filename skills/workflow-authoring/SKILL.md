@@ -7,15 +7,15 @@ metadata:
 
 # Workflow authoring
 
-Load this skill when workflow JavaScript changes. Running an existing workflow needs no authoring reference.
+Load this skill when workflow JavaScript changes. Scripts run through the `subagents` tool's `script` input. Running an existing workflow needs no authoring reference, and independent one-step tasks need no script: pass them as `tasks`.
 
 ## Choose a branch
 
 Read only what the task needs:
 
 - **Write or edit:** start with [runtime](references/runtime.md). Add [pattern selection](references/pattern-selection.md) for topology, [lifecycle](references/lifecycle.md) for limits or resume, and [focused recipes](references/focused-recipes.md) for the matching concern.
-- **Helper task:** read the [retry helper](references/retry-helper.md) only for `retry`, and [specialized helpers](references/specialized-helpers.md) only for `loopUntilDry`, `gate`, or `checkpoint`.
-- **Review:** use the [review checklist](references/review.md), plus only the matching [retry](references/retry-helper.md) or [specialized](references/specialized-helpers.md) helper contract.
+- **Checkpoint:** read [checkpoints](references/checkpoint.md) only when the script pauses with `checkpoint`.
+- **Review:** use the [review checklist](references/review.md).
 - **Debug:** use the [debugging map](references/debugging.md).
 - **Routing:** read [registry ownership](references/registry-ownership.md) before using `model`, `tier`, phase models, or `agentType`; use environment-specific names only when context supplies them.
 - **Exact lookup or portability:** start with the generated [capability index](references/capabilities.md). Follow its exhaustive-facts pointer only for constraints or support boundaries. Use [versions](references/versions.md) when moving scripts between installations.
@@ -26,6 +26,6 @@ Read only what the task needs:
 - Call `agent()` at least once, give every call a short unique `label`, and return plain JSON data explicitly.
 - Give each subagent one task. Do not add a subagent whose job is to cross-check another subagent; the parent model reviews the returned result.
 - Pair ordered results with stable work IDs before filtering. When one agent consumes another's selected result, include both its stable ID and actual data in the downstream prompt. Treat recoverable `null` as missing coverage and report it.
-- Bound fan-out, loops, retries, agents, and concurrency to the task. Treat invocation-level token and time caps as opt-in user constraints, not defaults.
+- Bound fan-out, loops, and semantic retries in the script. Concurrency, agent retries, timeouts, and the agent cap come from settings, not from the call.
 - Use `log()` for new code; `console` is compatibility-only.
 - Write plain JavaScript without imports or filesystem modules. Pass nondeterminism through `args`; `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable.

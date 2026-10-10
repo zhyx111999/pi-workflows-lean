@@ -11,6 +11,7 @@ import {
   loadWorkflowSettings,
   saveWorkflowSettings,
   saveWorkflowSettingsForCwd,
+  workflowRunLimits,
 } from "../src/workflow-settings.js";
 import { withFakeHome } from "./helpers/fake-home.js";
 
@@ -41,6 +42,7 @@ describe("workflow settings", () => {
         keywordTriggerEnabled: false,
         keywordTriggerWord: "pi-workflow",
         defaultEffort: "ultra",
+        defaultTokenBudget: 500_000,
         defaultAgentTimeoutMs: 600000,
         defaultConcurrency: 4,
         progressPanelMode: "detailed",
@@ -73,27 +75,6 @@ describe("workflow settings", () => {
 
       saveWorkflowSettings({ defaultAgentTimeoutMs: null }, settingsPath);
       assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultAgentTimeoutMs: null });
-    });
-  });
-
-  it("saves, loads, and normalizes defaultTokenBudget (#68)", () => {
-    withSettingsPath((settingsPath) => {
-      mkdirSync(dirname(settingsPath), { recursive: true });
-
-      saveWorkflowSettings({ defaultTokenBudget: 500_000 }, settingsPath);
-      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultTokenBudget: 500_000 });
-
-      // null is a meaningful value: "explicitly no budget" (project override).
-      saveWorkflowSettings({ defaultTokenBudget: null }, settingsPath);
-      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultTokenBudget: null });
-
-      // Floats floor; zero/negative/garbage are dropped.
-      writeFileSync(settingsPath, JSON.stringify({ defaultTokenBudget: 1000.9 }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultTokenBudget: 1000 });
-      writeFileSync(settingsPath, JSON.stringify({ defaultTokenBudget: 0 }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
-      writeFileSync(settingsPath, JSON.stringify({ defaultTokenBudget: "lots" }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
     });
   });
 
@@ -154,6 +135,40 @@ describe("workflow settings", () => {
 
       writeFileSync(settingsPath, JSON.stringify({ defaultConcurrency: 0, defaultAgentRetries: -1 }), "utf-8");
       assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+    });
+  });
+
+  it("saves, loads, and normalizes defaultMaxAgents", () => {
+    withSettingsPath((settingsPath) => {
+      saveWorkflowSettings({ defaultMaxAgents: 2500 }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultMaxAgents: 2500 });
+
+      // Floats floor; zero/negative/garbage are dropped so the 1000 default applies.
+      writeFileSync(settingsPath, JSON.stringify({ defaultMaxAgents: 40.7 }), "utf-8");
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultMaxAgents: 40 });
+      for (const invalid of [0, -5, "many", null]) {
+        writeFileSync(settingsPath, JSON.stringify({ defaultMaxAgents: invalid }), "utf-8");
+        assert.deepEqual(loadWorkflowSettings(settingsPath), {}, `defaultMaxAgents ${String(invalid)} is dropped`);
+      }
+    });
+  });
+
+  it("maps the run-limit settings onto manager options", () => {
+    assert.deepEqual(
+      workflowRunLimits({
+        defaultConcurrency: 4,
+        defaultMaxAgents: 50,
+        defaultAgentTimeoutMs: 60_000,
+        defaultAgentRetries: 2,
+        progressPanelMode: "detailed",
+      }),
+      { concurrency: 4, maxAgents: 50, agentTimeoutMs: 60_000, agentRetries: 2 },
+    );
+    assert.deepEqual(workflowRunLimits({}), {
+      concurrency: undefined,
+      maxAgents: undefined,
+      agentTimeoutMs: null,
+      agentRetries: undefined,
     });
   });
 

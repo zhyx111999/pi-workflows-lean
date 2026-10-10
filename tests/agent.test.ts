@@ -262,6 +262,50 @@ test("onSessionCreated reports the effective manager before prompting and preser
   }
 });
 
+test("registerSteer queues host instructions into the live session and unregisters before disposal", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-steer-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-steer-cwd-"));
+  const core = createFauxCore({
+    provider: "fauxtest-steer",
+    models: [{ id: "faux-model", name: "Faux Model", contextWindow: 128000, maxTokens: 4096 }],
+  });
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const registry = await fauxRegistry(home, "fauxtest-steer", core);
+      const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
+      let steer: ((text: string) => Promise<void>) | undefined;
+      let unregistered = 0;
+      core.setResponses([
+        async () => {
+          assert.ok(steer, "the session is steerable before its first provider request");
+          await steer("Also cover the steered detail.");
+          return fauxAssistantMessage("first answer", { stopReason: "stop" });
+        },
+        (context) => {
+          const users = context.messages.filter((message) => message.role === "user");
+          assert.match(JSON.stringify(users.at(-1)?.content), /steered detail/);
+          assert.equal(unregistered, 0, "still registered while the session runs");
+          return fauxAssistantMessage("answer with the steered detail", { stopReason: "stop" });
+        },
+      ]);
+
+      const result = await agent.run("original task", {
+        model: "fauxtest-steer/faux-model",
+        registerSteer: (fn) => {
+          steer = fn;
+          return () => unregistered++;
+        },
+      });
+
+      assert.equal(result, "answer with the steered detail");
+      assert.equal(unregistered, 1, "unregistered exactly once when the session ends");
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("WorkflowAgent retains one session manager per named thread", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" }) as unknown as WorkflowAgentPrivates;
   const first = agent.createSessionManager("implementer");
@@ -2001,20 +2045,20 @@ test("WorkflowAgent constructor accepts all option shapes without throwing", () 
 
 test("DEFAULT_EXCLUDED_SUBAGENT_TOOLS denies the recursive orchestration tools (#107)", () => {
   // Subagents must never see the globally-registered orchestration tools, or they
-  // could start independent nested workflows that bypass the parent run's caps.
+  // could start or steer independent runs that bypass the parent run's caps.
   // This is the always-on denylist folded into every subagent session; the guard
   // is a regression fence so it can't be silently narrowed.
-  assert.deepEqual(DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ["workflow", "workflow_control"]);
+  assert.deepEqual(DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ["subagents", "subagents_control"]);
 });
 
 test("subagentExcludedTools always includes the defaults, plus caller/session names (#107)", () => {
   // This is what run() passes to createAgentSession as excludeTools. Fencing the
   // merge here catches a spread-order regression that drops the defaults — which
   // a deepEqual on the constant alone would miss.
-  assert.deepEqual(subagentExcludedTools(), ["workflow", "workflow_control"]);
-  assert.deepEqual(subagentExcludedTools(["pi-subagents"]), ["workflow", "workflow_control", "pi-subagents"]);
+  assert.deepEqual(subagentExcludedTools(), ["subagents", "subagents_control"]);
+  assert.deepEqual(subagentExcludedTools(["pi-subagents"]), ["subagents", "subagents_control", "pi-subagents"]);
   const merged = subagentExcludedTools(["extra"], ["session-denied"]);
-  assert.ok(merged.includes("workflow") && merged.includes("workflow_control"), "defaults are never dropped");
+  assert.ok(merged.includes("subagents") && merged.includes("subagents_control"), "defaults are never dropped");
   assert.ok(merged.includes("session-denied") && merged.includes("extra"), "both caller lists are folded in");
 });
 
@@ -2911,7 +2955,7 @@ test("a replayed (cache-hit) agent reports the model it actually ran on, not the
     persistLogs: false,
     runId: "replay-model-run",
     mainModel: "main-prov/main-model",
-    resumeJournal: new Map(journal.map((e) => [`${e.runId}:${e.index}`, e] as const)),
+    resumeJournal: new Map(journal.map((e) => [e.index, e] as const)),
     onAgentStart: (e) => replayed.push(e.model),
     onAgentEnd: (e) => replayed.push(e.model),
   });
@@ -2943,7 +2987,7 @@ test("a legacy journal entry with no model degrades to the pre-resolution guess"
     persistLogs: false,
     runId: "legacy-model-run",
     mainModel: "main-prov/main-model",
-    resumeJournal: new Map(legacy.map((e) => [`${e.runId}:${e.index}`, e] as const)),
+    resumeJournal: new Map(legacy.map((e) => [e.index, e] as const)),
     onAgentStart: (e) => replayed.push(e.model),
   });
   assert.deepEqual(
@@ -2982,10 +3026,11 @@ test("agent() with timeout should handle gracefully (timeout returns null)", asy
   const result = await runWorkflow<unknown>(
     `export const meta = { name: 'test', description: 't' }
      let val = null
-     try { val = await agent('slow', { label: 's', timeoutMs: 5 }) } catch (e) { val = 'error:' + (e && e.message || e) }
+     try { val = await agent('slow', { label: 's' }) } catch (e) { val = 'error:' + (e && e.message || e) }
      return { val }`,
     {
       agent: slow,
+      agentTimeoutMs: 5,
       persistLogs: false,
       onAgentEnd: (event) => {
         if (event.error) errorMessage = event.error;
@@ -2996,7 +3041,7 @@ test("agent() with timeout should handle gracefully (timeout returns null)", asy
   // agent() catches timeout internally (recoverable) and returns null
   assert.equal(r.val, null, "timeout agent should return null (recoverable)");
   assert.match(errorMessage, /timed out after 5ms/);
-  assert.match(errorMessage, /raise or omit timeoutMs\/agentTimeoutMs/);
+  assert.match(errorMessage, /raise defaultAgentTimeoutMs in the workflow settings/);
 });
 
 test("agent() default timeout is unbounded", async () => {
@@ -3016,21 +3061,25 @@ test("agent() default timeout is unbounded", async () => {
   assert.equal(result.result.val, "slow");
 });
 
-test("agent() timeoutMs null overrides a run-level timeout", async () => {
+test("agent() ignores the removed per-call timeoutMs and retries options", async () => {
+  // Run limits come only from the run (settings); a script cannot lift them.
+  let calls = 0;
   const slow = {
     async run() {
+      calls++;
       await new Promise((r) => setTimeout(r, 25));
       return "slow";
     },
   };
-  const result = await runWorkflow<{ val: string }>(
+  const result = await runWorkflow<{ val: string | null }>(
     `export const meta = { name: 'test', description: 't' }
-     const val = await agent('slow', { label: 's', timeoutMs: null })
+     const val = await agent('slow', { label: 's', timeoutMs: null, retries: 3 })
      return { val }`,
     { agent: slow, agentTimeoutMs: 5, persistLogs: false },
   );
 
-  assert.equal(result.result.val, "slow");
+  assert.equal(result.result.val, null, "the run-level timeout still applies");
+  assert.equal(calls, 1, "the run-level retry count (0) still applies");
 });
 
 test("agent() with parallel invokes all agents", async () => {

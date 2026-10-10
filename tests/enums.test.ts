@@ -5,7 +5,7 @@ import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, Diagnost
 test("capability contract enums preserve their wire values", () => {
   assert.deepEqual(Object.values(CapabilityClassification), [
     "runtime-global",
-    "workflow-tool-input",
+    "subagents-tool-input",
     "script-contract",
     "compatibility-behavior",
     "internal-substrate",
