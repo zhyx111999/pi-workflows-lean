@@ -143,6 +143,12 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   resumeJournal?: Map<number, JournalEntry>;
   /** Resume: the run being resumed (informational; enables resume mode). */
   resumeFromRunId?: string;
+  /**
+   * No agent() call depends on another's result (a task-list run), so each
+   * journaled call replays on its own hash match instead of only inside the
+   * unchanged prefix.
+   */
+  independentCalls?: boolean;
   /** Called after each live agent completes so the caller can persist the journal. */
   onAgentJournal?: (entry: JournalEntry) => void;
   /** Active durable checkpoint response supplied by WorkflowManager.resume(). */
@@ -645,10 +651,7 @@ export async function runWorkflow<T = unknown>(
       requestedCwd,
       resolvedIsolation,
     );
-    // Call identity: the store delta key and the id carried by every
-    // onAgent* event and persisted agent row. Prefixed with the run id so it
-    // stays unique when hosts aggregate agents across runs.
-    const deltaKey = `${runId}:${callIndex}`;
+    const deltaKey = agentCallId(runId, callIndex);
 
     // Reserve the agent slot synchronously (no await between this and the
     // capacity check) so a parallel() fan-out can't all observe the same
@@ -660,12 +663,14 @@ export async function runWorkflow<T = unknown>(
     // prefix is still intact — this call's index is before the first changed/new
     // call. Once any call misses, it AND everything after it run live (matching
     // Claude Code's contract), so an edited upstream call never leaves stale
-    // downstream results served from the journal.
+    // downstream results served from the journal. Independent calls have no
+    // downstream, so each replays on its own match.
     if (agentOptions.thread) state.resumeBarrierReached = true;
     const cached = agentOptions.thread ? undefined : options.resumeJournal?.get(callIndex);
     const hashMatches = cached != null && cached.hash === callHash;
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-    if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && callIndex < state.firstMiss) {
+    const withinReplay = options.independentCalls || callIndex < state.firstMiss;
+    if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && withinReplay) {
       // Replay preserves the journaled model and historical session identity.
       const replayModel = cached.model ?? displayModel;
       options.onAgentStart?.({
@@ -1400,6 +1405,15 @@ export async function runWorkflow<T = unknown>(
     }
     store.dispose();
   }
+}
+
+/**
+ * Identity of one agent() call: its store delta key, the id carried by every
+ * onAgent* event, and its persisted agent row's callId. Prefixed with the run
+ * id so it stays unique when hosts aggregate agents across runs.
+ */
+export function agentCallId(runId: string, callIndex: number): string {
+  return `${runId}:${callIndex}`;
 }
 
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {

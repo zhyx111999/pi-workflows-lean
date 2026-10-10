@@ -40,7 +40,9 @@ import {
   VALID_PERSISTED_AGENT_STATUSES,
 } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
+import { isTaskListScript, parseSubagentTasks, type SubagentTask, unchangedTaskMoves } from "./subagent-tasks.js";
 import {
+  agentCallId,
   cloneDurableJsonValue,
   type JournalEntry,
   parseWorkflowScript,
@@ -265,8 +267,11 @@ export interface ExecOptions {
 }
 
 export interface WorkflowResumeOptions {
+  /** Edited script: journaled calls replay only within the unchanged prefix. */
   script?: string;
   args?: unknown;
+  /** Edited task list for a task-list run: every unchanged task replays wherever it moved. */
+  tasks?: SubagentTask[];
   checkpointId?: string;
 }
 
@@ -349,6 +354,34 @@ export type WorkflowManagerReloadOptions = Pick<
   | "persistAgentSessions"
   | "inheritMainModel"
 >;
+
+/** Unchanged tasks of an edited task list: old → new call index and agent-row call id. */
+interface TaskListMoves {
+  indices: Map<number, number>;
+  callIds: Map<string, string>;
+}
+
+function taskListMoves(runId: string, persisted: PersistedRunState, opts: WorkflowResumeOptions): TaskListMoves {
+  if (opts.script !== undefined) throw new Error("resume takes an edited task list or an edited script, not both");
+  if (!isTaskListScript(persisted.script)) {
+    throw new Error(`run ${JSON.stringify(runId)} did not start from a task list; resume it with an edited script`);
+  }
+  const indices = unchangedTaskMoves(parseSubagentTasks(persisted.args), parseSubagentTasks(opts.tasks));
+  const callIds = new Map([...indices].map(([from, to]) => [agentCallId(runId, from), agentCallId(runId, to)]));
+  return { indices, callIds };
+}
+
+/**
+ * Point a reused task's agent row at its new call id so replay updates that
+ * row; a changed or dropped task's row keeps its history but no call id.
+ */
+function retargetAgentRow(agent: PersistedAgentState, moves: TaskListMoves): PersistedAgentState {
+  if (!agent || typeof agent !== "object" || typeof agent.callId !== "string") return agent;
+  const callId = moves.callIds.get(agent.callId);
+  if (callId) return { ...agent, callId };
+  const { callId: _dropped, ...history } = agent;
+  return history;
+}
 
 /**
  * Statuses in which a run's execution has genuinely settled — no promise is
@@ -857,6 +890,7 @@ export class WorkflowManager extends EventEmitter {
         providerMiddlewareExtensions: this.providerMiddlewareExtensions,
         resumeJournal,
         resumeFromRunId: resumeJournal ? managed.runId : undefined,
+        independentCalls: isTaskListScript(script),
         resumeCheckpoint,
         onWorkflowCheckpoint: (checkpoint) => {
           const previousCheckpoint = managed.checkpoint;
@@ -1775,6 +1809,8 @@ export class WorkflowManager extends EventEmitter {
     }
 
     if (!persisted?.script || persisted.status === "completed" || persisted.status === "aborted") return false;
+    // Validated before the lease: nothing may throw once it is held.
+    const taskMoves = opts?.tasks ? taskListMoves(runId, persisted, opts) : undefined;
     const lease = this.persistence.acquireRunLease(runId);
     if (!lease) return false;
     // The pre-lease read is stale the moment it returns: another process could
@@ -1793,8 +1829,11 @@ export class WorkflowManager extends EventEmitter {
       return false;
     }
     const script = opts?.script ?? persisted.script;
-    const args = opts?.args !== undefined ? opts.args : persisted.args;
-    const persistedAgents = Array.isArray(persisted.agents) ? persisted.agents : [];
+    const args = opts?.tasks ?? (opts?.args !== undefined ? opts.args : persisted.args);
+    const recordedAgents = Array.isArray(persisted.agents) ? persisted.agents : [];
+    const persistedAgents = taskMoves
+      ? recordedAgents.map((agent) => retargetAgentRow(agent, taskMoves))
+      : recordedAgents;
 
     // Normalize the persisted total-at-pause once: PersistedRunState.tokenUsage
     // has optional cost/cacheRead/cacheWrite (legacy runs may lack them), but
@@ -1830,11 +1869,15 @@ export class WorkflowManager extends EventEmitter {
     // Records from releases whose scripts could nest saved workflows also hold
     // entries tagged with a child frame's runId; those can never replay, so
     // they are dropped together with the obsolete tag.
+    // An edited task list keeps each unchanged task's entry at its new index.
     const persistedJournal = (Array.isArray(persisted.journal) ? persisted.journal : []).flatMap(
       (entry): JournalEntry[] => {
         if (!entry || typeof entry !== "object" || typeof entry.index !== "number") return [];
         const { runId: frameRunId, ...journalEntry } = entry as JournalEntry & { runId?: unknown };
-        return frameRunId === undefined || frameRunId === runId ? [journalEntry] : [];
+        if (frameRunId !== undefined && frameRunId !== runId) return [];
+        if (!taskMoves) return [journalEntry];
+        const index = taskMoves.indices.get(journalEntry.index);
+        return index === undefined ? [] : [{ ...journalEntry, index }];
       },
     );
     const seededAgentTimestamps = new Map<number, { startedAt: string; endedAt?: string }>();
