@@ -14,7 +14,7 @@ export const SUBAGENTS_TOOL_NAME = "subagents";
 
 /** The single always-on gate: it authorizes delegation without forcing it. */
 export const SUBAGENTS_GATE_GUIDELINE =
-  "Whether to call subagents is decided by the note appended to the user message.";
+  "Whether to call subagents is decided by the hidden note that follows the user message.";
 
 const subagentsSchema = Type.Object({
   tasks: Type.Optional(

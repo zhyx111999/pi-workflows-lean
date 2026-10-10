@@ -7,7 +7,7 @@
 
 An independently maintained lean fork of [pi-dynamic-workflows](https://github.com/QuintinShaw/pi-dynamic-workflows) 3.13.0. It does not follow upstream releases and is not published to npm.
 
-Turn one request into a JavaScript orchestration script that fans work out across isolated subagents, routes each task to the right model, cross-checks the results, and returns one synthesized answer. Intermediate work stays in script variables instead of filling your chat context.
+Turn one request into subagents that work in parallel — a task list for independent jobs, or a JavaScript orchestration script for multi-step work — with each task routed to the right model and one combined result delivered back. Intermediate work stays in subagent sessions instead of filling your chat context.
 
 Built for work that is too broad for one agent and one context window. The built-in pattern left in this fork is `/deep-research`.
 
@@ -15,15 +15,13 @@ Built for work that is too broad for one agent and one context window. The built
 
 ## Install
 
-`dist/` is not committed, so build before installing from a local clone:
+`dist/` is committed, so Pi installs and runs it straight from git (the repository is private, so git needs credentials for it):
 
 ```bash
-git clone https://github.com/zhyx111999/pi-workflows-lean.git
-cd pi-workflows-lean
-npm install
-npm run build
-pi install /absolute/path/to/pi-workflows-lean
+pi install git:github.com/zhyx111999/pi-workflows-lean
 ```
+
+A local clone works too: `pi install /absolute/path/to/pi-workflows-lean`.
 
 Run `/reload` in Pi, then ask naturally:
 
@@ -33,21 +31,21 @@ Run a workflow to audit every route under src/routes/ for missing auth checks.
 
 Pi starts subagents in the background — a task list for independent work, or a workflow script for multi-step work. A live panel tracks progress while you keep working, and the final result is delivered back into the conversation automatically.
 
-Keyword triggering is on by default: use the bounded word **workflow** or **workflows** in a message to arm workflow mode — the assistant then handles a request by fanning it out across agents, but still answers plainly if you're only asking *about* workflows (the trigger authorizes the tool, it doesn't force it). Or run `/workflows run <prompt>` explicitly. Identifier-like text and paths such as `myworkflow`, `workflow_name`, and `src/workflow-editor.ts` do not trigger. You can change the keyword with `/workflows-trigger set pi-workflow` or disable it with `/workflows-trigger off`.
+Each message you type carries a hidden note for the model, not shown in the chat, on when delegating to subagents is worthwhile. `/workflows run <prompt>` starts subagents explicitly. Configuration is plain JSON that the model can edit for you; the packaged `subagents-setup` skill tells it where everything lives.
 
 ## How it works
 
-1. **Orchestrate** — Pi writes a deterministic JavaScript workflow with `agent()`, `parallel()`, `pipeline()`, and `phase()`.
+1. **Orchestrate** — Pi lists independent tasks, or writes a deterministic JavaScript workflow with `agent()`, `parallel()`, `pipeline()`, and `phase()` when steps depend on each other.
 2. **Fan out** — fresh subagent sessions run concurrently, optionally on different models or isolated git worktrees.
-3. **Verify and return** — the workflow cross-checks findings, journals completed work for resume, and delivers one result.
+3. **Return** — completed work is journaled for resume, and one result is delivered back into the conversation.
 
 The orchestration itself is plain JavaScript:
 
 ```js
 export const meta = {
   name: 'auth_audit',
-  description: 'Find routes missing auth checks and verify the findings',
-  phases: [{ title: 'Scan' }, { title: 'Review' }, { title: 'Verify' }],
+  description: 'Find routes missing auth checks',
+  phases: [{ title: 'Scan' }, { title: 'Review' }, { title: 'Report' }],
 }
 
 phase('Scan')
@@ -63,9 +61,9 @@ const findings = await parallel(
   ),
 )
 
-phase('Verify')
+phase('Report')
 return await agent(
-  'Synthesize and double-check these findings:\n' + findings.join('\n\n'),
+  'Combine these findings into one report:\n' + findings.join('\n\n'),
   { tier: 'big' },
 )
 ```
@@ -250,24 +248,9 @@ Finished runs (completed, failed, or aborted) are retained in full on disk, capp
 </details>
 
 <details>
-<summary><strong>Keyword trigger</strong></summary>
-
-Set a literal, case-insensitive custom trigger in `~/.pi/workflows/settings.json`:
-
-```json
-{
-  "keywordTriggerWord": "pi-workflow"
-}
-```
-
-The default `workflow` also matches `workflows`; a custom word matches exactly. Trigger words are case-insensitive and Unicode identifier-bounded, and do not activate inside paths, slash commands, or identifier-like text. Detection is purely textual, applied at submit time to the message you send — it does not depend on, or own, Pi's editor component, so it works the same regardless of what else is installed.
-
-</details>
-
-<details>
 <summary><strong>How it maps to Claude Code dynamic workflows</strong></summary>
 
-| Claude Code dynamic workflows | pi-dynamic-workflows on Pi |
+| Claude Code dynamic workflows | pi-workflows-lean on Pi |
 | --- | --- |
 | Code-mode orchestration | JavaScript `agent()` / `parallel()` / `pipeline()` / `phase()` in a VM realm (for determinism, not a security boundary) |
 | Isolated subagent contexts | Fresh in-memory Pi sessions; results remain in variables |

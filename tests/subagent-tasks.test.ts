@@ -211,6 +211,36 @@ test(
 );
 
 test(
+  "a finished task list reruns with an edited list, reusing every unchanged task, even from another process",
+  withTempCwd(async (cwd) => {
+    const fake = taskAgent();
+    const manager = new WorkflowManager({ cwd, agent: fake.runner });
+    const { runId, promise } = manager.startInBackground(SUBAGENT_TASKS_SCRIPT, [
+      { label: "a", task: "do a" },
+      { label: "b", task: "do b" },
+    ]);
+    await promise;
+    assert.equal(manager.getPersistence().load(runId)?.status, "completed");
+    assert.equal(await manager.resume(runId), false, "a finished run has nothing to continue without an edit");
+
+    // A fresh manager reads only the persisted record, as after a Pi restart.
+    const rerunFake = taskAgent();
+    const rerunner = new WorkflowManager({ cwd, agent: rerunFake.runner });
+    const edited: SubagentTask[] = [
+      { label: "a", task: "do a" },
+      { label: "b", task: "do b again" },
+    ];
+    assert.equal(await rerunner.resume(runId, { tasks: edited }), true);
+    await settled(rerunner, runId);
+
+    assert.deepEqual(rerunFake.live, ["do b again"], "only the edited task runs");
+    const record = rerunner.getPersistence().load(runId);
+    assert.equal(record?.status, "completed");
+    assert.equal(record?.result, "## a\n\na:default:do a\n\n## b\n\nb:default:do b again");
+  }),
+);
+
+test(
   "resume rejects a task list for a script run and a task list combined with a script",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({

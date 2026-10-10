@@ -245,8 +245,8 @@ describe("buildForcedWorkflowPrompt (/workflows run)", () => {
     const result = buildForcedWorkflowPrompt("audit the repo");
     assert.ok(result.startsWith("audit the repo"), "starts with the original prompt");
     assert.match(result, /\/workflows run/, "identifies the explicit command");
-    assert.match(result, /Call the `workflow` tool now/i, "tells the model to run the workflow");
-    assert.match(result, /do not answer in prose instead of running the workflow/i);
+    assert.match(result, /Call the `subagents` tool now/i, "tells the model to start the subagents");
+    assert.match(result, /do not answer in prose instead of starting the subagents/i);
   });
 
   it("says the turn ends and the result is delivered back (#89)", () => {

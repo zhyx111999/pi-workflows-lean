@@ -44,7 +44,7 @@ test("subagents is one background entry point with a short description and a sin
   assert.match(tool.description, /Returns a runId at once.*delivered to this conversation when the run finishes/i);
   assert.match(tool.promptSnippet ?? "", /background subagents/);
   assert.deepEqual(tool.promptGuidelines, [SUBAGENTS_GATE_GUIDELINE]);
-  assert.match(SUBAGENTS_GATE_GUIDELINE, /decided by the note appended to the user message/);
+  assert.match(SUBAGENTS_GATE_GUIDELINE, /decided by the hidden note that follows the user message/);
   assert.deepEqual(Object.keys(properties()).sort(), ["args", "name", "script", "tasks"]);
 });
 

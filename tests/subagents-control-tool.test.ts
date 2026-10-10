@@ -42,10 +42,12 @@ function fakeManager(initial: PersistedRunState[], liveSnapshots: Record<string,
     listRuns: () => [...runs.values()],
     listAllRuns: () => [...runs.values()],
     getSnapshot: (runId: string) => liveSnapshots[runId] ?? null,
-    async resume(runId: string, options?: unknown) {
+    async resume(runId: string, options?: { tasks?: unknown; script?: unknown }) {
       calls.push({ action: "resume", runId, options });
       const item = runs.get(runId);
-      if (!item || (item.status !== "paused" && item.status !== "failed" && item.status !== "pending")) return false;
+      // Mirrors WorkflowManager.resume: a finished run reruns only with an edit.
+      const edited = options?.tasks !== undefined || options?.script !== undefined;
+      if (!item || item.status === "running" || (item.status === "completed" && !edited)) return false;
       item.status = "running";
       return true;
     },
@@ -391,16 +393,26 @@ test("stop ends a run, including one only on disk, and explains a refused stop",
   assert.match(stopped.text, /^action=stop result=stopped runId=cold-restart-1 .*status=aborted/);
 
   const refused = await execute(fixture.manager, { action: "stop", runId: "done-1" });
-  assert.match(refused.text, /result=error runId=done-1 error=cannot stop a completed run allowed=status,read/);
+  assert.match(refused.text, /result=error runId=done-1 error=cannot stop a completed run allowed=status,read,resume/);
   const unknown = await execute(fixture.manager, { action: "status", runId: "missing" });
   assert.match(unknown.text, /result=error runId=missing error=run not found allowed=list/);
 });
 
-test("resume explains why a run cannot continue", async () => {
+test("resume continues a stopped run, reruns a finished one only with an edit, and explains a refusal", async () => {
   const fixture = fakeManager([run("completed", "done-1"), run("running", "live-1"), run("aborted", "stopped-1")]);
   assert.match(
     (await execute(fixture.manager, { action: "resume", runId: "done-1" })).text,
-    /error=it already completed; start a new subagents call for more work allowed=status,read/,
+    /error=it already finished; pass edited tasks or script to rerun it, reusing unchanged work allowed=status,read,resume/,
+  );
+  assert.match(
+    (
+      await execute(fixture.manager, {
+        action: "resume",
+        runId: "done-1",
+        script: "export const meta = { name: 'edited', description: 'edited' }\nreturn await agent('x')",
+      })
+    ).text,
+    /^action=resume result=resumed runId=done-1 /,
   );
   assert.match(
     (await execute(fixture.manager, { action: "resume", runId: "live-1" })).text,
@@ -408,7 +420,7 @@ test("resume explains why a run cannot continue", async () => {
   );
   assert.match(
     (await execute(fixture.manager, { action: "resume", runId: "stopped-1" })).text,
-    /error=it was stopped and cannot continue/,
+    /^action=resume result=resumed runId=stopped-1 /,
   );
 });
 
@@ -625,6 +637,6 @@ test(
     assert.deepEqual(steered, ["also check tests"]);
     assert.equal(manager.getRun(runId)?.result?.result, "## worker\n\nwork with also check tests");
     const late = await execute(manager, { action: "message", runId, label: "worker", text: "too late" });
-    assert.match(late.text, /result=error .*message reaches only running subagents.*allowed=status,read$/);
+    assert.match(late.text, /result=error .*message reaches only running subagents.*allowed=status,read,resume$/);
   }),
 );

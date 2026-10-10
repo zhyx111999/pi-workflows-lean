@@ -1811,7 +1811,10 @@ describe("installResultDelivery", () => {
     const calls = piCalls(pi);
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("paused"), "should say paused");
-    assert.ok(calls[0].content.includes("/workflows resume test-run-1"), "should name the resume command");
+    assert.ok(
+      calls[0].content.includes('subagents_control action "resume", runId "test-run-1"'),
+      "should name the resume action",
+    );
     assert.ok(calls[0].content.includes("Resets in ~3h"), "should include the reset hint");
     assert.ok(!calls[0].content.includes("failed"), "should not say failed");
   });
@@ -1825,6 +1828,28 @@ describe("installResultDelivery", () => {
 
     const calls = piCalls(pi);
     assert.equal(calls.length, 0);
+  });
+
+  it("tells the model how to answer a script waiting at a durable checkpoint", () => {
+    const pi = createMockPi();
+    const manager = createMockManager(makeRun());
+
+    setup(pi, manager);
+    manager.emit("paused", {
+      runId: "test-run-1",
+      reason: "workflow_checkpoint",
+      checkpoint: { checkpointId: "publish-1", kind: "approval", payload: { draft: "x".repeat(900) } },
+    });
+
+    const calls = piCalls(pi);
+    assert.equal(calls.length, 1);
+    const content = calls[0].content;
+    assert.match(content, /waiting at checkpoint "publish-1" \(approval\)/);
+    assert.ok(
+      content.includes('subagents_control action "resume", runId "test-run-1", checkpointId "publish-1"'),
+      "names the exact resume call",
+    );
+    assert.ok(content.includes("…") && content.length < 900, "previews a long payload instead of copying it");
   });
 
   it("does not deliver or trigger a turn when a real background run is manually paused, then resumes only explicitly", async () => {
@@ -1867,7 +1892,7 @@ describe("installResultDelivery", () => {
     }
   });
 
-  it("does not deliver or trigger a turn when a real background run is manually stopped", async () => {
+  it("does not deliver or trigger a turn when a real background run is manually stopped, then continues only explicitly", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-dw-stop-delivery-"));
     const agent = controlledAgent();
     const manager = new WorkflowManager({ cwd, agent: agent.runner });
@@ -1891,7 +1916,15 @@ describe("installResultDelivery", () => {
       assert.equal(manager.getRun(runId)?.status, "aborted");
       assert.equal(errors.length, 0, "manual stop teardown is not an unexpected error");
       assert.equal(piCalls(pi).length, 0, "manual stop must not deliver a failed background result");
-      assert.equal(await manager.resume(runId), false, "a stopped run remains non-resumable");
+
+      assert.equal(await manager.resume(runId), true, "only an explicit resume continues a stopped run");
+      await agent.waitForCalls(2);
+      agent.resolve(1, "resumed");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const calls = piCalls(pi);
+      assert.equal(calls.length, 1, "the explicitly resumed completion is delivered once");
+      assert.match(calls[0].content, /finished/);
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

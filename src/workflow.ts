@@ -154,12 +154,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /** Persist a durable checkpoint transition before it becomes externally observable. */
   onWorkflowCheckpoint?: (checkpoint: WorkflowCheckpoint) => void;
   /**
-   * Called once per failed-and-retried attempt with that attempt's finalized token cost.
-   * @deprecated Use `onAgentUsage` for per-agent display and `onTokenUsage` for
-   * finalized run accounting. Do not combine those cumulative callbacks with this delta.
-   */
-  onRetrySpend?: (tokens: number) => void;
-  /**
    * Backoff (ms) before retry attempt N (1-based — the attempt that just
    * failed). Default: min(250 * 2^(N-1), 2000) — immediate retries let a whole
    * parallel() batch hammer the provider synchronously. The retry keeps its
@@ -935,11 +929,6 @@ export async function runWorkflow<T = unknown>(
               log(
                 `agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`,
               );
-              // This attempt's spend already accrued into state.tokenUsage
-              // above — but it will never reach onAgentEnd (only
-              // the final attempt does), so report it on the dedicated channel
-              // instead (see WorkflowRunOptions.onRetrySpend).
-              options.onRetrySpend?.(usageCommit.tokens);
               // Small capped backoff between attempts (audit2 #7) — an
               // immediate retry storms the provider when a parallel() batch
               // fails together. The abort check after the wait keeps pause/stop

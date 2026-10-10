@@ -75,7 +75,7 @@ export function createSubagentsControlTool(
       "status runId (each subagent's state, the phase, a waiting checkpoint);",
       `read [runId] [label] (last ${AGENT_TAIL_CHARS} chars of one subagent; default: latest run, latest updated subagent);`,
       "stop runId;",
-      "resume runId (continue a paused or failed run; edited tasks or script reuse unchanged work; answer a checkpoint with checkpointId and response);",
+      "resume runId (continue a paused, failed, or stopped run; rerun any run with edited tasks or script, reusing unchanged work; answer a checkpoint with checkpointId and response);",
       "message runId label text (instruct a running subagent).",
     ].join(" "),
     parameters: subagentsControlSchema,
@@ -241,8 +241,7 @@ function actionResult(action: string, outcome: string, run: RunSummaryDetails): 
 function refused(action: "stop" | "resume", run: PersistedRunState): ControlResult {
   const reasons: Partial<Record<RunStatus, string>> = {
     running: "it is still running; message it, or stop it first",
-    completed: "it already completed; start a new subagents call for more work",
-    aborted: "it was stopped and cannot continue",
+    completed: "it already finished; pass edited tasks or script to rerun it, reusing unchanged work",
   };
   const reason =
     action === "resume"
@@ -266,10 +265,9 @@ function allowedActions(status: RunStatus): string[] {
       return ["status", "read", "resume", "stop"];
     case "failed":
     case "pending":
-      return ["status", "read", "resume"];
     case "completed":
     case "aborted":
-      return ["status", "read"];
+      return ["status", "read", "resume"];
   }
 }
 

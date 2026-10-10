@@ -17,15 +17,15 @@ import { withFakeHomeAsync } from "./helpers/fake-home.js";
 // with an empty agentType registry so user configuration cannot alter it.
 // docs/workflow-context-surfaces.json records the same sizes.
 //
-// Always-on prompt (157 bytes): the subagents promptSnippet plus the single gate
-// guideline that defers the call decision to the note appended to user messages.
+// Always-on prompt (165 bytes): the subagents promptSnippet plus the single gate
+// guideline that defers the call decision to the hidden note after user messages.
 // subagents_control adds no prompt lines.
-const RENDERED_PROMPT_BUDGET_BYTES = 157;
-// Provider-visible tool definitions (1,919 bytes for both tools): `subagents`
+const RENDERED_PROMPT_BUDGET_BYTES = 165;
+// Provider-visible tool definitions (1,951 bytes for both tools): `subagents`
 // names its three start modes and points script authors at the skill in one line;
 // `subagents_control` documents each action's fields in its description so most
 // parameters need no description of their own.
-const TOOL_DEFINITIONS_BUDGET_BYTES = 1_919;
+const TOOL_DEFINITIONS_BUDGET_BYTES = 1_951;
 
 test("rendered tool prompt contribution stays within its accepted size", async () => {
   await withRenderedTools(async ({ systemPrompt, promptLines }) => {

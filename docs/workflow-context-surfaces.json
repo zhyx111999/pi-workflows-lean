@@ -10,11 +10,11 @@
   "surfaces": {
     "permanentToolPrompt": {
       "serialization": "UTF-8 bytes of LF-joined Pi prompt lines",
-      "bytes": 157
+      "bytes": 165
     },
     "providerVisibleToolDefinitions": {
       "serialization": "sum of UTF-8 bytes of JSON.stringify({ name, description, parameters }) per tool",
-      "bytes": 1919,
+      "bytes": 1951,
       "tools": [
         {
           "name": "subagents",
@@ -22,7 +22,7 @@
         },
         {
           "name": "subagents_control",
-          "bytes": 955
+          "bytes": 987
         }
       ]
     },
@@ -49,7 +49,7 @@
     },
     "ordinaryWorkflowOwnedAlwaysOn": {
       "serialization": "sum of permanent prompt, provider-visible tool definitions, and every registered skill's discovery bytes",
-      "bytes": 3092
+      "bytes": 3132
     },
     "workflowAuthoringSkillCorpus": {
       "serialization": "sum of UTF-8 bytes for every file under skills/workflow-authoring",

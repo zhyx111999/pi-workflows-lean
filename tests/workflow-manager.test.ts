@@ -1248,7 +1248,11 @@ test(
     assert.deepEqual(live?.result, expected);
     assert.deepEqual(persisted?.result, expected);
     assert.match(live?.resultPreview ?? "", /complete/);
-    assert.equal(persistedRun?.journal, undefined, "completed runs do not duplicate full results in the journal");
+    assert.deepEqual(
+      persistedRun?.journal?.map((entry) => entry.result),
+      [expected],
+      "finished runs keep their journal so an edited rerun can reuse each unchanged call",
+    );
   }),
 );
 
@@ -2857,7 +2861,8 @@ await checkpoint({kind:'approval', checkpointId:'gate', payload:{}});`);
     await rejected;
     assert.equal(manager.getRun(started.runId)?.status, "aborted");
     assert.equal(manager.getPersistence().load(started.runId)?.status, "aborted");
-    assert.equal(await manager.resume(started.runId, { checkpointId: "gate" }), false);
+    // Stopping does not answer the checkpoint: the stopped run continues only with a response.
+    await assert.rejects(manager.resume(started.runId, { checkpointId: "gate" }), /has no attached response/);
   }),
 );
 
@@ -3869,7 +3874,7 @@ test(
 );
 
 test(
-  "state transition: running -> stop -> resume (stop then try resume -> false)",
+  "state transition: running -> stop -> resume (a stopped run continues its unfinished work)",
   withTempCwd(async (cwd) => {
     const da = deferredAgent();
     const manager = new WorkflowManager({ cwd, agent: da.runner });
@@ -3880,12 +3885,15 @@ test(
 
     assert.equal(manager.stop(runId), true);
     assert.equal(manager.getRun(runId)?.status, "aborted");
-
-    const resumed = await manager.resume(runId);
-    assert.equal(resumed, false, "cannot resume a stopped/aborted run");
-
-    da.resolve("done");
     await promise.catch(() => {});
+
+    assert.equal(await manager.resume(runId), true, "a stopped run can continue");
+    await new Promise((r) => setTimeout(r, 20));
+    da.resolve("done");
+    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.equal(manager.getPersistence().load(runId)?.status, "completed");
   }),
 );
 
