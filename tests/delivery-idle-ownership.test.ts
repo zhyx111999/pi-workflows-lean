@@ -4,11 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay, setImmediate as tick } from "node:timers/promises";
+import { _setStreamingAckTimeoutForTests } from "../src/task-panel/host-send-capture.js";
 import {
   _getStealMapForTests,
   _registerHostSessionForTests,
   _resetDeliveryRegistriesForTests,
-  _setStreamingAckTimeoutForTests,
   suspendSessionDelivery,
 } from "../src/task-panel.js";
 
