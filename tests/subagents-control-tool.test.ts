@@ -41,6 +41,7 @@ function fakeManager(initial: PersistedRunState[], liveSnapshots: Record<string,
   const manager = {
     listRuns: () => [...runs.values()],
     listAllRuns: () => [...runs.values()],
+    findRun: (runId: string) => runs.get(runId),
     getSnapshot: (runId: string) => liveSnapshots[runId] ?? null,
     async resume(runId: string, options?: { tasks?: unknown; script?: unknown }) {
       calls.push({ action: "resume", runId, options });
@@ -429,6 +430,7 @@ test("a manager failure becomes a structured error result", async () => {
   const manager = {
     listRuns: () => [throwing],
     listAllRuns: () => [throwing],
+    findRun: () => throwing,
     getSnapshot: () => null,
     stop() {
       throw new Error("disk I/O failed");

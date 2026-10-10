@@ -3105,6 +3105,86 @@ test(
   }),
 );
 
+/** Start a run on `manager`, pause it, and wait until its execution settles and releases the lease. */
+async function settledPausedRun(manager: WorkflowManager): Promise<string> {
+  const { runId, promise } = manager.startInBackground(oneAgentScript);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(manager.pause(runId), true);
+  await promise.catch(() => {});
+  assert.equal(manager.getRun(runId)?.lease, undefined, "the paused execution settled");
+  return runId;
+}
+
+test(
+  "session adoption re-homes a settled paused copy without rolling back a run another manager finished",
+  withTempCwd(async (cwd) => {
+    const owner = new WorkflowManager({ cwd, sessionId: "first", agent: deferredAgent().runner });
+    owner.on("error", () => {});
+    const runId = await settledPausedRun(owner);
+
+    const other = new WorkflowManager({ cwd, agent: fakeAgent({}, "finished elsewhere") });
+    assert.equal(await other.resume(runId), true);
+    for (let i = 0; i < 200 && other.getPersistence().load(runId)?.status !== "completed"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    assert.equal(owner.adoptLiveRunsToSession("second", "first"), 1);
+    const record = other.getPersistence().load(runId);
+    assert.equal(record?.status, "completed", "the stale paused copy must not overwrite the newer record");
+    assert.deepEqual(record?.result, { a: "finished elsewhere" });
+    assert.equal(record?.sessionId, "second", "only the delivery owner moves");
+  }),
+);
+
+test(
+  "a stopped run stays leased until its execution settles, so another manager cannot resume it into the tail's write",
+  withTempCwd(async (cwd) => {
+    // The agent ignores the abort for a while, like a provider call slow to cancel.
+    const owner = new WorkflowManager({ cwd, agent: delayedAgent(300) });
+    owner.on("error", () => {});
+    const { runId, promise } = owner.startInBackground(oneAgentScript);
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(owner.stop(runId), true);
+
+    const other = new WorkflowManager({ cwd, agent: deferredAgent().runner });
+    other.on("error", () => {});
+    assert.equal(await other.resume(runId), false, "the stopping execution still owns the run");
+    await promise.catch(() => {});
+    assert.equal(other.getPersistence().load(runId)?.status, "aborted");
+    assert.equal(await other.resume(runId), true, "the run resumes once its execution has settled");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(other.getPersistence().load(runId)?.status, "running");
+    assert.equal(other.stop(runId), true);
+  }),
+);
+
+test(
+  "stopping a settled paused copy is refused while another manager runs the resumed run",
+  withTempCwd(async (cwd) => {
+    const owner = new WorkflowManager({ cwd, agent: deferredAgent().runner });
+    owner.on("error", () => {});
+    const runId = await settledPausedRun(owner);
+
+    const otherAgent = deferredAgent();
+    const other = new WorkflowManager({ cwd, agent: otherAgent.runner });
+    other.on("error", () => {});
+    assert.equal(await other.resume(runId), true);
+    await new Promise((r) => setTimeout(r, 20));
+
+    const stopped: string[] = [];
+    owner.on("stopped", (event: { runId: string }) => stopped.push(event.runId));
+    assert.equal(owner.stop(runId), false, "the other manager owns the running run");
+    assert.deepEqual(stopped, []);
+    assert.equal(other.getPersistence().load(runId)?.status, "running", "the record is untouched");
+
+    otherAgent.resolve("done");
+    for (let i = 0; i < 200 && other.getRun(runId)?.status === "running"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    assert.equal(other.getPersistence().load(runId)?.status, "completed");
+  }),
+);
+
 // ─── getRun tests ──────────────────────────────────────────────────────────────
 
 test(
