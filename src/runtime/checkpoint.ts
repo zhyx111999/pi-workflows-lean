@@ -2,8 +2,9 @@
 
 import { isDeepStrictEqual } from "node:util";
 import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode } from "../errors.js";
-import { cloneDurableJsonValue, type WorkflowCheckpoint, type WorkflowCheckpointInput } from "../workflow.js";
+import type { WorkflowCheckpoint, WorkflowCheckpointInput } from "../workflow.js";
 import { hashCheckpointCall } from "./call-identity.js";
+import { cloneDurableJsonValue } from "./durable-json.js";
 import type { RunContext } from "./run-context.js";
 
 const CHECKPOINT_IDENTIFIER = /^[A-Za-z0-9._:-]{1,200}$/u;

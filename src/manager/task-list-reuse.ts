@@ -1,8 +1,8 @@
 // Maps the unchanged tasks of an edited task list onto the calls of the original run.
 
 import type { PersistedAgentState, PersistedRunState } from "../run-persistence.js";
+import { agentCallId } from "../runtime/call-identity.js";
 import { isTaskListScript, parseSubagentTasks, type SubagentTask, unchangedTaskMoves } from "../subagent-tasks.js";
-import { agentCallId } from "../workflow.js";
 
 /** Unchanged tasks of an edited task list: old → new call index, and old → new agent call id. */
 export interface TaskListMoves {

@@ -3,8 +3,8 @@
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
 import type { ThemeLike, WorkflowAgentSnapshot } from "../display.js";
 import type { NavigatorModel, NavigatorState } from "../workflow-ui.js";
-import { shortModel } from "../workflow-ui.js";
 import { asText } from "./as-text.js";
+import { shortModel } from "./format.js";
 import { renderHistoryEntryLines } from "./history-view.js";
 import type { NavigatorTextRenderCache } from "./render-cache.js";
 import { renderMarkdownLines, renderResultLines } from "./rich-text.js";

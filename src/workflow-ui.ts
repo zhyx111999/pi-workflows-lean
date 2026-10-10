@@ -71,14 +71,6 @@ import type { SavedWorkflow, SavedWorkflowMutationResult, WorkflowStorage } from
 export type ViewKind = "runs" | "phases" | "agents" | "detail" | "savedDetail";
 export type NavigatorInputMode = "browse" | "filter" | "rename" | "confirm";
 
-/** Short, human-friendly model label: drop the provider prefix for display. */
-export function shortModel(model: string | undefined): string | undefined {
-  if (!model) return undefined;
-  const m = asText(model);
-  const slash = m.indexOf("/");
-  return slash > 0 ? m.slice(slash + 1) : m;
-}
-
 type NavigatorStorage = Pick<WorkflowStorage, "list" | "delete" | "rename">;
 
 /** Reads run/phase/agent data from the manager, preferring live snapshots. */

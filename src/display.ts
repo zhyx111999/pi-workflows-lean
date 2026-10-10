@@ -53,7 +53,7 @@ export interface WorkflowSnapshot {
     cost?: number;
     cacheRead?: number;
     cacheWrite?: number;
-    /** True when the totals include character-heuristic estimates (#209). */
+    /** True when the totals include character-heuristic estimates. */
     estimated?: boolean;
   };
   runId?: string;
@@ -133,7 +133,7 @@ export function fmtTokenCount(fresh: number, cacheRead: number, fmt: (n: number)
  * so surfaces omit the segment instead of rendering a false "0 tok" — e.g. for a
  * journal-replayed resume or a run whose agents were all skipped. Every surface
  * should use this rather than re-implementing the zero guard. When
- * `figures.estimated` is set the segment is prefixed with `~` (#209) so a
+ * `figures.estimated` is set the segment is prefixed with `~` so a
  * heuristic-derived total never renders as metered. The marker covers the whole
  * segment (fresh + cached) even when only one component is heuristic —
  * conservative by design.
@@ -145,7 +145,7 @@ export function fmtTokenSegment(
   if (figures.fresh + figures.cacheRead <= 0) return "";
   const rendered = fmtTokenCount(figures.fresh, figures.cacheRead, fmt);
   // "~" marks character-heuristic figures so an estimate never reads as a
-  // metered total (#209).
+  // metered total.
   return figures.estimated ? `~${rendered}` : rendered;
 }
 
@@ -333,11 +333,9 @@ export function renderWorkflowLines(
   options: WorkflowDisplayOptions = {},
   theme: ThemeLike = NO_THEME,
 ): string[] {
-  // A non-positive cap falls back to the default (mirrors clampMaxAgents in
-  // the task panel): slice(-0) === slice(0) would otherwise render ALL agents
-  // (audit2 #31).
-  // Math.floor: a fractional cap like 0.5 would pass the >0 guard yet
-  // slice(-0.5) → slice(0) renders ALL agents — same bug class as #31.
+  // A non-positive or fractional cap falls back or rounds down (mirrors
+  // clampMaxAgents in the task panel): slice(-0) and slice(-0.5) both equal
+  // slice(0) and would render every agent.
   const maxAgents =
     options.maxAgents !== undefined && options.maxAgents > 0 ? Math.max(1, Math.floor(options.maxAgents)) : 8;
   const showResultPreviews = options.showResultPreviews ?? false;
@@ -361,7 +359,7 @@ export function renderWorkflowLines(
     : unique(snapshot.agents.map((agent) => agent.phase).filter(Boolean) as string[]);
   const rendered = new Set<WorkflowAgentSnapshot>();
 
-  // Single-pass phase bucketing (audit2 #24): per-phase filter() loops made
+  // Single-pass phase bucketing: per-phase filter() loops made
   // every render O(phases × agents), which dominates at large fleets.
   const agentsByPhase = new Map<string, WorkflowAgentSnapshot[]>();
   for (const agent of snapshot.agents) {

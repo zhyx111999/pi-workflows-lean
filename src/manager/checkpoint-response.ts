@@ -2,7 +2,8 @@
 
 import { isDeepStrictEqual } from "node:util";
 import type { PersistedRunState } from "../run-persistence.js";
-import { cloneDurableJsonValue, type WorkflowCheckpoint } from "../workflow.js";
+import { cloneDurableJsonValue } from "../runtime/durable-json.js";
+import type { WorkflowCheckpoint } from "../workflow.js";
 import type { ManagedRun } from "../workflow-manager.js";
 import { waitForPausedExecutionSettlement } from "./execution-settlement.js";
 import type { LiveRuns } from "./live-runs.js";

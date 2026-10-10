@@ -6,7 +6,7 @@
  * the task panel and `/workflows` (pause/stop work like any managed run), and
  * the report is delivered back into the conversation on completion by
  * installResultDelivery. Running inline in the handler instead would block the
- * whole session until the workflow finished (#104).
+ * whole session until the workflow finished.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -37,7 +37,7 @@ function tokenizeArgs(input: string): string[] {
  * parse, run lease) — surface that as a notify instead of an unhandled error.
  * Async failures are handled by the manager's generic delivery ("✗ Background
  * workflow … failed"), so no handler-side await is needed — that await is
- * exactly what used to hang the session (#104).
+ * exactly what used to hang the session.
  */
 function startBackground(
   manager: WorkflowManager,

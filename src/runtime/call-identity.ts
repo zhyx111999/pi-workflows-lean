@@ -40,3 +40,12 @@ export function hashAgentCall(call: AgentCallIdentity): string {
 export function hashCheckpointCall(input: WorkflowCheckpointInput): string {
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
 }
+
+/**
+ * Identity of one agent() call: its store delta key, the id carried by every
+ * onAgent* event, and its persisted agent row's callId. Prefixed with the run
+ * id so it stays unique when hosts aggregate agents across runs.
+ */
+export function agentCallId(runId: string, callIndex: number): string {
+  return `${runId}:${callIndex}`;
+}

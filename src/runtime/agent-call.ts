@@ -4,10 +4,10 @@ import { agentDefinitionKey, resolveAgentType } from "../agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { resolveModelForPhase } from "../model-routing.js";
 import { validateThinkingLevel } from "../model-spec.js";
-import { type AgentOptions, agentCallId, type JournalEntry } from "../workflow.js";
+import type { AgentOptions, JournalEntry } from "../workflow.js";
 import { type AgentCall, isEmptyTextAgentResult, runLiveAgent } from "./agent-execution.js";
 import { normalizeThread, resolveAgentCwd, validateAgentOptions } from "./agent-options.js";
-import { hashAgentCall } from "./call-identity.js";
+import { agentCallId, hashAgentCall } from "./call-identity.js";
 import { currentFanoutBatch } from "./fanout.js";
 import type { RunContext } from "./run-context.js";
 

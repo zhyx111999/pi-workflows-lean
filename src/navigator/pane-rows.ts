@@ -3,8 +3,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeLike } from "../display.js";
 import { fmtTokenSegment, tokenFigures } from "../display.js";
-import { shortModel } from "../workflow-ui.js";
-import { compactTokens, ELLIPSIS } from "./format.js";
+import { compactTokens, ELLIPSIS, shortModel } from "./format.js";
 import type { AgentRow, PhaseRow } from "./rows.js";
 
 /** Narrowest usable Phases pane, in cells. */

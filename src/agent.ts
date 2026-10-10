@@ -11,8 +11,9 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { Static, TSchema } from "typebox";
+import { listAvailableModels } from "./agent/available-models.js";
 import { type ChildSession, openChildSession } from "./agent/child-session.js";
-import { builtFallbackRegistry, ensureFallbackRegistry } from "./agent/model-registry.js";
+import { ensureFallbackRegistry } from "./agent/model-registry.js";
 import { AgentModelSelector } from "./agent/model-selection.js";
 import { throwIfProviderLimit } from "./agent/provider-limit.js";
 import { SharedResourceLoaders } from "./agent/resource-loaders.js";
@@ -30,7 +31,7 @@ import {
   type ModelThinkingLevel,
   validateThinkingLevel,
 } from "./model-spec.js";
-import { loadModelTierConfig, type ModelTierConfig, type RankableModel } from "./model-tier-config.js";
+import { loadModelTierConfig, type ModelTierConfig } from "./model-tier-config.js";
 import type { ModelSource, PreSpawnModelResolver } from "./pre-spawn-model.js";
 import type { StructuredOutputCapture } from "./structured-output.js";
 
@@ -222,37 +223,6 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
 export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef extends TSchema
   ? Static<TSchemaDef>
   : string;
-
-/**
- * List the user's currently available models (those with auth configured) with
- * the minimal fields tier ranking needs: canonical spec, output price, and
- * context window. This is the single place the SDK `Model` is projected into
- * the SDK-agnostic `RankableModel`. Best-effort: returns [] if the registry
- * can't be built (or while the disk-backed fallback is still initializing).
- */
-export function listAvailableModels(registry?: ModelRegistry): RankableModel[] {
-  try {
-    const modelRegistry = registry ?? builtFallbackRegistry();
-    if (!modelRegistry) {
-      // Start the async fallback build; this call reports [] and later calls
-      // (e.g. the tool's lazy promptGuidelines re-reads) see real specs.
-      void ensureFallbackRegistry().catch(() => {});
-      return [];
-    }
-    return modelRegistry.getAvailable().map((model) => ({
-      spec: canonicalModelSpec(model),
-      costOutput: model.cost?.output,
-      contextWindow: model.contextWindow,
-    }));
-  } catch {
-    return [];
-  }
-}
-
-/** The available models as `provider/modelId` specs, for telling a workflow author where agents may route. */
-export function listAvailableModelSpecs(registry?: ModelRegistry): string[] {
-  return listAvailableModels(registry).map((model) => model.spec);
-}
 
 /** Process-global subagent id counter: unique across concurrent workflow runs. */
 let workflowAgentSeq = 0;

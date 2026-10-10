@@ -18,7 +18,7 @@ import {
  * typed a command whose only purpose is to run a workflow, so the model is told
  * to call the tool rather than judge whether delegation is worthwhile. It
  * avoids MUST/ONLY wording, which produced a bare tool call that left the user
- * at an idle prompt (#88/#89), and says the turn ending is expected.
+ * at an idle prompt, and says the turn ending is expected.
  */
 export function buildForcedWorkflowPrompt(text: string): string {
   return [

@@ -12,10 +12,10 @@ import {
   type WorkflowAgentSnapshot,
   type WorkflowSnapshot,
 } from "../display.js";
+import { shortModel } from "../navigator/format.js";
 import type { PersistedRunState } from "../run-persistence.js";
 import { runSummary } from "../run-record-store.js";
 import type { WorkflowManager } from "../workflow-manager.js";
-import { shortModel } from "../workflow-ui.js";
 import { fmtTokensShort } from "./compact-format.js";
 
 function isActive(run: PersistedRunState): boolean {

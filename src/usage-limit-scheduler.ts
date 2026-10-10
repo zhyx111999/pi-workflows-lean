@@ -2,8 +2,8 @@
  * Auto-resume for runs paused on a provider usage limit.
  *
  * A workflow run pauses (does not fail) when a provider quota/usage limit is hit
- * (see errors.ts PROVIDER_USAGE_LIMIT, workflow-manager.ts executeRun()'s catch
- * block). Left alone, the run just sits there until a human runs /workflows and
+ * (see errors.ts PROVIDER_USAGE_LIMIT and the catch block of executeRun() in
+ * manager/run-execution.ts). Left alone, the run just sits there until a human runs /workflows and
  * hits resume. This module watches the manager's public event stream and, for
  * runs that are auto-resume-eligible, arms a timer to call manager.resume() once
  * the provider's quota is likely to have refilled — with exponential backoff if
@@ -34,7 +34,7 @@ export interface SchedulableWorkflowManager {
   /**
    * Record the auto-resume backoff counter THROUGH the manager so the next
    * manager persist carries it — a raw persistence.save side-channel gets
-   * erased by writeRunToDisk (#207).
+   * erased by writeRunToDisk.
    */
   recordAutoResumeAttempts(runId: string, attempts: number): void;
 }
@@ -60,7 +60,7 @@ export interface UsageLimitSchedulerOptions {
   /**
    * Jitter ratio applied to every armed delay (default 0.1 = ±10%): runs paused
    * by the same quota event would otherwise all auto-resume in the same timer
-   * batch (audit2 #13). Set 0 for deterministic tests.
+   * batch. Set 0 for deterministic tests.
    */
   jitterRatio?: number;
   /** Injectable randomness for jitter (default Math.random). */
@@ -69,7 +69,7 @@ export interface UsageLimitSchedulerOptions {
    * Consecutive refused-resume re-arms before giving up (default 10): a refused
    * resume() isn't a real attempt (lease held elsewhere, structural refusal),
    * but polling it forever re-arms an un-backed-off 60s loop for the run's
-   * lifetime (audit2 #12).
+   * lifetime.
    */
   maxRefusals?: number;
   /** Diagnostics sink; defaults to console.warn. Never throws back into the caller. */
@@ -206,7 +206,7 @@ export function computeAutoResumeDelayMs(params: AutoResumeDelayParams): number 
   const jittered = jr > 0 ? backoff * (1 - jr + rand() * 2 * jr) : backoff;
   const clamped = Math.min(params.maxDelayMs, Math.max(params.minDelayMs, jittered));
   // A clamped-to-ceiling delay is identical for every run paused by the same
-  // quota event (the herd audit2 #13 targets): whenever the JITTERED value
+  // quota event (a thundering herd): whenever the JITTERED value
   // reaches the cap (backoff exactly at the cap included — its upper jitter
   // half would otherwise pile up as a point mass), spread it downward-only,
   // keeping the ceiling intact while decorrelating the arms. Ceiling hits draw
@@ -386,7 +386,7 @@ export class UsageLimitScheduler {
       // A persisted value past the cap is the frozen give-up sentinel
       // (maxAttempts + 1, see arm()): that run already gave up BEFORE the
       // restart — skip it silently instead of re-logging the give-up diagnostic
-      // on every cold start (#106, kept under the no-drift rearm of audit2 #11).
+      // on every cold start.
       if (priorAttempts > this.maxAttempts) continue;
       const updatedAtMs = Date.parse(run.updatedAt);
       const elapsedMs = Number.isFinite(updatedAtMs) ? Math.max(0, this.now() - updatedAtMs) : 0;
@@ -394,7 +394,7 @@ export class UsageLimitScheduler {
       // persisted at arm time, so the armed attempt never fired if the process
       // died. Bumping it on every construction would burn the give-up budget
       // on mere restarts (/new, /resume, a second window) without any real
-      // retry having happened (audit2 #11).
+      // retry having happened.
       this.arm(run.runId, {
         attempts: Math.max(priorAttempts, 1),
         resetHint: run.resetHint,
@@ -415,7 +415,7 @@ export class UsageLimitScheduler {
       // storing the raw overflow. coldStartRearm() reads the persisted count and
       // adds 1 on every restart; without this clamp a given-up run's counter
       // grew without bound (…6, 7, 8… → "giving up after 23") across cold starts
-      // (#106). Clamping makes the persisted value idempotent — a rearm of an
+      //. Clamping makes the persisted value idempotent — a rearm of an
       // already-given-up run rewrites the same 6.
       const frozen = this.maxAttempts + 1;
       this.state.set(runId, { attempts: frozen, gaveUp: true });
@@ -496,10 +496,10 @@ export class UsageLimitScheduler {
     }
 
     const current = this.state.get(runId) ?? entry;
-    // A refusal is not an attempt (bug (a) — it doesn't consume the backoff
-    // budget), but it must not poll forever either: cap consecutive refusals
-    // (audit2 #12 — otherwise a lease held by another window means an
-    // un-backed-off 60s poll for the rest of the run's lifetime).
+    // A refusal is not an attempt (it doesn't consume the backoff budget), but
+    // it must not poll forever either: cap consecutive refusals, otherwise a
+    // lease held by another window means an un-backed-off 60s poll for the
+    // rest of the run's lifetime.
     const refusals = (current.refusals ?? 0) + 1;
     if (refusals > this.maxRefusals) {
       this.diagnostic(
@@ -538,7 +538,7 @@ export class UsageLimitScheduler {
    * a crash can approximately resume the backoff sequence instead of restarting
    * it. Goes through the manager, which owns the field: for a live run it sets
    * ManagedRun.autoResumeAttempts so every later writeRunToDisk carries it
-   * (#207); for a disk-only run it merges the persisted record under a lease.
+   *; for a disk-only run it merges the persisted record under a lease.
    * Synchronous is safe: the manager write is atomic in-process, and the
    * pause-settle persist that follows this event reads the live field.
    */

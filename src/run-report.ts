@@ -24,7 +24,7 @@ export interface RunSummaryDetails {
   counts: { total: number; done: number; running: number; queued: number; error: number; skipped: number };
   activeLabels: string[];
   tokenTotal: number;
-  /** True when tokenTotal includes character-heuristic estimates (#209). */
+  /** True when tokenTotal includes character-heuristic estimates. */
   tokenTotalEstimated: boolean;
 }
 

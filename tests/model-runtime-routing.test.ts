@@ -3,7 +3,7 @@
  *
  * WorkflowAgent shares the HOST session's model catalog with each subagent by
  * reaching through the ModelRegistry facade's PRIVATE `runtime` field (see
- * runtimeOf in src/agent.ts) and passing that ModelRuntime to
+ * runtimeOf in src/agent/model-registry.ts) and passing that ModelRuntime to
  * createAgentSession. That access is cast through `unknown`, so a pi upgrade
  * renaming the field breaks routing SILENTLY: tsc stays green, mock-based
  * tests stay green, and subagents just fall back to a default-built runtime in
@@ -35,7 +35,7 @@ test("runtimeOf reaches the ModelRuntime behind pi's real ModelRegistry facade (
       assert.equal(
         runtimeOf(registry),
         runtime,
-        "ModelRegistry's private `runtime` field no longer exposes its ModelRuntime — pi internals changed; update runtimeOf() in src/agent.ts",
+        "ModelRegistry's private `runtime` field no longer exposes its ModelRuntime — pi internals changed; update runtimeOf() in src/agent/model-registry.ts",
       );
     });
   } finally {

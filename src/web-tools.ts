@@ -13,7 +13,7 @@ import { Type } from "typebox";
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
 
-/** Read cap for fetched pages (audit2 #42): htmlToText runs ~10 regex passes
+/** Read cap for fetched pages: htmlToText runs ~10 regex passes
  * over whatever we buffer — an unbounded multi-MB body stalls the host event
  * loop on every agent's progress pipeline. 2MB is far above any documentation
  * page's readable content. */

@@ -271,7 +271,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
         path,
         savedAt: new Date().toISOString(),
       };
-      // Overwrite-safe save (audit2 #36): keep the PREVIOUS version as .bak —
+      // Overwrite-safe save: keep the PREVIOUS version as .bak —
       // an accidental same-name save must not destroy the old script.
       writeJsonAtomicPreservingPreviousBackup(fs, path, saved);
       return saved;

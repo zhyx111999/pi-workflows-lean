@@ -298,10 +298,6 @@ export class WorkflowManager extends EventEmitter {
     this.modelRegistry = registry;
   }
 
-  getModelRegistry(): ModelRegistry | undefined {
-    return this.modelRegistry;
-  }
-
   /**
    * After a session replacement keeps this manager, move the work that still
    * needs this conversation to `sessionId`: running and paused runs, and any

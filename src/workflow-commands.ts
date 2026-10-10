@@ -267,8 +267,8 @@ export function registerWorkflowCommands(
             ctx.ui.notify(`Removed ${id}`, "info");
             return;
           }
-          // Distinguish a lease refusal from "no such run" (audit2 #16 r1
-          // MINOR 2): the run may exist but be leased by a live process
+          // Distinguish a lease refusal from "no such run": the run may exist
+          // but be leased by a live process
           // (resumed/running in another session) — saying "No run" would lie
           // while that process burns tokens.
           const known = manager.getRun(id) ?? manager.getPersistence?.().load(id);
@@ -314,7 +314,7 @@ export function registerWorkflowCommands(
             () => getStorage()?.load(name) != null,
             () => getStorage()?.load(name) ?? null,
           );
-          // Surface a refused registration (audit2 #35): the file persisted,
+          // Surface a refused registration: the file persisted,
           // but a host/extension-owned name never becomes a slash command —
           // reporting plain success would silently mislead.
           if (registration.ok) {

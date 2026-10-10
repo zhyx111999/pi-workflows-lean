@@ -139,8 +139,8 @@ export function classifyProviderLimit(text: string | undefined): { matched: bool
     );
   if (!matched) return { matched: false };
   // "Resets in ~3h", "reset at 2026-09-17 13:20:54 +0800", and the pi-ai
-  // Codex form "Try again in ~299 min" (audit2 #10 — the extraction must reach
-  // the scheduler verbatim; parseResetHintMs understands all three shapes).
+  // Codex form "Try again in ~299 min" reach the scheduler verbatim;
+  // parseResetHintMs understands all three shapes.
   const reset = text.match(/(?:resets?\s+(?:in|at)|try again\s+in)\s+[^.\n]+/i);
   return { matched: true, resetHint: reset?.[0]?.trim() };
 }
@@ -180,7 +180,7 @@ export function wrapError(error: unknown, context?: { agentLabel?: string }): Wo
   }
 
   // Defense-in-depth: today the SDK buries provider usage/quota limits in an
-  // assistant message (detected in agent.ts), but a future SDK might throw them.
+  // assistant message (detected in agent/provider-limit.ts), but a future SDK might throw them.
   // Classify a thrown limit here too — recoverable:false so the run checkpoints
   // (paused) instead of being retried into the same wall or silently nulled.
   if (error instanceof Error) {

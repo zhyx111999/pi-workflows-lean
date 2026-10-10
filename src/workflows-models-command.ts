@@ -24,7 +24,7 @@ import {
   Text,
   type TUI,
 } from "@earendil-works/pi-tui";
-import { listAvailableModelSpecs, listAvailableModels } from "./agent.js";
+import { listAvailableModelSpecs, listAvailableModels } from "./agent/available-models.js";
 import {
   formatModelSpecWithThinking,
   type ModelThinkingLevel,
