@@ -3142,7 +3142,7 @@ describe("renderPanel", () => {
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
   it("hints that finished runs are kept in /workflows history", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { renderPanel } = await import("../src/task-panel/panel-render.js");
     const manager = {
       listRuns: () => [
         { runId: "a", workflowName: "live", status: "running", agents: [{ status: "done" }], logs: [] },
@@ -3163,7 +3163,7 @@ describe("renderPanel", () => {
   });
 
   it("renders nothing when no run is active", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { renderPanel } = await import("../src/task-panel/panel-render.js");
     const manager = {
       listRuns: () => [{ runId: "b", workflowName: "old", status: "completed", agents: [], logs: [] }],
       getRun: () => undefined,
@@ -3172,7 +3172,7 @@ describe("renderPanel", () => {
   });
 
   it("renders each pending delivery row with its actual terminal status", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { renderPanel } = await import("../src/task-panel/panel-render.js");
     const manager = {
       listRuns: () => [
         {
@@ -3210,7 +3210,7 @@ describe("renderPanel", () => {
   });
 
   it("truncates every rendered line to the requested visible width", async () => {
-    const { renderPanel } = await import("../src/task-panel.js");
+    const { renderPanel } = await import("../src/task-panel/panel-render.js");
     const ansiTheme = {
       fg: (_c: string, t: string) => `\x1b[2m${t}\x1b[22m`,
       bold: (t: string) => `\x1b[1m${t}\x1b[22m`,
@@ -3251,7 +3251,7 @@ describe("renderPanel", () => {
 
 describe("token rate", () => {
   it("returns 0 with fewer than two samples and after clearing", async () => {
-    const { sampleTokens, tokensPerSecond, clearTokenSamples } = await import("../src/task-panel.js");
+    const { sampleTokens, tokensPerSecond, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("rate-a");
     assert.equal(tokensPerSecond("rate-a"), 0);
     sampleTokens("rate-a", 100, 1000);
@@ -3263,7 +3263,7 @@ describe("token rate", () => {
   });
 
   it("computes the rate over the oldest-to-newest window", async () => {
-    const { sampleTokens, tokensPerSecond, clearTokenSamples } = await import("../src/task-panel.js");
+    const { sampleTokens, tokensPerSecond, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("rate-b");
     sampleTokens("rate-b", 0, 1000);
     sampleTokens("rate-b", 1000, 2000);
@@ -3273,7 +3273,7 @@ describe("token rate", () => {
   });
 
   it("decays to 0 when the total plateaus (stall detection)", async () => {
-    const { sampleTokens, tokensPerSecond, clearTokenSamples } = await import("../src/task-panel.js");
+    const { sampleTokens, tokensPerSecond, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("rate-c");
     sampleTokens("rate-c", 0, 0);
     sampleTokens("rate-c", 1000, 1000);
@@ -3336,7 +3336,7 @@ describe("renderPanelDetailed", () => {
   }
 
   it("renders a per-agent fresh/cache split when tokenUsage is present", async () => {
-    const { renderPanelDetailed } = await import("../src/task-panel.js");
+    const { renderPanelDetailed } = await import("../src/task-panel/panel-render.js");
     const snapshot = {
       name: "wf",
       phases: ["Scan"],
@@ -3376,7 +3376,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("keeps the scalar estimate for cost-only agents instead of a zero breakdown (#57 regression)", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r3");
     const snapshot = {
       name: "wf3",
@@ -3422,7 +3422,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("renders aggregate tokens, cost, phases, and per-agent rows", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r1");
     // discover_routes 2100 + audit_auth 1800 = 3900 → "3.9K tok" aggregate.
     const lines = renderPanelDetailed(detailedManager(2100) as never, theme as never, undefined, 8, 1000);
@@ -3457,7 +3457,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("shows a live token/s after two growing samples", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r1");
     // aggregate goes 3900 → 5900 over 1s = 2000 tok/s
     renderPanelDetailed(detailedManager(2100) as never, theme as never, undefined, 8, 1000);
@@ -3469,7 +3469,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("keeps token-rate estimate provenance for its rolling-window endpoints", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
 
     clearTokenSamples("r1");
     renderPanelDetailed(detailedManager(2100, "running", true) as never, theme as never, undefined, 8, 1000);
@@ -3512,7 +3512,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("caps agents per phase and reports the overflow", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r1");
     const lines = renderPanelDetailed(detailedManager(12400) as never, theme as never, undefined, 2, 1000);
     const text = lines.join("\n");
@@ -3523,7 +3523,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("suppresses tok/s for paused runs", async () => {
-    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel.js");
+    const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r1");
     renderPanelDetailed(detailedManager(1000, "paused") as never, theme as never, undefined, 8, 1000);
     const lines = renderPanelDetailed(detailedManager(3000, "paused") as never, theme as never, undefined, 8, 2000);
@@ -3531,7 +3531,7 @@ describe("renderPanelDetailed", () => {
   });
 
   it("renders actual terminal statuses for pending delivery rows in detailed mode", async () => {
-    const { renderPanelDetailed } = await import("../src/task-panel.js");
+    const { renderPanelDetailed } = await import("../src/task-panel/panel-render.js");
     const manager = {
       listRuns: () => [
         {
