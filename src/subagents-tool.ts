@@ -130,9 +130,9 @@ export function isGiven(value: unknown): boolean {
 }
 
 /** Parse optional `args`: a JSON object when given. */
-export function parseArgs(value: unknown, tool: string): Record<string, unknown> | undefined {
+function parseArgs(value: unknown): Record<string, unknown> | undefined {
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${tool} args must be a JSON object`);
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("subagents args must be a JSON object");
   return value as Record<string, unknown>;
 }
 
@@ -153,7 +153,7 @@ function normalizeSubagentsInput(value: unknown): SubagentsInput {
   const modes = START_MODES.filter((key) => isGiven(input[key]));
   if (modes.length !== 1) throw new Error("subagents needs exactly one of tasks, script, or name");
   if (modes[0] === "tasks") return { tasks: parseSubagentTasks(input.tasks) };
-  const args = parseArgs(input.args, "subagents");
+  const args = parseArgs(input.args);
   const text = input[modes[0]];
   if (typeof text !== "string") throw new Error(`subagents ${modes[0]} must be a string`);
   const started = modes[0] === "script" ? { script: normalizeScript(text) } : { name: text.trim() };
