@@ -12,12 +12,6 @@ import { workflowHomeDir, workflowProjectPaths } from "./workflow-paths.js";
 
 export interface WorkflowSettings {
   defaultAgentTimeoutMs?: number | null;
-  /**
-   * Default hard token budget applied to runs that don't pass their own
-   * `tokenBudget` (#68). null explicitly means "no budget" (useful in a
-   * project override to cancel a global budget); omitted also means no budget.
-   */
-  defaultTokenBudget?: number | null;
   /** Default max concurrent agents per run. Clamped to the runtime maximum. */
   defaultConcurrency?: number;
   /** Default retry attempts after recoverable agent failures. */
@@ -182,12 +176,6 @@ function normalizeSettings(value: unknown): WorkflowSettings {
     raw.defaultAgentTimeoutMs > 0
   ) {
     settings.defaultAgentTimeoutMs = raw.defaultAgentTimeoutMs;
-  }
-  if (raw.defaultTokenBudget === null) {
-    settings.defaultTokenBudget = null;
-  } else {
-    const defaultTokenBudget = normalizeInteger(raw.defaultTokenBudget, 1, Number.MAX_SAFE_INTEGER);
-    if (defaultTokenBudget !== undefined) settings.defaultTokenBudget = defaultTokenBudget;
   }
   const defaultConcurrency = normalizeInteger(raw.defaultConcurrency, 1, MAX_CONCURRENCY);
   if (defaultConcurrency !== undefined) settings.defaultConcurrency = defaultConcurrency;

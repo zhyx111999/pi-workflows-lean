@@ -413,28 +413,28 @@ test(
 );
 
 test(
-  "object cell changes preserve removals, arrays, null and phase budgets",
+  "object cell changes preserve removals, arrays, null and nested objects",
   withFixture((cwd) => {
     const rp = createRunPersistence(cwd);
     const first = {
       ...state("object-cells"),
       args: { a: 1, b: [1, 2] },
-      phaseBudgets: { a: { budget: 10, startSpent: 0 } },
+      result: { a: { score: 10, seen: 0 } },
     };
     rp.save(first);
     rp.save({
       ...first,
       args: { b: null, c: "new" },
-      phaseBudgets: { ...first.phaseBudgets, b: { budget: 20, startSpent: 4 } },
+      result: { ...first.result, b: { score: 20, seen: 4 } },
     });
     const next = createRunPersistence(cwd).load(first.runId);
     assert.deepEqual(next?.args, { b: null, c: "new" });
-    assert.deepEqual(next?.phaseBudgets, { a: { budget: 10, startSpent: 0 }, b: { budget: 20, startSpent: 4 } });
+    assert.deepEqual(next?.result, { a: { score: 10, seen: 0 }, b: { score: 20, seen: 4 } });
     const events = readFileSync(join(rp.getRunsDir(), `${first.runId}.json.events.jsonl`), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line));
-    assert.deepEqual(Object.keys(events[1].delta.objects.phaseBudgets.set), ["b"]);
+    assert.deepEqual(Object.keys(events[1].delta.objects.result.set), ["b"]);
   }),
 );
 

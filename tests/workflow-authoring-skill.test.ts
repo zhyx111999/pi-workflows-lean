@@ -106,8 +106,6 @@ test("skill guidance calls only functions the workflow runtime injects", () => {
   );
   // Call-shaped names in the guidance that are not runtime globals, and why each is legitimate.
   const notGlobals = new Set([
-    "spent", // budget.spent()
-    "remaining", // budget.remaining()
     "cwd", // process.cwd()
     "resume", // host WorkflowManager.resume() in the durable checkpoint handoff
     "attempt", // prose "attempt(s)"
@@ -122,7 +120,16 @@ test("skill guidance calls only functions the workflow runtime injects", () => {
       );
     }
   }
-  for (const removed of ["verify", "judgePanel", "completenessCheck", "retry", "gate", "loopUntilDry", "workflow"]) {
+  for (const removed of [
+    "verify",
+    "judgePanel",
+    "completenessCheck",
+    "retry",
+    "gate",
+    "loopUntilDry",
+    "workflow",
+    "budget",
+  ]) {
     assert.equal(runtimeGlobals.has(removed), false, `${removed} must stay removed from the runtime contract`);
   }
 });
@@ -204,26 +211,11 @@ test("generated capability index and exhaustive details are fresh and absent fro
   }
 });
 
-test("authoring guidance makes invocation token budgets explicit opt-in gates", () => {
-  const skill = readFileSync(join(ROOT, SKILL_ROOT, "SKILL.md"), "utf8");
-  const lifecycle = readFileSync(join(ROOT, SKILL_ROOT, "references/lifecycle.md"), "utf8");
-
-  assert.match(skill, /invocation-level token and time caps as opt-in user constraints, not defaults/i);
-  assert.match(lifecycle, /omit `tokenBudget` unless the user.*explicitly/is);
-  assert.match(lifecycle, /asked to choose.*every planned agent call.*retr.*synthesis.*headroom/is);
-  assert.match(lifecycle, /tight gate can terminate coverage.*does not reduce work already in flight/is);
-  assert.match(lifecycle, /omitted `agentTimeoutMs`.*configured `defaultAgentTimeoutMs`.*otherwise.*unbounded/is);
-  assert.match(lifecycle, /omitted `tokenBudget`.*configured `defaultTokenBudget`.*otherwise.*unlimited/is);
-  assert.match(lifecycle, /soft pre-call gates.*concurrent work can overshoot/is);
-  assert.doesNotMatch(lifecycle, /set finite bounds[^.]*`tokenBudget`/i);
-});
-
 test("generated facts cover the lifecycle constraints taught by the skill", () => {
   const facts = new Map(WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts().map((fact) => [fact.id, fact]));
   const exactFacts = [
     "workflow.runtime.agent",
     "workflow.runtime.checkpoint",
-    "workflow.runtime.budget",
     "workflow.script.return-value",
     "workflow.script.determinism",
   ]
@@ -238,7 +230,6 @@ test("generated facts cover the lifecycle constraints taught by the skill", () =
     /selector priority/i,
     /longest unchanged prefix/i,
     /consumes one agent slot and no tokens/i,
-    /in-flight work can overshoot/i,
     /JSON-serializable/i,
     /Date\.now\(\).*Math\.random\(\)/i,
   ]) {
@@ -572,38 +563,6 @@ test("loop-until-done resets its consecutive dry streak after missing coverage",
   assert.deepEqual([...result.result.failedRounds], [2]);
   assert.equal(result.result.termination, "dry");
   assert.equal(result.result.complete, false);
-});
-
-test("phased-budget recipe reports soft-gate spending and bounds later calls", async () => {
-  const script = readFileSync(join(ROOT, SKILL_ROOT, "examples/phased-budgets.js"), "utf8");
-  assert.match(script, /invocation-level tokenBudget only when the user explicitly requests a cap/i);
-  const labels: string[] = [];
-  const result = await runWorkflow<{
-    phases: Array<{ title: string; startSpent: number; endSpent: number; attempted: string[]; missing: string[] }>;
-    totalSpent: number;
-  }>(script, {
-    args: { phaseBudget: 10, work: [{ id: "alpha" }, { id: "beta" }, { id: "gamma" }] },
-    persistLogs: false,
-    onAgentStart: ({ label }) => labels.push(label),
-    agent: {
-      async run(_prompt: string, options: { label?: string; onUsage?: (usage: unknown) => void }) {
-        options.onUsage?.({ input: 10, output: 0, total: 10, cost: 0, cacheRead: 0, cacheWrite: 0 });
-        return options.label === "deliver:0:alpha" ? null : { summary: options.label ?? "" };
-      },
-    },
-  });
-
-  assert.deepEqual(labels, ["explore:0:alpha", "deliver:0:alpha"]);
-  assert.deepEqual(JSON.parse(JSON.stringify(result.result.phases[0])), {
-    title: "Explore",
-    startSpent: 0,
-    endSpent: 10,
-    attempted: ["alpha", "beta", "gamma"],
-    missing: ["beta", "gamma"],
-  });
-  assert.deepEqual(Array.from(result.result.phases[1]?.missing ?? []), ["alpha"]);
-  assert.equal(result.result.totalSpent, 20);
-  assert.doesNotThrow(() => JSON.stringify(result.result));
 });
 
 test("bounded-retry recipe separates transport retries and preserves every semantic attempt", async () => {

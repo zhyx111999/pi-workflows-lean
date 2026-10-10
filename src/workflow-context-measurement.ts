@@ -28,7 +28,7 @@ export const WORKFLOW_AUTHORING_PROFILES = [
       `${SKILL_ROOT}/references/runtime.md`,
       `${SKILL_ROOT}/references/lifecycle.md`,
       `${SKILL_ROOT}/references/focused-recipes.md`,
-      `${SKILL_ROOT}/examples/phased-budgets.js`,
+      `${SKILL_ROOT}/examples/structured-output.js`,
       `${SKILL_ROOT}/examples/bounded-semantic-retry.js`,
     ],
   },

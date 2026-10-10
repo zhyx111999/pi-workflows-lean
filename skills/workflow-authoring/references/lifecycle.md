@@ -1,10 +1,8 @@
 # Lifecycle, limits, and resume
 
-## Bounds and budget
+## Bounds
 
-Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script. `maxAgents` counts logical `agent()` and `checkpoint()` calls. Agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. Treat invocation-level `agentTimeoutMs` and `tokenBudget` as opt-in user constraints, not precautionary defaults. Omit `tokenBudget` unless the user supplies a cap or explicitly asks you to choose one. If asked to choose, allow for every planned agent call, retry, and synthesis step, with headroom. A tight gate can terminate coverage; it does not reduce work already in flight. An omitted `agentTimeoutMs` uses the configured `defaultAgentTimeoutMs` and is otherwise unbounded. An omitted `tokenBudget` uses the configured `defaultTokenBudget` and is otherwise unlimited.
-
-Enter a phase budget with `phase("Name", { budget: N })`; phase metadata does not carry budgets. `N` is a token allowance, not a call or round count: size it for the intended agent work instead of copying a small iteration limit. Token and phase budgets are soft pre-call gates. Spend lands after agents finish, so concurrent work can overshoot. A phase budget gates later calls in that phase; it neither reserves tokens nor cancels active calls. `budget.spent()` and `budget.remaining()` report the run total.
+Set finite bounds that match the work for `maxAgents`, `concurrency`, and `agentRetries`; bound loops and semantic retries inside the script. `maxAgents` counts logical `agent()` and `checkpoint()` calls. Agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. Treat an invocation-level `agentTimeoutMs` as an opt-in user constraint, not a precautionary default. An omitted `agentTimeoutMs` uses the configured `defaultAgentTimeoutMs` and is otherwise unbounded. Token usage is measured and reported, never capped.
 
 ## Checkpoints
 

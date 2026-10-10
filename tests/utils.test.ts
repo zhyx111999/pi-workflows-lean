@@ -145,7 +145,7 @@ describe("config", () => {
     assert.equal(c.WORKFLOW_SAVED_DIR, ".pi/workflows/saved");
     assert.equal(c.WORKFLOW_SETTINGS_FILE, ".pi/workflows/settings.json");
     assert.equal(c.USER_WORKFLOW_SAVED_DIR, "~/.pi/workflows/saved");
-    assert.equal(c.DEFAULT_TOKEN_BUDGET, null);
+    assert.equal("DEFAULT_TOKEN_BUDGET" in c, false);
   });
 });
 

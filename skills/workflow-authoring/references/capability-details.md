@@ -98,10 +98,7 @@ Every exact fact below is projected from the installed extension's capability co
 
 - Classification: `runtime-global`
 - Support: `supported`
-- Signature: `phase(title, options?) => void`
-- Option shape: `phase-options`
-- `budget`: number (optional; positive soft pre-call token gate)
-- Constraint: phase budgets are soft pre-call gates
+- Signature: `phase(title) => void`
 
 <a id="args"></a>
 ## args
@@ -123,15 +120,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `runtime-global`
 - Support: `supported`
 - Signature: `process: { cwd(): string }`
-
-<a id="budget"></a>
-## budget
-
-- Classification: `runtime-global`
-- Support: `supported`
-- Signature: `budget: { total, spent(), remaining() }`
-- Constraint: frozen view over shared soft token accounting
-- Constraint: spend accrues after agents finish, so in-flight work can overshoot
 
 <a id="console"></a>
 ## console
@@ -206,14 +194,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `workflow-tool-input`
 - Support: `supported`
 - Signature: `agentTimeoutMs?: number = configured default or unbounded`
-
-<a id="tool-input-tokenbudget"></a>
-## tokenBudget
-
-- Classification: `workflow-tool-input`
-- Support: `supported`
-- Signature: `tokenBudget?: number = configured default or unlimited`
-- Constraint: soft pre-call gate; in-flight work can overshoot
 
 <a id="tool-input-resumefromrunid"></a>
 ## resumeFromRunId

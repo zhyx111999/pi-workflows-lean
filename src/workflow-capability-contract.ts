@@ -23,7 +23,7 @@ export interface OptionDescriptor {
 
 /** Reusable option group referenced by capability descriptors. */
 export interface OptionShape {
-  id: "agent-options" | "checkpoint-options" | "phase-options";
+  id: "agent-options" | "checkpoint-options";
   options: readonly OptionDescriptor[];
 }
 
@@ -98,7 +98,6 @@ export interface WorkflowRuntimeImplementations {
   args: unknown;
   cwd: unknown;
   process: unknown;
-  budget: unknown;
   console: unknown;
 }
 
@@ -175,10 +174,6 @@ const CHECKPOINT_OPTIONS: OptionShape = {
     option("choices", "string[]", true),
     option("timeoutMs", "number", true),
   ],
-};
-const PHASE_OPTIONS: OptionShape = {
-  id: "phase-options",
-  options: [option("budget", "number", true, null, ["positive soft pre-call token gate"])],
 };
 
 interface RuntimeDescriptorOptions {
@@ -282,21 +277,10 @@ const capabilities: readonly CapabilityDescriptor[] = [
     ],
   }),
   runtimeGlobal("log", { signature: "log(message) => void" }),
-  runtimeGlobal("phase", {
-    signature: "phase(title, options?) => void",
-    optionShape: "phase-options",
-    constraints: ["phase budgets are soft pre-call gates"],
-  }),
+  runtimeGlobal("phase", { signature: "phase(title) => void" }),
   runtimeGlobal("args", { signature: "args: unknown", allowsUndefined: true }),
   runtimeGlobal("cwd", { signature: "cwd: string" }),
   runtimeGlobal("process", { signature: "process: { cwd(): string }" }),
-  runtimeGlobal("budget", {
-    signature: "budget: { total, spent(), remaining() }",
-    constraints: [
-      "frozen view over shared soft token accounting",
-      "spend accrues after agents finish, so in-flight work can overshoot",
-    ],
-  }),
   runtimeGlobal("console", {
     signature: "console: { log, info, warn, error }",
     support: CapabilitySupport.COMPATIBILITY,
@@ -325,9 +309,6 @@ const capabilities: readonly CapabilityDescriptor[] = [
   toolInput("concurrency", "concurrency?: number", ["runtime clamps to 1..16"]),
   toolInput("agentRetries", "agentRetries?: number = configured value or 0", ["floored and clamped to 0..3"]),
   toolInput("agentTimeoutMs", "agentTimeoutMs?: number = configured default or unbounded"),
-  toolInput("tokenBudget", "tokenBudget?: number = configured default or unlimited", [
-    "soft pre-call gate; in-flight work can overshoot",
-  ]),
   toolInput("resumeFromRunId", "resumeFromRunId?: string", [
     "resumes a prior incomplete run with an edited script",
     "unchanged positional agent calls replay from cache until the first changed or inserted call",
@@ -440,7 +421,7 @@ export const WORKFLOW_CAPABILITY_DEFINITION: WorkflowCapabilityDefinition = {
     format: { kind: "present-at", version: "2.0.0" },
     content: { kind: "present-at", version: packageJson.version },
   },
-  optionShapes: [AGENT_OPTIONS, CHECKPOINT_OPTIONS, PHASE_OPTIONS],
+  optionShapes: [AGENT_OPTIONS, CHECKPOINT_OPTIONS],
   capabilities,
   dynamicReferences: [
     {

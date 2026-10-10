@@ -98,7 +98,6 @@ function buildManagerOptions(cwd: string) {
     excludeSubagentTools: settings.excludeSubagentTools,
     providerMiddlewareExtensions: settings.providerMiddlewareExtensions,
     defaultAgentTimeoutMs: settings.defaultAgentTimeoutMs ?? null,
-    defaultTokenBudget: settings.defaultTokenBudget ?? null,
     concurrency: settings.defaultConcurrency,
     defaultAgentRetries: settings.defaultAgentRetries,
     persistAgentSessions: settings.persistAgentSessions,

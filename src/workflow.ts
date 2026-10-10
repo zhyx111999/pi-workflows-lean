@@ -112,7 +112,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   concurrency?: number;
   /** Retry attempts after a recoverable agent failure. Default 0. */
   agentRetries?: number;
-  tokenBudget?: number | null;
   signal?: AbortSignal;
   /** Maximum number of agents allowed in this run. Default: 1000 */
   maxAgents?: number;
@@ -168,11 +167,9 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    */
   agentRetryBackoffMs?: (failedAttempt: number) => number;
   /**
-   * Seed the run's cumulative spend/tokenUsage counters from a
-   * previously-persisted total (resume()), instead of starting at zero.
-   * Without this, a resumed run's tokenBudget cap silently resets: it would
-   * enforce the ceiling against only what THIS execution spends, ignoring
-   * whatever was already spent before the pause.
+   * Seed the run's cumulative token usage from a previously-persisted total
+   * (resume()). Replayed calls commit no usage, so without this the totals
+   * reported for a resumed run would cover only what THIS execution spent.
    */
   initialTokenUsage?: AgentUsage;
   /**
@@ -183,14 +180,6 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   confirm?: (promptText: string, options: CheckpointOptions) => Promise<unknown>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  /**
-   * Persisted per-phase sub-budgets from a previous execution (resume() only),
-   * keyed by `${runId}:${phaseTitle}`, so a phase ceiling holds CUMULATIVELY
-   * across a pause/resume cycle instead of re-granting the full allowance.
-   */
-  initialPhaseBudgets?: Record<string, { budget: number; startSpent: number; warned?: boolean }>;
-  /** Fired whenever the phase-budget table changes, so the manager can persist it. */
-  onPhaseBudgets?: (budgets: Record<string, { budget: number; startSpent: number; warned: boolean }>) => void;
   onAgentStart?: (event: {
     id: string;
     label: string;
@@ -359,14 +348,6 @@ export interface CheckpointOptions {
 
 interface RuntimeState {
   currentPhase?: string;
-  /**
-   * Per-phase soft sub-budgets carved from the run total: phase title -> the
-   * ceiling and the run-wide spent at the moment the budget was declared. A phase
-   * exceeding its ceiling throws TOKEN_BUDGET_EXHAUSTED while the run's overall
-   * budget is untouched. Soft gate (like the global one): spent accrues after each
-   * agent, so an in-flight wave may overshoot slightly.
-   */
-  phaseBudgets: Map<string, { budget: number; startSpent: number; warned: boolean }>;
   logs: string[];
   phases: string[];
   /** Monotonic, assigned at lexical agent() call time — the stable resume key. */
@@ -380,7 +361,6 @@ interface RuntimeState {
   limiter: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Logical agent()/checkpoint() slots reserved so far; capped by maxAgents. */
   agentCount: number;
-  spent: number;
   tokenUsage: AgentUsage;
   /** Set after the terminal drain seals abandoned agent callbacks. */
   agentCallbacksClosed: boolean;
@@ -498,17 +478,16 @@ export async function runWorkflow<T = unknown>(
   const concurrency = normalizeConcurrency(
     options.concurrency ?? Math.max(1, (globalThis.navigator?.hardwareConcurrency ?? 8) - 2),
   );
-  // options.initialTokenUsage (resume() only) seeds spent/tokenUsage so the
-  // tokenBudget ceiling holds cumulatively across a pause/resume cycle instead
-  // of resetting to zero (see WorkflowRunOptions.initialTokenUsage).
+  // options.initialTokenUsage (resume() only) seeds tokenUsage so the run's
+  // reported totals stay cumulative across a pause/resume cycle.
   //
-  // agentCount is NOT seeded, unlike spent/tokenUsage — and doesn't need to
-  // be: resume() always replays the whole script from callIndex 0, and
-  // agent()'s `state.agentCount++` fires unconditionally for every call
-  // (cache-hit replay or live) before the replay-vs-live branch runs. That
-  // replay alone reconstructs the cumulative count by the time any new live
-  // agent executes, so maxAgents stays a genuine cumulative cap across resume.
-  // Token spend needs seeding precisely because its cache-hit branch
+  // agentCount is NOT seeded, unlike tokenUsage — and doesn't need to be:
+  // resume() always replays the whole script from callIndex 0, and agent()'s
+  // `state.agentCount++` fires unconditionally for every call (cache-hit
+  // replay or live) before the replay-vs-live branch runs. That replay alone
+  // reconstructs the cumulative count by the time any new live agent
+  // executes, so maxAgents stays a genuine cumulative cap across resume.
+  // Token usage needs seeding precisely because its cache-hit branch
   // deliberately does NOT recommit usage (to avoid double-counting).
   const state: RuntimeState = {
     logs: [],
@@ -518,21 +497,10 @@ export async function runWorkflow<T = unknown>(
     // explicit phase() (or agent({ phase })) overrides this.
     phases: meta.phases?.[0]?.title ? [meta.phases[0].title] : [],
     currentPhase: meta.phases?.[0]?.title,
-    // Adopt the persisted table (keys are `${runId}:${title}`); the keys are
-    // stripped back to bare titles for the run-local map.
-    phaseBudgets: new Map(
-      Object.entries(options.initialPhaseBudgets ?? {})
-        .filter(([key]) => key.startsWith(`${runId}:`))
-        .map(([key, pb]) => [
-          key.slice(runId.length + 1),
-          { budget: pb.budget, startSpent: pb.startSpent, warned: pb.warned ?? false },
-        ]),
-    ),
     callSeq: 0,
     firstMiss: Number.POSITIVE_INFINITY,
     limiter: createLimiter(concurrency),
     agentCount: 0,
-    spent: options.initialTokenUsage?.total ?? 0,
     tokenUsage: options.initialTokenUsage
       ? { ...options.initialTokenUsage }
       : { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 },
@@ -556,32 +524,11 @@ export async function runWorkflow<T = unknown>(
     logger.log(text);
   };
 
-  const emitPhaseBudgets = () => {
-    options.onPhaseBudgets?.(
-      Object.fromEntries([...state.phaseBudgets].map(([title, pb]) => [`${runId}:${title}`, pb])),
-    );
-  };
-
-  const phase = (title: string, phaseOptions?: { budget?: number }) => {
+  const phase = (title: string) => {
     state.currentPhase = title;
     if (!state.phases.includes(title)) state.phases.push(title);
-    // Carve a soft sub-budget from the run total for work done under this phase.
-    // First declaration wins for the run's whole lifetime (including across
-    // resume, via the persisted initialPhaseBudgets seed): re-declaring a phase
-    // keeps its original baseline so the ceiling is cumulative, not per-resume
-    // (audit2 #4 — re-basing on resume silently re-granted the full allowance).
-    if (typeof phaseOptions?.budget === "number" && phaseOptions.budget > 0 && !state.phaseBudgets.has(title)) {
-      state.phaseBudgets.set(title, { budget: phaseOptions.budget, startSpent: state.spent, warned: false });
-      emitPhaseBudgets();
-    }
     options.onPhase?.(title);
   };
-
-  const budget = Object.freeze({
-    total: options.tokenBudget ?? null,
-    spent: () => state.spent,
-    remaining: () => (options.tokenBudget == null ? Infinity : Math.max(0, options.tokenBudget - state.spent)),
-  });
 
   const agentLimitError = () =>
     new WorkflowError(
@@ -747,13 +694,8 @@ export async function runWorkflow<T = unknown>(
 
     // Reserve the agent slot synchronously (no await between this and the
     // capacity check) so a parallel() fan-out can't all observe the same
-    // agentCount and overshoot maxAgents. The increment precedes the budget
-    // gates deliberately: callIndex/agentCount must stay lexical for
-    // replay-key stability, and a budget-blocked call consumes its slot
-    // uniformly (resume replays count identically). (Token budget stays a
-    // soft gate: spent accrues after each agent, matching Claude Code;
-    // in-flight agents may push slightly past total, then further agent()
-    // calls throw.)
+    // agentCount and overshoot maxAgents. callIndex/agentCount stay lexical
+    // for replay-key stability, so resume replays count identically.
     state.agentCount++;
     const label = requestedLabel || defaultAgentLabel(assignedPhase, state.agentCount);
     // Longest-unchanged-prefix resume: replay a cached result only while the
@@ -796,40 +738,6 @@ export async function runWorkflow<T = unknown>(
       state.firstMiss = Math.min(state.firstMiss, callIndex);
     }
 
-    // Budget gates, deliberately AFTER the replay lookup: a journaled cache hit
-    // is free (replay commits no usage), so an exhausted budget must not strand
-    // a resumable run at a replayable call (audit2 #1 — with the gate before
-    // the lookup, a budgeted run paused past its cap was permanently
-    // unresumable, since resume() cannot raise the budget). Both gates still
-    // fire before every LIVE (paid) call.
-    if (budget.total !== null && budget.remaining() <= 0) {
-      throw new WorkflowError("workflow token budget exhausted", WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED, {
-        recoverable: false,
-      });
-    }
-    // Per-phase soft sub-budget gate: a noisy phase can exhaust its own ceiling
-    // without touching the run's overall budget. Soft (spent accrues post-agent),
-    // warns once at ~80%, throws at 100%. Scripts can try/catch around a phase's
-    // work so later phases still proceed.
-    if (assignedPhase) {
-      const pb = state.phaseBudgets.get(assignedPhase);
-      if (pb) {
-        const phaseSpent = state.spent - pb.startSpent;
-        if (phaseSpent >= pb.budget) {
-          throw new WorkflowError(
-            `phase "${assignedPhase}" token sub-budget exhausted (${pb.budget})`,
-            WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED,
-            { recoverable: false },
-          );
-        }
-        if (!pb.warned && phaseSpent >= pb.budget * 0.8) {
-          pb.warned = true;
-          emitPhaseBudgets();
-          log(`phase "${assignedPhase}" at ${Math.round((phaseSpent / pb.budget) * 100)}% of its token sub-budget`);
-        }
-      }
-    }
-
     return state.limiter(async () => {
       // A queued call can obtain its slot after the top-level abort drain has
       // already abandoned it. Do not create a worktree or announce a new agent
@@ -863,7 +771,6 @@ export async function runWorkflow<T = unknown>(
         if (state.agentCallbacksClosed) return;
         if (update.committedUsage) {
           state.tokenUsage = sumAgentUsage(state.tokenUsage, update.committedUsage);
-          state.spent += update.committedUsage.total;
         }
         options.onAgentUsage?.({ id: deltaKey, label, phase: assignedPhase, ...update });
       });
@@ -1061,7 +968,7 @@ export async function runWorkflow<T = unknown>(
               log(
                 `agent "${label}" attempt ${attempt}/${maxAttempts} failed: ${workflowError.code} ${workflowError.message}; retrying`,
               );
-              // This attempt's spend already accrued into state.spent/tokenUsage
+              // This attempt's spend already accrued into state.tokenUsage
               // above — but it will never reach onAgentEnd (only
               // the final attempt does), so report it on the dedicated channel
               // instead (see WorkflowRunOptions.onRetrySpend).
@@ -1157,14 +1064,12 @@ export async function runWorkflow<T = unknown>(
             if (error instanceof WorkflowCheckpointSuspensionError) throw error;
             if (isAborted()) throw error;
             const workflowError = wrapError(error);
-            // Non-recoverable failures (token budget / agent limit exhausted) must
-            // halt the whole run, exactly like a directly-awaited agent() — not be
+            // Non-recoverable failures (e.g. agent limit exhausted) must halt
+            // the whole run, exactly like a directly-awaited agent() — not be
             // swallowed into a null in the result array.
             if (!workflowError.recoverable) {
-              // Only a breached agent cap cancels the rest of this batch; the
-              // token budget stays a soft gate by design (in-flight agents may
-              // finish past it), and other non-recoverable errors don't imply
-              // the rest of the batch is doomed.
+              // Only a breached agent cap cancels the rest of this batch; other
+              // non-recoverable errors don't imply the rest of the batch is doomed.
               if (workflowError.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED) batch.cancelled = true;
               throw workflowError;
             }
@@ -1360,7 +1265,6 @@ export async function runWorkflow<T = unknown>(
     args: options.args,
     cwd: options.cwd ?? process.cwd(),
     process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
-    budget,
     console: {
       log,
       info: log,
@@ -1426,7 +1330,7 @@ export async function runWorkflow<T = unknown>(
     // errors.ts), so it escapes exactly like any other run-fatal error and
     // seals the same way. Deliberate tradeoff: any sibling still in flight
     // when the quota was hit gets aborted rather than allowed to finish and
-    // journal — this stops burning an already-exhausted budget right now, at
+    // journal — this stops burning an already-exhausted quota right now, at
     // the cost of that sibling's work being thrown away and re-run live when
     // the paused run resumes (it was never journaled, so it isn't cached).
     // A durable checkpoint suspension is an intentional pause, not a fatal

@@ -28,8 +28,7 @@ Review author-visible behavior, not formatting preferences.
 ## Lifecycle
 
 - Are runtime retries and semantic retries separately bounded?
-- Are loops, agents, concurrency, timeout, and token spend bounded appropriately?
-- Are budget claims honest about soft gates and in-flight overshoot?
+- Are loops, agents, concurrency, and timeout bounded appropriately?
 - Do prompt checkpoints rely only on their headless `default` or `headless: "abort"` behavior?
 - Would lexical call order remain stable under resume?
 

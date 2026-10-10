@@ -6,7 +6,7 @@ Use this page for routine scripts. Open the generated capability index only when
 
 Start with the only legal export: `export const meta = { name, description, phases?: [{ title, detail?, model? }] }`. Values are nonblank literals; declare only used phases and call `phase()` before each phase's work. The remaining body already runs inside an async function: write helpers as ordinary declarations; `export default` and other exports are invalid. Return the result explicitly.
 
-The runtime supplies `agent`, `parallel`, `pipeline`, `checkpoint`, `phase`, `log`, `args`, `cwd`, restricted `process.cwd()`, and `budget`. Imports, `require()`, filesystem modules, `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable. The Node VM realm is implementation substrate, not a security boundary or public API.
+The runtime supplies `agent`, `parallel`, `pipeline`, `checkpoint`, `phase`, `log`, `args`, `cwd`, and restricted `process.cwd()`. Imports, `require()`, filesystem modules, `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable. The Node VM realm is implementation substrate, not a security boundary or public API.
 
 ## Topology
 
@@ -16,7 +16,7 @@ The runtime supplies `agent`, `parallel`, `pipeline`, `checkpoint`, `phase`, `lo
 
 ## Data and failure
 
-Call `agent(prompt, { label, schema? })`; it returns text, a schema-validated value, or recoverable `null`. Nonrecoverable limit, validation, and budget failures throw. Record each intended work ID before filtering. A `null` means missing coverage, never a negative finding.
+Call `agent(prompt, { label, schema? })`; it returns text, a schema-validated value, or recoverable `null`. Nonrecoverable limit and validation failures throw. Record each intended work ID before filtering. A `null` means missing coverage, never a negative finding.
 
 Use `agent(prompt, { thread: "implementer" })` when the same subagent must receive a later follow-up with its complete conversation intact, such as implementer → separate reviewer → implementer revision. Reuse a thread name sequentially; never put same-thread calls in one `parallel()` batch. Later turns on one thread may change `model`, `tier`, or `agentType`: the transcript is kept and the next turn runs on the newly resolved model, which is intended for mid-loop escalation. Threads exist only during the current uninterrupted workflow invocation, cannot use worktree isolation, and restart from the beginning after pause/resume because threaded results are not journaled.
 

@@ -1361,103 +1361,6 @@ test("callSeq is deterministic under parallel()", async () => {
   );
 });
 
-test("runWorkflow budget gates on accumulated tokens", async () => {
-  const script = `export const meta = { name: 'budget_demo', description: 'budget' }
-const a = await agent('first', { label: 'a' })
-let second = null
-try { second = await agent('second', { label: 'b' }) } catch (e) { second = 'blocked' }
-return { a, second }`;
-
-  const result = await runWorkflow<{ a: unknown; second: unknown }>(script, {
-    agent: fakeAgent({ input: 100, output: 0, total: 100, cost: 0 }),
-    tokenBudget: 100,
-    persistLogs: false,
-  });
-
-  assert.equal(result.result.second, "blocked");
-});
-
-test("runWorkflow initialTokenUsage seeds the run-wide budget so it holds cumulatively across resume (#A2)", async () => {
-  // Simulates what WorkflowManager.resume() passes: a prior execution already
-  // spent 60 (persisted). This fresh execution's own SharedRuntime must start
-  // counting from there — 'a' (allowed: seeded 60 + budget 100 leaves 40
-  // headroom) then spends 60 more, landing at 120; 'b' must then be blocked,
-  // even though neither the seed alone (60) nor 'a' alone (60) would trip it.
-  const script = `export const meta = { name: 'seeded_budget', description: 'seed' }
-const a = await agent('a', { label: 'a' })
-let blocked = false
-try { await agent('b', { label: 'b' }) } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { a, blocked }`;
-
-  const result = await runWorkflow<{ a: unknown; blocked: boolean }>(script, {
-    agent: fakeAgent({ input: 60, output: 0, total: 60, cost: 0 }),
-    tokenBudget: 100,
-    initialTokenUsage: { input: 60, output: 0, total: 60, cost: 0, cacheRead: 0, cacheWrite: 0 },
-    persistLogs: false,
-  });
-
-  assert.equal(result.result.a, "ok", "'a' itself is allowed to run (remaining was 40 > 0 before it)");
-  assert.equal(
-    result.result.blocked,
-    true,
-    "'b' must be blocked once the seeded + this-run spend sums past the budget",
-  );
-  assert.equal(result.tokenUsage?.total, 120, "final total reflects the seed (60) plus 'a's spend (60); 'b' never ran");
-});
-
-test("runWorkflow initialTokenUsage integrates correctly with phase() sub-budgets (seeded baseline isn't corrupted)", async () => {
-  // phase()'s sub-budget bases itself on shared.spent AT the first
-  // declaration (first-declaration-wins; a persisted baseline is adopted on
-  // resume), so a seed doesn't make the phase's OWN ceiling trip any sooner
-  // than usual — it only shifts the visible baseline. This mirrors the
-  // existing "phase sub-budget throws..." test's budget/spend shape exactly,
-  // plus a seed, to confirm seeding doesn't corrupt that mechanism.
-  const script = `export const meta = { name: 'seeded_phase_budget', description: 'seed' }
-const spentAtStart = budget.spent()
-phase('noisy', { budget: 100 })
-let blocked = false
-await agent('a', { label: '1' })
-try { await agent('b', { label: '2' }) } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { spentAtStart, blocked }`;
-
-  const result = await runWorkflow<{ spentAtStart: number; blocked: boolean }>(script, {
-    agent: fakeAgent({ input: 100, output: 0, total: 100, cost: 0 }),
-    initialTokenUsage: { input: 40, output: 0, total: 40, cost: 0, cacheRead: 0, cacheWrite: 0 },
-    persistLogs: false,
-  });
-
-  assert.equal(
-    result.result.spentAtStart,
-    40,
-    "budget.spent() reflects the seed before any agent in this execution runs",
-  );
-  assert.equal(
-    result.result.blocked,
-    true,
-    "the phase sub-budget still gates normally on top of a seeded run-wide total",
-  );
-});
-
-test("token budget exhaustion inside parallel() halts (non-recoverable, not swallowed)", async () => {
-  // A warm-up agent spends the whole budget (soft gate: spent accrues after it
-  // finishes); the agent() inside parallel() then hits the gate and must
-  // propagate the non-recoverable error, not become a null in the result array.
-  const script = `export const meta = { name: 'pb', description: 'budget in parallel' }
-await agent('warmup', { label: 'w' })
-const xs = await parallel([() => agent('x', { label: '1' })])
-return xs`;
-  await assert.rejects(
-    () =>
-      runWorkflow(script, {
-        agent: fakeAgent({ input: 100, output: 0, total: 100, cost: 0 }),
-        tokenBudget: 100,
-        persistLogs: false,
-      }),
-    /budget/i,
-    "exhausted budget must reject the run, not become a null in the result array",
-  );
-});
-
 test("non-recoverable agent-limit propagates out of pipeline() too", async () => {
   const script = `export const meta = { name: 'mp', description: 'agent limit pipeline' }
 const xs = await pipeline([0, 1, 2, 3], (n) => agent('x' + n, { label: 'p' + n }))
@@ -1471,25 +1374,6 @@ return xs`;
       }),
     /limit/i,
   );
-});
-
-test("phase sub-budget throws when a phase exceeds its ceiling (run total untouched)", async () => {
-  const script = `export const meta = { name: 'pb', description: 'phase budget' }
-phase('noisy', { budget: 100 })
-let blocked = false
-try {
-  await agent('a', { label: '1' })
-  await agent('b', { label: '2' })
-} catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-phase('calm')
-const after = await agent('c', { label: '3' })
-return { blocked, after }`;
-  const res = await runWorkflow<{ blocked: boolean; after: unknown }>(script, {
-    agent: fakeAgent({ input: 100, output: 0, total: 100, cost: 0 }),
-    persistLogs: false,
-  });
-  assert.equal(res.result.blocked, true, "the 2nd agent in the phase hit the sub-budget");
-  assert.ok(res.result.after !== null, "a later phase still proceeds");
 });
 
 test("maxAgents is enforced under a parallel() fan-out (atomic slot reservation)", async () => {
@@ -1802,20 +1686,6 @@ return { cwd: process.cwd() }`;
 
   assert.equal(typeof result.result.cwd, "string");
   assert.ok(result.result.cwd.length > 0, "result.cwd should not be empty");
-});
-
-test("runWorkflow budget object exposes spent() and remaining()", async () => {
-  const script = `export const meta = { name: 'budget_api', description: 'budget API' }
-try { const s = budget.spent(); const r = budget.remaining(); return { spent: s, remaining: typeof r } }
-catch(e) { return { error: String(e) } }`;
-
-  const result = await runWorkflow<{ spent: number; remaining: string }>(script, {
-    agent: fakeAgent({ total: 100 }),
-    persistLogs: false,
-  });
-
-  assert.equal(result.result.spent, 0); // before first agent
-  assert.equal(result.result.remaining, "number");
 });
 
 test("runWorkflow returns empty logs array when nothing logged", async () => {
@@ -2478,56 +2348,20 @@ return 'script-done'`;
   assert.equal(flushes[0], result.tokenUsage?.total, "the flush IS the final total (no partial/double accounting)");
 });
 
-test("runWorkflow initialPhaseBudgets adopts the persisted baseline instead of re-basing (audit2 #4)", async () => {
-  // Simulates resume(): the prior execution declared phase 'p' with budget 100
-  // at baseline 0 and already spent 60. The resumed script re-runs
-  // phase('p', {budget: 100}) — with re-basing the phase would get a FRESH 100
-  // allowance (120 total), with adoption the ceiling holds at 100 cumulatively.
-  const script = `export const meta = { name: 'phase_seed', description: 'phase seed' }
-phase('p', { budget: 100 })
-const a = await agent('a', { label: 'a' })
-let blocked = false
-try { await agent('b', { label: 'b' }) } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { a, blocked }`;
-  const phaseBudgetEvents: Array<Record<string, { budget: number; startSpent: number }>> = [];
-  const result = await runWorkflow<{ a: unknown; blocked: boolean }>(script, {
-    agent: fakeAgent({ input: 60, output: 0, total: 60, cost: 0 }),
-    initialTokenUsage: { input: 60, output: 0, total: 60, cost: 0, cacheRead: 0, cacheWrite: 0 },
-    runId: "seeded-run",
-    initialPhaseBudgets: { "seeded-run:p": { budget: 100, startSpent: 0 } },
-    onPhaseBudgets: (budgets) => phaseBudgetEvents.push(budgets),
-    persistLogs: false,
-  });
-  // 'a' runs (phase spent 60 < 100 → gate passes), spends 60 → phase spent 120.
-  assert.equal(result.result.a, "ok");
-  assert.equal(
-    result.result.blocked,
-    true,
-    "'b' must be blocked: the phase ceiling is cumulative across resume (60 + 60 ≥ 100 from the ORIGINAL baseline)",
+test("runWorkflow initialTokenUsage keeps a resumed run's reported totals cumulative", async () => {
+  // Replayed calls commit no usage, so resume() seeds the persisted
+  // total-at-pause; both the returned totals and the final flush include it.
+  const flushes: number[] = [];
+  const result = await runWorkflow(
+    `export const meta = { name: 'seeded_usage', description: 'seeded usage' }
+return await agent('live', { label: 'live' })`,
+    {
+      agent: fakeAgent({ input: 8, output: 2, total: 10, cost: 0.01 }),
+      persistLogs: false,
+      initialTokenUsage: { input: 50, output: 10, total: 60, cost: 0.06, cacheRead: 0, cacheWrite: 0 },
+      onTokenUsage: (usage) => flushes.push(usage.total),
+    },
   );
-  assert.equal(
-    phaseBudgetEvents.length,
-    0,
-    "re-declaring an already-budgeted phase does not re-declare (first declaration wins)",
-  );
-});
-
-test("runWorkflow phase() first-declaration-wins and notifies once per new budget", async () => {
-  const script = `export const meta = { name: 'phase_decl', description: 'phase decl' }
-phase('p', { budget: 60 })
-const a = await agent('a', { label: 'a' })
-phase('p', { budget: 999999 })
-let blocked = false
-try { await agent('b', { label: 'b' }) } catch (e) { blocked = true }
-return { a, blocked }`;
-  const events: Array<Record<string, { budget: number }>> = [];
-  const result = await runWorkflow<{ a: unknown; blocked: boolean }>(script, {
-    agent: fakeAgent({ input: 60, output: 0, total: 60, cost: 0 }),
-    runId: "decl-run",
-    onPhaseBudgets: (budgets) => events.push(budgets),
-    persistLogs: false,
-  });
-  assert.equal(result.result.blocked, true, "the 999999 re-declaration must NOT re-base the budget away");
-  assert.equal(events.length, 1, "exactly one budget notification (the first declaration)");
-  assert.equal(events[0]?.["decl-run:p"]?.budget, 60, "emitted keys are frame-namespaced");
+  assert.equal(result.tokenUsage?.total, 70);
+  assert.deepEqual(flushes, [70]);
 });

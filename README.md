@@ -76,7 +76,7 @@ return await agent(
 - **Per-agent model routing** — use `small`, `medium`, or `big` tiers, or choose an exact provider/model and thinking level.
 - **Journaled resume** — replay completed agents after interruption without rerunning them or spending their tokens again. The orchestrator can also resume with an **edited script** (`resumeFromRunId`): unchanged `agent()` calls replay from cache and only edited/new ones re-run — so a single bad prompt no longer means paying to re-run the whole workflow.
 - **Git worktree isolation** — parallel agents edit on separate branches with `isolation: "worktree"`. Kept by default for merge; pass `keepWorktree: false` to delete (tests).
-- **Measured usage** — report real tokens and cost from each subagent session; add run, phase, or agent budgets only when you want them. When a provider session ends without reporting usage, the affected totals are heuristic character estimates and UI token surfaces render them with a `~` prefix (e.g. `~640 tok`) — never silently as metered figures. (Script-facing `budget.spent()/remaining()` are raw numbers and cannot carry the marker.)
+- **Measured usage** — report real tokens and cost from each subagent session. When a provider session ends without reporting usage, the affected totals are heuristic character estimates and UI token surfaces render them with a `~` prefix (e.g. `~640 tok`) — never silently as metered figures.
 - **Visible background runs** — track phases, agents, models, fresh/cache tokens, cost, and live tok/s from the progress panel or `/workflows` navigator.
 - **Plain control flow** — loops, semantic retries, and stopping rules are ordinary JavaScript around `agent()`; `checkpoint()` is the only pause helper. Cross-check helpers are not included.
 - **Reusable workflows** — save any run as a command and run saved workflows by name.
@@ -93,11 +93,10 @@ The installed extension generates this compact index from its executable capabil
 | pipeline | runtime-global | `pipeline(items, ...stages) => Promise<Array<unknown \| null>>` | — |
 | checkpoint | runtime-global | `checkpoint(prompt, options?) \| checkpoint({ kind, checkpointId, payload }) => Promise<unknown>` | `default`: unknown (optional; default: true)<br>`headless`: "default" \| "abort" (optional; default: "default")<br>`kind`: "confirm" \| "input" \| "select" (optional; default: "confirm")<br>`choices`: string[] (optional)<br>`timeoutMs`: number (optional) |
 | log | runtime-global | `log(message) => void` | — |
-| phase | runtime-global | `phase(title, options?) => void` | `budget`: number (optional) |
+| phase | runtime-global | `phase(title) => void` | — |
 | args | runtime-global | `args: unknown` | — |
 | cwd | runtime-global | `cwd: string` | — |
 | process | runtime-global | `process: { cwd(): string }` | — |
-| budget | runtime-global | `budget: { total, spent(), remaining() }` | — |
 | script | workflow-tool-input | `script?: string` | — |
 | name | workflow-tool-input | `name?: string` | — |
 | args | workflow-tool-input | `args?: unknown` | — |
@@ -105,7 +104,6 @@ The installed extension generates this compact index from its executable capabil
 | concurrency | workflow-tool-input | `concurrency?: number` | — |
 | agentRetries | workflow-tool-input | `agentRetries?: number = configured value or 0` | — |
 | agentTimeoutMs | workflow-tool-input | `agentTimeoutMs?: number = configured default or unbounded` | — |
-| tokenBudget | workflow-tool-input | `tokenBudget?: number = configured default or unlimited` | — |
 | resumeFromRunId | workflow-tool-input | `resumeFromRunId?: string` | — |
 <!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->
 
@@ -146,9 +144,8 @@ Agent details use a compact summary by default: completed agents show their fina
 | `agent(prompt, opts)` | Spawn an isolated subagent; optionally validate its result with JSON Schema |
 | `parallel(thunks)` | Run `() => agent(...)` thunks concurrently and preserve input order |
 | `pipeline(items, ...stages)` | Fan items through sequential stages |
-| `phase(title, { budget? })` | Group work in the live view and optionally set a phase budget |
+| `phase(title)` | Group work in the live view |
 | `checkpoint(prompt, opts)` | Journaled pause; background runs use the headless default |
-| `budget` | Inspect tokens spent and remaining (raw numbers; UI surfaces mark heuristic estimates with `~`) |
 
 | Agent option | Description |
 | --- | --- |
@@ -201,13 +198,13 @@ Use `/workflows-models` to edit them interactively; it is cwd-aware and can save
 
 Untagged `agent()` calls (no `model`, no `tier`, and no agentType/phase routing) use the configured `medium` tier, or the Pi settings default when no tiers are saved. Set `"inheritMainModel": true` in `~/.pi/workflows/settings.json` (or a project overlay) to instead have untagged agents inherit the orchestrating session's main model — the model in effect when the run starts; a mid-run `/model` switch applies to subsequent runs; when the session has no main model, legacy routing applies — with no tier config required. Explicit `model`/`tier` tags are unaffected, and an unavailable inherited model degrades to the settings default with a run-visible warning instead of throwing.
 
-Omitted `tokenBudget` and `agentTimeoutMs` values use configured `defaultTokenBudget` and `defaultAgentTimeoutMs` settings; without them, runs are unlimited and have no hard per-agent timeout. Add per-run or per-agent values when you need explicit gates. `concurrency` is clamped to 16; `agentRetries` retries only recoverable failures. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific. `defaultTokenBudget` is a soft pre-call gate, and a project-level override of `null` cancels a global budget.
+An omitted `agentTimeoutMs` uses the configured `defaultAgentTimeoutMs` setting; without it, agents have no hard timeout. Add per-run or per-agent values when you need explicit gates. `concurrency` is clamped to 16; `agentRetries` retries only recoverable failures. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific.
 
 Child sessions intentionally disable host extensions to avoid per-child factory churn and recursive orchestration. Some providers require extension request/auth hooks in addition to a shared model registry. To opt in, set `"providerMiddlewareExtensions": ["example-provider-adapter"]` in `~/.pi/workflows/settings.json` (also available on `WorkflowAgent`, `runWorkflow`, and `WorkflowManager` SDK options). Omitted or `[]` keeps all host extensions disabled. Names match an extension filename without its JS/TS suffix, an exact npm package identity, or a resolved local/Git package source name, case-insensitively; ancestor directory names do not authorize descendants; only enabled resources are considered, and project resources still require Pi project trust. `pi-dynamic-workflows`, `workflow`, and `pi-subagents` are always excluded, even if allowlisted. Only allow trusted, child-safe middleware: the allowlist enables whole extensions, not a hook-only sandbox, and opted-in factories and runtimes are isolated per child session and receive session_shutdown before disposal. Extension-free resource loaders remain shared. Explicit SDK resource-loader injection remains authoritative and bypasses this discovery filter.
 
 A schema-less agent call that comes back as whitespace-only text is a recoverable `AGENT_EMPTY_OUTPUT` failure and retries like any other. Some models occasionally hit this on an otherwise-fine first attempt; if a fleet is built on one of them, set `agentRetries: 1-2` rather than treating an isolated empty output as a failed run. Because an exhausted recoverable failure resolves to `null` rather than throwing, a run whose **every** agent came back empty still reports `completed`; when that happens the runtime logs a prominent `⚠ Workflow produced no usable results` warning (naming the empty agents and pointing at `agentRetries` and output-token limits) so an all-null fleet can't be mistaken for success.
 
-Pausing and resuming a run keeps the limits it started with — `maxAgents`, `agentTimeoutMs`, `concurrency`, and `agentRetries` carry over instead of falling back to defaults, and `tokenBudget` tracking is cumulative across the pause, so a run can't reset its spend by pausing and resuming.
+Pausing and resuming a run keeps the limits it started with — `maxAgents`, `agentTimeoutMs`, `concurrency`, and `agentRetries` carry over instead of falling back to defaults, and token totals stay cumulative across the pause.
 
 Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the final wait for agents that ignore cancellation. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a `workflow` tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
 

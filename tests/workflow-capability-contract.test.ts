@@ -16,7 +16,6 @@ import { createWorkflowTool } from "../src/workflow-tool.js";
 const EXPECTED_RUNTIME_GLOBALS = [
   "agent",
   "args",
-  "budget",
   "checkpoint",
   "console",
   "cwd",
@@ -37,7 +36,6 @@ const EXPECTED_TOOL_INPUTS = [
   "name",
   "resumeFromRunId",
   "script",
-  "tokenBudget",
 ] as const;
 
 function implementations(): Record<string, unknown> {
@@ -59,7 +57,6 @@ test("capability definition inventories the settled runtime and invocation contr
   assert.deepEqual(WORKFLOW_CAPABILITY_DEFINITION.optionShapes.map((shape) => shape.id).sort(), [
     "agent-options",
     "checkpoint-options",
-    "phase-options",
   ]);
   assert.ok(
     WORKFLOW_CAPABILITY_DEFINITION.capabilities.some(
@@ -80,31 +77,18 @@ test("capability definition inventories the settled runtime and invocation contr
   assert.equal(WORKFLOW_CAPABILITY_DEFINITION.versions.content.kind, "present-at");
 });
 
-test("tool-input contract records configured omission defaults and soft budget accounting", () => {
+test("tool-input contract records configured omission defaults", () => {
   const agentTimeoutMs = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
     ({ id }) => id === "workflow.tool-input.agentTimeoutMs",
   );
-  const tokenBudget = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
-    ({ id }) => id === "workflow.tool-input.tokenBudget",
-  );
 
   assert.equal(agentTimeoutMs?.signature, "agentTimeoutMs?: number = configured default or unbounded");
-  assert.equal(tokenBudget?.signature, "tokenBudget?: number = configured default or unlimited");
-  assert.deepEqual(tokenBudget?.constraints, ["soft pre-call gate; in-flight work can overshoot"]);
 });
 
 test("declared tool inputs match the provider-visible workflow tool schema", () => {
   const { parameters } = createWorkflowTool();
   const properties = (parameters as { properties: Record<string, { description?: string }> }).properties;
   assert.deepEqual(Object.keys(properties).sort(), [...EXPECTED_TOOL_INPUTS]);
-
-  // Both the contract and the provider-visible prose describe tokenBudget; they must agree it is a soft gate.
-  const tokenBudget = WORKFLOW_CAPABILITY_DEFINITION.capabilities.find(
-    ({ id }) => id === "workflow.tool-input.tokenBudget",
-  );
-  assert.match(tokenBudget?.constraints.join(" ") ?? "", /soft/);
-  assert.match(properties.tokenBudget?.description ?? "", /soft/);
-  assert.doesNotMatch(properties.tokenBudget?.description ?? "", /hard/);
 });
 
 test("background is an ignored compatibility input and no fact offers a foreground run", () => {
@@ -330,7 +314,6 @@ test("runWorkflow exposes exactly the declared project-owned globals", async () 
     substratePresent: boolean;
     agentResult: string;
     processMatchesCwd: boolean;
-    budgetWorks: boolean;
   }>(
     `export const meta = { name: 'observe_contract', description: 'observe project globals' }
 return {
@@ -338,7 +321,6 @@ return {
   substratePresent: typeof Array === 'function',
   agentResult: await agent('proof', { label: 'proof' }),
   processMatchesCwd: process.cwd() === cwd,
-  budgetWorks: budget.total === null && budget.spent() > 0 && budget.remaining() === Infinity,
 }`,
     {
       args: [...EXPECTED_RUNTIME_GLOBALS],
@@ -366,5 +348,4 @@ return {
   assert.equal(result.result.substratePresent, true);
   assert.equal(result.result.agentResult, "ok");
   assert.equal(result.result.processMatchesCwd, true);
-  assert.equal(result.result.budgetWorks, true);
 });

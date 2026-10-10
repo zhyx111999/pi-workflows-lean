@@ -849,36 +849,6 @@ test(
 );
 
 test(
-  "manager defaultTokenBudget applies when run options omit tokenBudget (#68)",
-  withTempCwd(async (cwd) => {
-    // Each agent reports 100 tokens against a default budget of 50: the first
-    // agent completes (budget checked before start), the second throws.
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 100 }), defaultTokenBudget: 50 });
-    // Deliberately NO "error" listener: an unlistened EventEmitter "error" emit
-    // throws, which used to abort the catch block mid-way — surfacing as
-    // ERR_UNHANDLED_ERROR instead of the real error and leaking the run lease.
-    await assert.rejects(manager.runSync(twoAgentScript), (err: unknown) => {
-      assert.ok(err instanceof WorkflowError, `expected WorkflowError, got ${(err as Error)?.constructor?.name}`);
-      assert.equal(err.code, WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED);
-      return true;
-    });
-    // The failure was persisted and the lease released (a fresh save succeeds).
-    const run = manager.listRuns()[0];
-    assert.equal(run?.status, "failed");
-  }),
-);
-
-test(
-  "run option tokenBudget overrides manager defaultTokenBudget",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 100 }), defaultTokenBudget: 50 });
-    // Explicit null = "no budget" beats the configured default.
-    const result = await manager.runSync(twoAgentScript, undefined, { tokenBudget: null });
-    assert.equal(result.agentCount, 2);
-  }),
-);
-
-test(
   "the estimate flag survives accumulation across commits and a pause/resume cycle (#209)",
   withTempCwd(async (cwd) => {
     // 'first' reports nothing (its committed total is a fabricated estimate);
@@ -950,7 +920,7 @@ test(
 );
 
 test(
-  "resume re-resolves the run's toolset tag and keeps its start-time tokenBudget",
+  "resume re-resolves the run's toolset tag",
   withTempCwd(async (cwd) => {
     // Agent where 'first' completes (journaling it) and 'second' hangs on its
     // first attempt — so the run can be paused mid-'second' and resumed, at
@@ -972,7 +942,6 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent,
-      defaultTokenBudget: 50,
       toolsets: {
         webby: () => {
           toolsetResolutions++;
@@ -981,13 +950,7 @@ test(
       },
     });
 
-    // Explicit no-budget + a named toolset. (With the 100-token usage above, the
-    // 50-token default would exhaust this two-agent run — so mere completion
-    // already proves the explicit null won.)
-    const { runId, promise } = manager.startInBackground(twoAgentScript, undefined, {
-      tokenBudget: null,
-      toolset: "webby",
-    });
+    const { runId, promise } = manager.startInBackground(twoAgentScript, undefined, { toolset: "webby" });
     promise.catch(() => {}); // pause aborts the in-flight execution — expected
     // Wait until 'second' is in flight, then pause the run.
     for (let i = 0; i < 200 && secondAttempts === 0; i++) {
@@ -999,11 +962,9 @@ test(
 
     const persisted = manager.getPersistence().load(runId);
     assert.equal(persisted?.status, "paused");
-    assert.equal(persisted?.tokenBudget, null, "explicit null budget persists (not the 50 default)");
     assert.equal(persisted?.toolset, "webby", "toolset tag persists with the run");
 
-    // Resume: the run must keep its start-time context — no budget (not the
-    // manager's current default) and the same re-resolved toolset.
+    // Resume: the run must re-resolve the same toolset.
     assert.equal(await manager.resume(runId), true);
     // resume() executes detached — poll until the run leaves "running".
     for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
@@ -1011,8 +972,7 @@ test(
     }
     assert.equal(toolsetResolutions, 2, "resume re-resolves the toolset tag");
     const resumed = manager.getPersistence().load(runId);
-    assert.equal(resumed?.status, "completed", "resume completes without TOKEN_BUDGET_EXHAUSTED");
-    assert.equal(resumed?.tokenBudget, null, "resume keeps the start-time budget, not the current default");
+    assert.equal(resumed?.status, "completed", "resume completes");
     assert.equal(resumed?.toolset, "webby");
   }),
 );
@@ -1225,73 +1185,6 @@ test(
     );
     const agent = persisted?.agents.find((a) => a.label === "a");
     assert.match(agent?.error ?? "", /timed out after 20ms/, "the legacy run's agent must actually time out at 20ms");
-  }),
-);
-
-test(
-  "resume seeds the token-spend counter from the persisted total, so the budget holds cumulatively (#A2)",
-  withTempCwd(async (cwd) => {
-    // 'first' completes normally (spends 100). 'second' hangs on its first
-    // attempt (pause point), then on its second attempt (post-resume) spends
-    // 60 more — 100 + 60 = 160, over the 150 budget, but neither half alone
-    // would trip it. 'third' only runs if the budget wrongly reset to 0 at
-    // resume; it must instead be blocked before it even starts.
-    let secondAttempts = 0;
-    const zeroUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    const agent = {
-      async run(prompt: string, options?: { onUsage?: (usage: AgentUsage) => void; signal?: AbortSignal }) {
-        if (prompt === "first") {
-          options?.onUsage?.({ ...zeroUsage, total: 100 });
-          return "first-result";
-        }
-        if (prompt === "second") {
-          if (++secondAttempts === 1) {
-            return new Promise((resolve, reject) => {
-              void resolve;
-              options?.signal?.addEventListener("abort", () => reject(new Error("paused")), { once: true });
-            });
-          }
-          options?.onUsage?.({ ...zeroUsage, total: 60 });
-          return "second-result";
-        }
-        options?.onUsage?.({ ...zeroUsage, total: 1 });
-        return "third-result";
-      },
-    };
-    const manager = new WorkflowManager({ cwd, agent });
-    manager.on("error", () => {});
-
-    const script = `export const meta = { name: 'seed_demo', description: 'three sequential agents' }
-const a = await agent('first', { label: 'first' })
-const b = await agent('second', { label: 'second' })
-const c = await agent('third', { label: 'third' })
-return { a, b, c }`;
-
-    const { runId, promise } = manager.startInBackground(script, undefined, { tokenBudget: 150 });
-    promise.catch(() => {});
-    for (let i = 0; i < 200 && secondAttempts === 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal(secondAttempts, 1, "'second' should be in flight before pausing");
-    assert.equal(manager.pause(runId), true);
-
-    const paused = manager.getPersistence().load(runId);
-    assert.equal(paused?.status, "paused");
-    assert.equal(paused?.tokenUsage?.total, 100, "pre-pause spend (agent 1) is persisted, not lost mid-run");
-
-    assert.equal(await manager.resume(runId), true);
-    for (let i = 0; i < 200 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-
-    const resumed = manager.getPersistence().load(runId);
-    // The cumulative spend (100 + 60 = 160) must be reflected...
-    assert.equal(resumed?.tokenUsage?.total, 160, "final tokenUsage reflects both the pre-pause and post-resume spend");
-    // ...and must have tripped the budget once the SUM exceeded it — the run
-    // fails with TOKEN_BUDGET_EXHAUSTED on 'third', not a reset-to-zero pass.
-    assert.equal(resumed?.status, "failed", "the tokenBudget must hold cumulatively across resume");
-    const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.error?.code, WorkflowErrorCode.TOKEN_BUDGET_EXHAUSTED);
   }),
 );
 
@@ -4837,6 +4730,42 @@ return { first, third }`;
   }),
 );
 
+test(
+  "resume ignores budget fields that older releases persisted on the run",
+  withTempCwd(async (cwd) => {
+    const { state, runner } = pauseOnThirdCallRunner();
+    const manager = new WorkflowManager({ cwd, agent: runner });
+    manager.on("paused", () => {});
+    manager.on("error", () => {});
+    const script = `export const meta = { name: 'legacy_budget', description: 'legacy budget fields' }
+const first = await agent('first-call', { label: 'first' })
+const third = await agent('third-call', { label: 'third' })
+return { first, third }`;
+
+    const { runId, promise } = manager.startInBackground(script);
+    await promise.catch(() => {});
+    const persistence = manager.getPersistence();
+    const paused = persistence.load(runId);
+    assert.equal(paused?.status, "paused");
+    // A 1-token budget would block every live call if it were still honoured.
+    persistence.save({
+      ...paused,
+      tokenBudget: 1,
+      phaseBudgets: { [`${runId}:Main`]: { budget: 1, startSpent: 0, warned: true } },
+    } as typeof paused);
+
+    state.failThird = false;
+    assert.equal(await manager.resume(runId), true);
+    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const completed = persistence.load(runId);
+    assert.equal(completed?.status, "completed");
+    assert.equal(Object.hasOwn(completed ?? {}, "tokenBudget"), false);
+    assert.equal(Object.hasOwn(completed ?? {}, "phaseBudgets"), false);
+  }),
+);
+
 // ═══════════════════════════════════════════════════════════════════════════
 // `runs` map eviction (run-level analog of the subagent memory-retention
 // mitigation): terminal runs' in-memory ManagedRun (agents array, journal,
@@ -6431,80 +6360,6 @@ await agent('NEW-B')`;
     assert.ok(
       logs.some((l) => l.includes("no usable results")),
       "stale seeded history must not suppress the all-empty warning",
-    );
-  }),
-);
-
-test(
-  "phase sub-budgets persist and hold cumulatively across a checkpoint pause/resume (audit2 #4)",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 60 }) });
-    manager.on("error", () => {});
-    const script = `export const meta = { name: 'phase_resume', description: 'phase resume' }
-phase('p', { budget: 60 })
-const a = await agent('a')
-await checkpoint({ kind: 'hold', checkpointId: 'h-1', payload: {} })
-let blocked = false
-try { await agent('b') } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { a, blocked }`;
-
-    const started = manager.startInBackground(script);
-    await assert.rejects(started.promise, /checkpoint/i);
-
-    // The declared phase budget must be on the persisted record (frame-namespaced).
-    const pausedRecord = manager.getPersistence().load(started.runId);
-    assert.deepEqual(pausedRecord?.phaseBudgets?.[`${started.runId}:p`], { budget: 60, startSpent: 0, warned: false });
-
-    await manager.attachCheckpointResponse(started.runId, "h-1", {});
-    const completed = once(manager, "complete");
-    assert.equal(await manager.resume(started.runId, { checkpointId: "h-1" }), true);
-    await completed;
-
-    const final = manager.getPersistence().load(started.runId);
-    assert.equal(
-      final?.result && (final.result as { blocked?: boolean }).blocked,
-      true,
-      "after resume, 'b' must be blocked: the phase ceiling (60) holds against the CUMULATIVE spend (60 pre-pause) instead of re-basing",
-    );
-    assert.deepEqual(
-      final?.agents.map((a) => a.prompt),
-      ["a"],
-      "'a' replayed in place from the journal and 'b' never ran (no 'b' row)",
-    );
-  }),
-);
-
-test(
-  "a run paused with its token budget exhausted still RESUMES: journaled replays are free (audit2 #1)",
-  withTempCwd(async (cwd) => {
-    const manager = new WorkflowManager({ cwd, agent: fakeAgent({ total: 60 }) });
-    manager.on("error", () => {});
-    const script = `export const meta = { name: 'budget_resume', description: 'budget resume' }
-const a = await agent('a')
-await checkpoint({ kind: 'hold', checkpointId: 'h-1', payload: {} })
-let blocked = false
-try { await agent('b') } catch (e) { blocked = (e && e.code) === 'TOKEN_BUDGET_EXHAUSTED' }
-return { a, blocked }`;
-
-    const started = manager.startInBackground(script, undefined, { tokenBudget: 60 });
-    await assert.rejects(started.promise, /checkpoint/i);
-
-    await manager.attachCheckpointResponse(started.runId, "h-1", {});
-    const completed = once(manager, "complete");
-    assert.equal(await manager.resume(started.runId, { checkpointId: "h-1" }), true);
-    await completed;
-
-    const final = manager.getPersistence().load(started.runId);
-    assert.equal(final?.status, "completed", "the run must resume past the exhausted budget via free replays");
-    assert.equal(
-      final?.result && (final.result as { blocked?: boolean }).blocked,
-      true,
-      "the gate still fires at the first LIVE (paid) call",
-    );
-    assert.deepEqual(
-      final?.agents.map((a) => a.prompt),
-      ["a"],
-      "'a' replayed in place (budget gate must not strand the replay)",
     );
   }),
 );

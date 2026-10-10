@@ -31,8 +31,7 @@ workflow) through the tool's top-level `name` input.
 
 This is a `workflow` tool call, not a script — omit `script` entirely. The run
 starts in the background exactly like the slash-command form; `maxAgents`,
-`concurrency`, `agentRetries`, `agentTimeoutMs`, and `tokenBudget` all still
-apply.
+`concurrency`, `agentRetries`, and `agentTimeoutMs` all still apply.
 
 ## Writing a new workflow instead
 

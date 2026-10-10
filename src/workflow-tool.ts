@@ -20,11 +20,11 @@ const workflowToolSchema = Type.Object({
         "Raw JavaScript workflow script, with no Markdown fences. Required unless `name` is given.",
         "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty description' }. Add phases: [{ title: 'Phase' }] only when the workflow has named phases, and declare only phases it will use. With multiple phases, call phase('Exact Title') before each phase's work or set `phase` in the agent options.",
         "Subagents only do the task in the agent() prompt. Do not add a follow-up subagent to cross-check results.",
-        "checkpoint(prompt) records a journaled pause; a background run uses the headless default true unless headless is 'abort'. budget.total, budget.spent(), and budget.remaining() read the soft token budget. phase('Name', { budget: N }) groups the live view and can set a phase token limit.",
+        "checkpoint(prompt) records a journaled pause; a background run uses the headless default true unless headless is 'abort'.",
         "agent(prompt, { label, tier: 'small'|'medium'|'big', model, thinking, schema, timeoutMs, retries }). Untagged agents use the medium tier. An explicit model overrides tier. thinking is off|minimal|low|medium|high|xhigh|max and is separate from tier.",
         "The optional `agentType` option selects a named user or project definition that can bind tools, a model, and role instructions; use it only when its name and purpose are provided in context. Its bound model overrides `tier`; an explicit `model` overrides both.",
         "Use plain JavaScript only; imports, require(), filesystem modules, Date.now(), Math.random(), and new Date() are unavailable.",
-        "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, cwd, process.cwd(), and budget. The workflow must call agent() at least once.",
+        "Use phase('Name'), agent(prompt, opts), parallel(arrayOfFunctions), pipeline(items, ...stages), log(message), args, cwd, and process.cwd(). The workflow must call agent() at least once.",
         "parallel() requires functions, not promises, and returns results in input order: await parallel(items.map(item => () => agent(...))).",
         "pipeline(items, ...stages) runs stages sequentially for each item while items proceed concurrently; each stage receives (previousValue, originalItem, index).",
       ].join(" "),
@@ -87,12 +87,6 @@ const workflowToolSchema = Type.Object({
         "Timeout per agent in milliseconds. Omit to use configured `defaultAgentTimeoutMs`; without one, there is no hard timeout. Set only when the user asks to bound time.",
     }),
   ),
-  tokenBudget: Type.Optional(
-    Type.Number({
-      description:
-        "Optional user-requested soft spend gate, not a planning target. Do not set `tokenBudget` unless the user explicitly supplies a cap or asks you to choose one; never infer or invent one from task size. If omitted, the configured `defaultTokenBudget` applies; without one, the run is unlimited. Reaching the gate blocks later `agent()` calls; concurrent in-flight work can overshoot.",
-    }),
-  ),
   resumeFromRunId: Type.Optional(
     Type.String({
       description: [
@@ -119,7 +113,6 @@ export type WorkflowToolInput = {
   concurrency?: number;
   agentRetries?: number;
   agentTimeoutMs?: number;
-  tokenBudget?: number;
   resumeFromRunId?: string;
 };
 
@@ -255,7 +248,6 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         concurrency: params.concurrency,
         agentRetries: params.agentRetries,
         agentTimeoutMs: params.agentTimeoutMs,
-        tokenBudget: params.tokenBudget,
         tools: invocationTools,
         toolset: invocationToolset,
       });

@@ -41,6 +41,7 @@ describe("workflow settings", () => {
         keywordTriggerEnabled: false,
         keywordTriggerWord: "pi-workflow",
         defaultEffort: "ultra",
+        defaultTokenBudget: 500_000,
         defaultAgentTimeoutMs: 600000,
         defaultConcurrency: 4,
         progressPanelMode: "detailed",
@@ -73,27 +74,6 @@ describe("workflow settings", () => {
 
       saveWorkflowSettings({ defaultAgentTimeoutMs: null }, settingsPath);
       assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultAgentTimeoutMs: null });
-    });
-  });
-
-  it("saves, loads, and normalizes defaultTokenBudget (#68)", () => {
-    withSettingsPath((settingsPath) => {
-      mkdirSync(dirname(settingsPath), { recursive: true });
-
-      saveWorkflowSettings({ defaultTokenBudget: 500_000 }, settingsPath);
-      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultTokenBudget: 500_000 });
-
-      // null is a meaningful value: "explicitly no budget" (project override).
-      saveWorkflowSettings({ defaultTokenBudget: null }, settingsPath);
-      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultTokenBudget: null });
-
-      // Floats floor; zero/negative/garbage are dropped.
-      writeFileSync(settingsPath, JSON.stringify({ defaultTokenBudget: 1000.9 }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultTokenBudget: 1000 });
-      writeFileSync(settingsPath, JSON.stringify({ defaultTokenBudget: 0 }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
-      writeFileSync(settingsPath, JSON.stringify({ defaultTokenBudget: "lots" }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
     });
   });
 

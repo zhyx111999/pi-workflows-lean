@@ -119,15 +119,14 @@ test("createWorkflowTool keeps script syntax in the parameter schema", () => {
   assert.doesNotMatch(description, /workflow\(|retry\(|gate\(|loopUntilDry\(/);
   assert.match(description, /checkpoint\(prompt\)/);
   assert.match(description, /tier: 'small'\|'medium'\|'big'/);
-  assert.match(description, /budget\.total, budget\.spent\(\), and budget\.remaining\(\)/);
-  assert.match(description, /phase\('Name', \{ budget: N \}\)/);
+  assert.doesNotMatch(description, /budget/i);
   assert.match(description, /optional `agentType` option.*named user or project definition/i);
   assert.match(description, /bind tools, a model, and role instructions/i);
   assert.match(description, /name and purpose.*provided in context/i);
   assert.match(description, /bound model overrides `tier`.*explicit `model` overrides both/i);
   assert.match(description, /plain JavaScript only.*imports.*require\(\).*filesystem modules/i);
   assert.match(description, /Date\.now\(\).*Math\.random\(\).*new Date\(\).*unavailable/i);
-  assert.match(description, /args, cwd, process\.cwd\(\), and budget/i);
+  assert.match(description, /args, cwd, and process\.cwd\(\)/i);
   assert.match(description, /must call agent\(\) at least once/i);
   assert.match(description, /parallel\(\) requires functions, not promises.*results in input order/i);
   assert.match(description, /pipeline\(items, \.\.\.stages\).*stages sequentially.*items proceed concurrently/i);
@@ -181,16 +180,6 @@ test("createWorkflowTool schema describes the configured or unbounded timeout", 
   assert.match(description, /Omit to use configured `defaultAgentTimeoutMs`/i);
   assert.match(description, /without one.*no hard timeout/i);
   assert.match(description, /only when the user asks/i);
-});
-
-test("createWorkflowTool schema uses the agreed token-budget wording exactly", () => {
-  const tool = createWorkflowTool();
-  const description = parameterDescription(tool, "tokenBudget");
-
-  assert.equal(
-    description,
-    "Optional user-requested soft spend gate, not a planning target. Do not set `tokenBudget` unless the user explicitly supplies a cap or asks you to choose one; never infer or invent one from task size. If omitted, the configured `defaultTokenBudget` applies; without one, the run is unlimited. Reaching the gate blocks later `agent()` calls; concurrent in-flight work can overshoot.",
-  );
 });
 
 test("createWorkflowTool schema exposes resource controls and large-fan-out authority", () => {

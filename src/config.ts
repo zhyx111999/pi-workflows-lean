@@ -14,9 +14,6 @@ export const MAX_CONCURRENCY = 16;
 /** Maximum automatic retry attempts after a recoverable agent failure. */
 export const MAX_AGENT_RETRIES = 3;
 
-/** Default token budget if none specified. */
-export const DEFAULT_TOKEN_BUDGET = null;
-
 /** Legacy project-relative directory for persisted workflow run state. New writes use workflowProjectPaths(). */
 export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";
 
