@@ -1,11 +1,11 @@
 /**
- * Interactive-session wiring for the parent model: the tail prompt appended to
- * interactive messages, the `/workflows run` directive, and the
+ * Interactive-session wiring for the parent model: the hidden parent prompt
+ * sent with typed messages, the `/workflows run` directive, and the
  * `/workflows-progress` panel preference command.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { appendParentWorkflowPrompt } from "./parent-prompt.js";
+import type { ExtensionAPI, ExtensionCommandContext, InputEvent } from "@earendil-works/pi-coding-agent";
+import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "./parent-prompt.js";
 import {
   loadWorkflowSettings,
   saveWorkflowSettings,
@@ -37,16 +37,32 @@ export function buildForcedWorkflowPrompt(text: string): string {
 }
 
 /**
- * Append the parent prompt to interactive messages. Slash commands and input
- * injected by RPC or other extensions pass through unchanged.
+ * Send the parent prompt as a hidden message after each message the user types,
+ * leaving the user's own text unchanged in the transcript.
+ *
+ * Only `input` knows where text came from, and only `before_agent_start` can add
+ * a message, so `input` records eligible text and `before_agent_start` sends the
+ * prompt when its prompt is exactly that text. Slash commands, steer and
+ * follow-up messages typed during a run, and RPC or extension input are not
+ * recorded.
  */
 export function installParentPromptHook(pi: ExtensionAPI): void {
-  pi.on("input", (event: { source?: string; text?: string }) => {
-    if (event.source !== "interactive" || !event.text) return { action: "continue" } as const;
-    const text = appendParentWorkflowPrompt(event.text);
-    if (text === event.text) return { action: "continue" } as const;
-    return { action: "transform", text } as const;
+  let typedPrompt: string | undefined;
+  pi.on("input", (event) => {
+    // Every input replaces the record, so text that never started a run (handled
+    // by another extension, or a failed submit) cannot match a later run.
+    typedPrompt = isTypedPrompt(event) ? event.text : undefined;
   });
+  pi.on("before_agent_start", (event) => {
+    const matches = typedPrompt !== undefined && event.prompt === typedPrompt;
+    typedPrompt = undefined;
+    if (!matches) return;
+    return { message: { customType: PARENT_PROMPT_MESSAGE_TYPE, content: PARENT_WORKFLOW_PROMPT, display: false } };
+  });
+}
+
+function isTypedPrompt(event: InputEvent): boolean {
+  return event.source === "interactive" && !event.streamingBehavior && !event.text.trimStart().startsWith("/");
 }
 
 /**

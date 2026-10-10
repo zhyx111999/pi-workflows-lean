@@ -1,6 +1,6 @@
 /**
  * Tests for the extension entry point: tool and command registration, the
- * parent-prompt input hook, and live-runtime handoff across session replacement.
+ * parent-prompt hooks, and live-runtime handoff across session replacement.
  */
 
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ import {
   handoffWorkflowRuntime,
   takeWorkflowRuntime,
 } from "../src/extension-reload.js";
-import { PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
+import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
 import { _registerBoundSessionSendForTests, _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
 import { getWorkflowSettingsPath } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -56,12 +56,14 @@ describe("workflow extension - control tool availability", () => {
           "workflows-progress",
         ]);
         assert.equal(handlers.session_start.length, 1);
-        assert.equal(handlers.input.length, 1, "one parent-prompt hook per extension generation");
-        assert.deepEqual(handlers.input[0]({ source: "interactive", text: "hello" }), {
-          action: "transform",
-          text: `hello\n\n---\n${PARENT_WORKFLOW_PROMPT}`,
+        assert.equal(handlers.input.length, 1, "one parent-prompt input hook per extension generation");
+        assert.equal(handlers.before_agent_start.length, 1, "one parent-prompt start hook per extension generation");
+        assert.equal(handlers.input[0]({ source: "interactive", text: "hello" }), undefined, "typed text is kept");
+        assert.deepEqual(handlers.before_agent_start[0]({ prompt: "hello" }), {
+          message: { customType: PARENT_PROMPT_MESSAGE_TYPE, content: PARENT_WORKFLOW_PROMPT, display: false },
         });
-        assert.deepEqual(handlers.input[0]({ source: "interactive", text: "/workflows list" }), { action: "continue" });
+        handlers.input[0]({ source: "interactive", text: "/workflows list" });
+        assert.equal(handlers.before_agent_start[0]({ prompt: "/workflows list" }), undefined);
         handlers.session_start[0](
           {},
           {
@@ -76,6 +78,7 @@ describe("workflow extension - control tool availability", () => {
         assert.ok(activeTools.includes("workflow"));
         assert.ok(activeTools.includes("workflow_control"));
         assert.equal(handlers.input.length, 1, "session_start does not add another input hook");
+        assert.equal(handlers.before_agent_start.length, 1, "session_start does not add another start hook");
 
         handlers.session_shutdown?.[0]?.({ reason: "reload" });
         const staged = takeWorkflowRuntime(process.cwd());
