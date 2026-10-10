@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -130,6 +131,76 @@ test("createWorktree gives repeated long names independent retained worktrees", 
   }
 });
 
+test("createWorktree checks out a deep tree that fits the main checkout without core.longpaths", async () => {
+  // Without core.longpaths (Git for Windows' default) git cannot create a
+  // directory path of 248 characters or more, so every character the worktree
+  // location adds to the repository root is taken from the tracked paths.
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi-wt-deep-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
+  const segments: string[] = [];
+  while (join(repo, ...segments).length < 200) segments.push("segment-12");
+  const deepDir = join(...segments);
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    git("config", "core.longpaths", "false");
+    mkdirSync(join(repo, deepDir), { recursive: true });
+    writeFileSync(join(repo, deepDir, "f.txt"), "deep\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+
+    const wt = await createWorktreeLive(repo, "run-1700000000000-abcdef-12-implement-the-feature");
+    assert.equal(wt.isolated, true, wt.reason);
+    assert.ok(wt.cwd.length - repo.length <= 24, `worktree path adds ${wt.cwd.length - repo.length} characters`);
+    assert.ok(existsSync(join(wt.cwd, deepDir, "f.txt")), "the deep file is checked out");
+    await removeWorktree(wt);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("createWorktree skips an id whose directory or branch is still taken", async () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi-wt-taken-")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: "pipe" });
+  // Feed createWorktree known ids through node:crypto, which it imports.
+  const crypto = createRequire(import.meta.url)("node:crypto") as { randomBytes: (size: number) => Buffer };
+  const randomBytes = crypto.randomBytes;
+  const ids = ["aaaaaaaa", "bbbbbbbb", "cccccccc"];
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "file.txt"), "base\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "init");
+    // A retained branch whose tree was deleted by hand, and a retained tree.
+    git("branch", "pi/wf/run-taken-aaaaaaaa");
+    const retained = join(repo, ".pi", "worktrees", "bbbbbbbb");
+    mkdirSync(retained, { recursive: true });
+    writeFileSync(join(retained, "keep.txt"), "retained\n");
+
+    crypto.randomBytes = (size) => (ids.length ? Buffer.from(ids.shift() ?? "", "hex") : randomBytes(size));
+    syncBuiltinESMExports();
+    const wt = await createWorktreeLive(repo, "run-taken").finally(() => {
+      crypto.randomBytes = randomBytes;
+      syncBuiltinESMExports();
+    });
+
+    assert.equal(wt.isolated, true, wt.reason);
+    assert.equal(wt.cwd, join(repo, ".pi", "worktrees", "cccccccc"));
+    assert.equal(wt.branch, "pi/wf/run-taken-cccccccc");
+    assert.equal(existsSync(join(repo, ".pi", "worktrees", "aaaaaaaa")), false, "a skipped id releases its directory");
+    assert.equal(readFileSync(join(retained, "keep.txt"), "utf8"), "retained\n");
+    await removeWorktree(wt);
+    assert.notEqual(git("branch", "--list", "pi/wf/run-taken-aaaaaaaa").trim(), "", "the retained branch survives");
+  } finally {
+    crypto.randomBytes = randomBytes;
+    syncBuiltinESMExports();
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("removeWorktree preserves the branch when a locked worktree cannot be removed", async () => {
   const repo = mkdtempSync(join(tmpdir(), "pi-wt-failrm-"));
   const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { stdio: "pipe" });
@@ -222,7 +293,7 @@ test("a timed-out worktree add cleans up only its half-created branch, tree, and
       `git -C ${shellWord(repo)} worktree list --porcelain > ${shellWord(fixtureRegistrations)}`,
       `git -C ${shellWord(repo)} branch --list unrelated-stale > ${shellWord(fixtureBranches)}`,
       `echo ready > ${shellWord(fixtureReady)}`,
-      // Far beyond the timeout below, yet finite: killing git orphans this hook.
+      // Far beyond the timeout below, yet finite should the hook survive it.
       "sleep 60",
       "",
     ].join("\n"),
@@ -294,5 +365,68 @@ test("a timed-out worktree add cleans up only its half-created branch, tree, and
   } finally {
     rmSync(fixtureDir, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+/** Whether `pid` ends within `withinMs` (an exiting process may linger briefly). */
+async function processEnds(pid: number, withinMs: number): Promise<boolean> {
+  const deadline = Date.now() + withinMs;
+  for (;;) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    if (Date.now() > deadline) return false;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+  }
+}
+
+test("a timed-out worktree add ends the hook processes git started, so cleanup is prompt and complete", async () => {
+  // A hook that starts a native process in the new tree (a dependency install,
+  // an LFS fetch) outlives a timeout that kills only git. On Windows that
+  // process keeps the tree busy, so cleanup retried for seconds and could
+  // still leave the directory behind.
+  const fixtureDir = mkdtempSync(join(tmpdir(), "pi-wt-hook-tree-fixture-"));
+  const hooksDir = join(fixtureDir, "hooks");
+  const pidFile = join(fixtureDir, "holder.pid");
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "pi-wt-hook-tree-")));
+  const worktreesDir = join(repo, ".pi", "worktrees");
+  const holder = `require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000)`;
+  mkdirSync(hooksDir);
+  writeFileSync(
+    join(hooksDir, "post-checkout"),
+    `#!/bin/sh\n${shellWord(process.execPath.replaceAll("\\", "/"))} -e ${shellWord(holder)}\n`,
+    { mode: 0o755 },
+  );
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  let holderPid = 0;
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@t.t");
+    git("config", "user.name", "t");
+    git("config", "core.hooksPath", hooksDir);
+    writeFileSync(join(repo, "f.txt"), "base\n");
+    git("add", ".");
+    git("commit", "-qm", "init");
+
+    const timeoutMs = 2_000;
+    const started = Date.now();
+    const wt = await createWorktreeLive(repo, "run-hooktree-0-task", { timeoutMs });
+    const elapsed = Date.now() - started;
+
+    assert.equal(wt.isolated, false);
+    assert.match(wt.reason ?? "", /timed out/);
+    assert.ok(existsSync(pidFile), "the hook started its process before the timeout");
+    holderPid = Number(readFileSync(pidFile, "utf8"));
+    assert.ok(await processEnds(holderPid, 2_000), "the hook's process ended with the timed-out git");
+    assert.ok(elapsed < timeoutMs + 5_000, `cleanup did not wait on the hook (took ${elapsed}ms)`);
+    assert.equal(git("branch", "--list", "pi/wf/*").trim(), "", "the half-created branch was cleaned up");
+    assert.ok(!existsSync(worktreesDir) || readdirSync(worktreesDir).length === 0, "no directory left behind");
+  } finally {
+    if (holderPid && !(await processEnds(holderPid, 0))) process.kill(holderPid);
+    rmSync(fixtureDir, { recursive: true, force: true });
+    rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

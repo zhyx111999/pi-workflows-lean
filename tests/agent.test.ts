@@ -390,10 +390,14 @@ test("WorkflowAgent.run keeps constructor tools when its cwd is a symlink", asyn
 test("WorkflowAgent.run preserves a valid trailing-space cwd", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-cwd-space-home-"));
   const root = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-cwd-space-"));
-  const plain = join(root, "target");
-  const trailing = join(root, "target ");
-  mkdirSync(plain);
-  mkdirSync(trailing);
+  // Windows starts a process in "target" when asked for "target " and in
+  // "outer" for "outer."; only an inner segment keeps its trailing space.
+  const windows = process.platform === "win32";
+  const trailing = windows ? join(root, "outer ", "inner") : join(root, "target ");
+  // The stripped twin exists so a silent redirect would land somewhere real.
+  mkdirSync(windows ? join(root, "outer", "inner") : join(root, "target"), { recursive: true });
+  mkdirSync(trailing, { recursive: true });
+  const rewritten = [join(root, "target "), join(root, "outer.", "inner")];
   const core = createFauxCore({
     provider: "fauxtest-cwd-space",
     models: [{ id: "faux-model", name: "Faux Model", contextWindow: 128000, maxTokens: 4096 }],
@@ -411,6 +415,21 @@ test("WorkflowAgent.run preserves a valid trailing-space cwd", async () => {
       ]);
 
       const agent = new WorkflowAgent({ cwd: root, modelRegistry: registry });
+      if (windows) {
+        for (const cwd of rewritten) {
+          mkdirSync(cwd, { recursive: true });
+          await assert.rejects(
+            agent.run("run pwd", { cwd, model: "fauxtest-cwd-space/faux-model" }),
+            (error: unknown) => {
+              assert.ok(error instanceof WorkflowError);
+              assert.equal(error.code, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
+              assert.ok(error.message.includes(realpathSync(cwd)), error.message);
+              assert.match(error.message, /Windows/);
+              return true;
+            },
+          );
+        }
+      }
       await agent.run("run pwd", { cwd: trailing, model: "fauxtest-cwd-space/faux-model" });
 
       assert.equal(
