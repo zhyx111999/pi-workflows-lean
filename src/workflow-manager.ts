@@ -17,17 +17,12 @@ import { attachCheckpointResponse, checkpointAlreadyConsumed } from "./manager/c
 import { waitForPausedExecutionSettlement } from "./manager/execution-settlement.js";
 import { LiveRuns } from "./manager/live-runs.js";
 import { newManagedRun } from "./manager/new-run.js";
-import {
-  abortRecord,
-  recoverStaleRuns,
-  rehomePendingRecords,
-  tryAcquireRunLease,
-  writeAutoResumeAttempts,
-} from "./manager/record-ops.js";
+import { abortRecord, recoverStaleRuns, tryAcquireRunLease, writeAutoResumeAttempts } from "./manager/record-ops.js";
 import { resumedRun } from "./manager/resume-state.js";
 import type { SteerableAgent } from "./manager/run-events.js";
 import { type ExecOptions, executeRun } from "./manager/run-execution.js";
 import { initialRunRecord } from "./manager/run-record.js";
+import { adoptRunsToSession, moveRunSession } from "./manager/session-owner.js";
 import { taskListMoves } from "./manager/task-list-reuse.js";
 import { DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY } from "./manager/terminal-retention.js";
 import {
@@ -62,7 +57,10 @@ export interface ManagedRun {
   checkpoint?: WorkflowCheckpoint;
   /** Cross-process lease, held while an execution in this process owns the run. */
   lease?: RunLease;
-  /** The session that receives this run's result. Only adoptLiveRunsToSession() changes it. */
+  /**
+   * The session that receives this run's result, as this process last read or
+   * wrote it. The record decides; see manager/session-owner.ts.
+   */
   sessionId?: string;
   /** The session that started the run; never changes. */
   parentSessionId?: string;
@@ -117,6 +115,12 @@ export interface WorkflowResumeOptions {
   /** Edited task list for a task-list run: every unchanged task replays wherever it moved. */
   tasks?: SubagentTask[];
   checkpointId?: string;
+  /**
+   * Deliver the result to this manager's session from now on, as an explicit
+   * resume from a conversation does; the parent lineage stays. Without it the
+   * run keeps its session (auto-resume), unless it has none yet.
+   */
+  claimDelivery?: boolean;
 }
 
 export interface WorkflowManagerOptions {
@@ -288,50 +292,17 @@ export class WorkflowManager extends EventEmitter {
   }
 
   /**
-   * After a session replacement keeps this manager, move the work that still
-   * needs this conversation to `sessionId`: running and paused runs, and any
-   * run with an undelivered result. Finished, delivered runs keep their
-   * session so history stays where it ran; parent lineage never moves.
-   * Disk-only results move only from `previousSessionId`, so a sibling session
-   * sharing the runs directory cannot take another session's results.
+   * After a session replacement keeps this manager, move the work the previous
+   * session owns to `sessionId`: running and paused runs, and any undelivered
+   * result. Finished, delivered runs keep their session so history stays where
+   * it ran; parent lineage never moves. Runs another session owns stay with it,
+   * even when this process executes them or caches a stale copy. Returns how
+   * many runs moved.
    */
   adoptLiveRunsToSession(sessionId: string | undefined, previousSessionId?: string): number {
     if (!sessionId) return 0;
     const prev = previousSessionId !== undefined ? previousSessionId : this.sessionId;
-    let adopted = 0;
-    for (const managed of this.runs.values()) {
-      const active = managed.status === "running" || managed.status === "paused";
-      const undelivered = managed.pendingDelivery != null;
-      if (!active && !undelivered) continue;
-      if (managed.sessionId === sessionId) continue;
-      if (this.moveRunToSession(managed, sessionId)) adopted++;
-    }
-    return adopted + rehomePendingRecords(this.persistence, sessionId, prev, (runId) => this.runs.has(runId));
-  }
-
-  /**
-   * Re-home one in-memory run; false when it turned out to be deleted. An
-   * execution holding the lease rewrites its own record. A settled copy only
-   * caches a record another process may have changed since, so it moves just
-   * the session field.
-   */
-  private moveRunToSession(managed: ManagedRun, sessionId: string): boolean {
-    if (managed.lease) {
-      managed.sessionId = sessionId;
-      this.live.persistRun(managed);
-      return this.live.isCurrent(managed);
-    }
-    try {
-      if (!this.persistence.updateMetadata(managed.runId, { sessionId })) {
-        this.live.dropIfDeleted(managed);
-        return false;
-      }
-    } catch (error) {
-      // Best-effort like every progress write: the local copy still moves.
-      console.warn("[workflow-manager] Persist run failed:", error);
-    }
-    managed.sessionId = sessionId;
-    return true;
+    return adoptRunsToSession(this.persistence, this.runs, sessionId, prev, (run) => this.live.dropIfDeleted(run));
   }
 
   // ── Starting runs ──────────────────────────────────────────────────────────
@@ -486,6 +457,12 @@ export class WorkflowManager extends EventEmitter {
       lease,
       currentSessionId: this.sessionId,
     });
+    // An explicit resume takes delivery here; any resume claims a run nobody
+    // owns. moveRunSession() never throws, as nothing may with the lease held.
+    if (this.sessionId) {
+      const claim = opts?.claimDelivery === true;
+      moveRunSession(this.persistence, managed, this.sessionId, (owner) => claim || owner === undefined);
+    }
     this.runs.set(runId, managed);
     // Write before notifying: renderers read lifecycle status from the record.
     this.live.persistRun(managed);

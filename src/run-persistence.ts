@@ -76,9 +76,10 @@ export interface PersistedRunState {
   workflowName: string;
   script: string;
   args?: unknown;
-  /** The pi session currently used for run ownership/delivery. Runs persist on
-   * disk across sessions but the navigator shows only the current session's
-   * runs (undefined = shown in every session). */
+  /** The pi session that receives the run's result and lists it. Set when the
+   * record is created and changed only by RunPersistence.moveSession(); runs
+   * persist on disk across sessions but the navigator shows only the current
+   * session's runs (undefined = shown in every session). */
   sessionId?: string;
   /** Immutable parent session identity for this workflow run. */
   parentSessionId?: string;
@@ -157,14 +158,27 @@ export interface RunPersistence {
   /**
    * Save current run state. Throws RunRecordDeletedError instead of recreating a
    * run this instance has written or read after another writer deleted it.
+   * An existing record keeps its session owner, which is written back into
+   * `state`: a full save must not undo another writer's moveSession().
    */
   save(state: PersistedRunState): void;
-  /** Merge small delivery/ownership fields without hydrating the run history. */
+  /** Merge small delivery fields without hydrating the run history. */
   updateMetadata(
     runId: string,
-    patch: Partial<Pick<PersistedRunState, "sessionId" | "pendingDelivery" | "autoResumeAttempts">>,
+    patch: Partial<Pick<PersistedRunState, "pendingDelivery" | "autoResumeAttempts">>,
     expectedDeliveryId?: string,
   ): boolean;
+  /**
+   * The only change of an existing record's session owner. Under the writer
+   * lock, moves it to `sessionId` when `from` accepts the current owner, so
+   * concurrent moves and saves cannot lose one another. Returns the owner the
+   * record has afterwards, or null when the record does not exist.
+   */
+  moveSession(
+    runId: string,
+    sessionId: string,
+    from: (owner: string | undefined) => boolean,
+  ): { moved: boolean; sessionId?: string } | null;
   /** Load a persisted run by ID. */
   load(runId: string): PersistedRunState | null;
   /** List all persisted runs. */
@@ -579,6 +593,8 @@ export function createRunPersistence(
       // recovery fallback if the primary is somehow truncated.
       mutate(state.runId, () => {
         if (knownRunIds.has(state.runId) && !recordExists(state.runId)) throw new RunRecordDeletedError(state.runId);
+        const current = records.peek(path);
+        if (current) state.sessionId = current.sessionId;
         records.save(path, state);
         knownRunIds.add(state.runId);
       });
@@ -601,6 +617,20 @@ export function createRunPersistence(
 
     updateMetadata(runId, patch, expectedDeliveryId) {
       return updateExistingRecord(runId, (path) => records.updateMetadata(path, patch, expectedDeliveryId));
+    },
+
+    moveSession(runId, sessionId, from) {
+      return mutate(runId, () => {
+        const path = runPath(runId);
+        const current = records.peek(path);
+        if (!current) return null;
+        knownRunIds.add(runId);
+        if (current.sessionId === sessionId || !from(current.sessionId)) {
+          return { moved: false, sessionId: current.sessionId };
+        }
+        records.updateMetadata(path, { sessionId });
+        return { moved: true, sessionId };
+      });
     },
 
     load(runId: string): PersistedRunState | null {

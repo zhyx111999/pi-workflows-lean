@@ -3,6 +3,7 @@
  * only after the send is confirmed, and redelivers whatever is still pending.
  */
 
+import { claimRunSession } from "../manager/session-owner.js";
 import type { PendingDeliveryMarker, PersistedRunState } from "../run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "../workflow-manager.js";
 import type { WorkflowSettings } from "../workflow-settings.js";
@@ -259,14 +260,13 @@ export function flushSessionDiskPending(
     deliverAndAck(manager, runId, sessionId, content, deliveryId, run);
   };
 
-  // Live in-memory runs for this session. A null sessionId is claimable only for
-  // this manager's own live runs (completions before the first bind), never
-  // from a foreign manager.
+  // Live in-memory runs this session owns by their record. A run nobody owns is
+  // claimable only from this manager's own live runs (completions before the
+  // first bind), never from a foreign manager.
   try {
     for (const run of manager.listLiveRuns()) {
       if (!run.pendingDelivery) continue;
-      if (run.sessionId != null && run.sessionId !== sessionId) continue;
-      if (run.sessionId == null) run.sessionId = sessionId;
+      if (claimRunSession(manager.getPersistence(), run, sessionId) !== sessionId) continue;
       tryOne(run.runId, run.pendingDelivery, run);
     }
   } catch {

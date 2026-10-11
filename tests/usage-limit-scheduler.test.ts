@@ -79,6 +79,9 @@ class FakePersistence {
         this.runs.set(runId, { ...current, ...patch });
         return true;
       },
+      moveSession: () => {
+        throw new Error("the scheduler never moves a run's session");
+      },
       recoverInterrupted: () => false,
       exportResult: (runId: string) => `/fake-runs/${runId}.json.result`,
       list: () => [...this.runs.values()],

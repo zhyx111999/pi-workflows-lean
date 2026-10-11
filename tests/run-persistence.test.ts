@@ -1159,7 +1159,8 @@ return a`;
     await new Promise((r) => setTimeout(r, 30));
     m2.setSessionId("session-B");
     assert.equal(m2.listRuns().length, 0);
-    const adopted = m2.adoptLiveRunsToSession("session-B");
+    // Adoption moves what the session being left owns, so name it once the binding has moved on.
+    const adopted = m2.adoptLiveRunsToSession("session-B", "session-A");
     assert.equal(adopted, 1);
     assert.equal(m2.getRun(run2)?.sessionId, "session-B");
     assert.equal(m2.getRun(run2)?.parentSessionId, "session-A");
