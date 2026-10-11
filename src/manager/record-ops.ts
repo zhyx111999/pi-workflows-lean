@@ -14,32 +14,6 @@ export function tryAcquireRunLease(persistence: RunPersistence, runId: string): 
 }
 
 /**
- * Move undelivered results of `previousSessionId` that are only on disk to
- * `sessionId`. Never claims another session's results or ones without a
- * session. Best-effort: returns how many moved before any failure.
- */
-export function rehomePendingRecords(
-  persistence: RunPersistence,
-  sessionId: string,
-  previousSessionId: string | undefined,
-  inMemory: (runId: string) => boolean,
-): number {
-  let moved = 0;
-  try {
-    for (const state of persistence.list()) {
-      if (!state.pendingDelivery) continue;
-      if (inMemory(state.runId)) continue;
-      if (state.sessionId === sessionId) continue;
-      if (previousSessionId == null || state.sessionId !== previousSessionId) continue;
-      if (persistence.updateMetadata(state.runId, { sessionId })) moved++;
-    }
-  } catch {
-    // Best-effort: the in-memory runs are the ones that matter most.
-  }
-  return moved;
-}
-
-/**
  * At startup, a record still marked running belongs to a process that died
  * mid-run. Pause it, never fail it, so its journal survives and resume() can
  * replay the finished calls. The same applies to a paused record with agents

@@ -281,16 +281,20 @@ describe("workflow extension - tool availability", () => {
             },
           );
 
+          // One run per case: delivery seeds a record, and a record's owner
+          // outranks the in-memory copy, so a shared id would carry the
+          // previous case's session.
+          const runId = `bg-${reason}`;
           const fakeRun = {
-            runId: "bg-1",
+            runId,
             sessionId: `session-${reason}`,
             snapshot: { name: "t", agentCount: 0 },
             result: { agentCount: 0, result: { verdict: `ok-${reason}` } },
           };
           const origGet = staged.manager.getRun.bind(staged.manager);
           (staged.manager as { getRun: (id: string) => unknown }).getRun = (id: string) =>
-            id === "bg-1" ? fakeRun : origGet(id);
-          staged.manager.emit("complete", { runId: "bg-1" });
+            id === runId ? fakeRun : origGet(id);
+          staged.manager.emit("complete", { runId });
           assert.ok(
             secondDelivered.some((c) => c.includes(`ok-${reason}`)),
             `completion after ${reason} handoff must deliver via the stolen host send`,

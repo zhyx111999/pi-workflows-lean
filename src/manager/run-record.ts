@@ -77,8 +77,8 @@ export function runRecord(managed: ManagedRun, now: Date): PersistedRunState {
     workflowName: managed.snapshot.name,
     script: managed.script,
     args: managed.args,
-    // The run's own delivery session, never the manager's current one: only
-    // adoptLiveRunsToSession() moves a run to another session.
+    // The run's own delivery session, never the manager's current one. It
+    // only seeds a new record: save() keeps an existing record's owner.
     sessionId: managed.sessionId,
     // Parent lineage never moves, unlike the delivery session.
     parentSessionId: managed.parentSessionId,

@@ -169,6 +169,11 @@ function readAgent(manager: WorkflowManager, runId: string | undefined, label: s
   });
 }
 
+/**
+ * Resume a run, taking its result delivery into this session: the model that
+ * resumes it is the one waiting for it, even when another session started it.
+ * The run keeps that session as its parent lineage.
+ */
 async function resumeRun(
   manager: WorkflowManager,
   run: PersistedRunState,
@@ -179,24 +184,33 @@ async function resumeRun(
   if ("checkpointId" in input) {
     // The answer is durable before the run continues, so a crash in between keeps it.
     await manager.attachCheckpointResponse(run.runId, input.checkpointId, input.response);
-    resumed = await manager.resume(run.runId, { checkpointId: input.checkpointId });
+    resumed = await manager.resume(run.runId, { checkpointId: input.checkpointId, claimDelivery: true });
     reused = "It continues from the answered checkpoint.";
   } else if (input.tasks) {
-    resumed = await manager.resume(run.runId, { tasks: input.tasks });
+    resumed = await manager.resume(run.runId, { tasks: input.tasks, claimDelivery: true });
     reused = "Unchanged tasks reuse their results; edited and new tasks run.";
   } else if (input.script) {
-    resumed = await manager.resume(run.runId, { script: input.script });
+    resumed = await manager.resume(run.runId, { script: input.script, claimDelivery: true });
     reused = "Unchanged agent() calls before the first edit reuse their results; the rest run.";
   } else {
-    resumed = await manager.resume(run.runId);
+    resumed = await manager.resume(run.runId, { claimDelivery: true });
     reused = "Finished work is reused.";
   }
   if (!resumed) return refused(manager, "resume", run);
-  const summary = currentSummary(manager, run);
-  return result(
-    `action=resume result=resumed ${formatRunSummary(summary)}\n${reused} The result is delivered here when the run finishes.`,
-    { action: "resume", result: "resumed", run: summary },
-  );
+  // Judged from the record: the move can lose to a busy record, and an
+  // already-answered checkpoint continues where another process resumed it.
+  const current = manager.findRun(run.runId) ?? run;
+  const summary = summarizeRun(current, manager.getSnapshot(current.runId));
+  const here = manager.getSessionId();
+  const delivery =
+    (current.sessionId ?? here) === here
+      ? "The result is delivered here when the run finishes."
+      : `The result is delivered to session ${current.sessionId}, which owns the run, not here.`;
+  return result(`action=resume result=resumed ${formatRunSummary(summary)}\n${reused} ${delivery}`, {
+    action: "resume",
+    result: "resumed",
+    run: summary,
+  });
 }
 
 async function messageAgent(

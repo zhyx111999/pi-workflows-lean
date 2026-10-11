@@ -43,6 +43,7 @@ function fakeManager(initial: PersistedRunState[], liveSnapshots: Record<string,
     listAllRuns: () => [...runs.values()],
     findRun: (runId: string) => runs.get(runId),
     getSnapshot: (runId: string) => liveSnapshots[runId] ?? null,
+    getSessionId: () => "control-session",
     async resume(runId: string, options?: { tasks?: unknown; script?: unknown }) {
       calls.push({ action: "resume", runId, options });
       const item = runs.get(runId);

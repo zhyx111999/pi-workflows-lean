@@ -235,7 +235,7 @@ for (const { file, matches, committed } of DELETED_FILES) {
   );
 }
 
-for (const write of ["updateMetadata", "recoverInterrupted"] as const) {
+for (const write of ["updateMetadata", "moveSession", "recoverInterrupted"] as const) {
   test(
     `a run first written by ${write} is not recreated after another process deletes it`,
     withTempProject(async (cwd) => {
@@ -244,8 +244,10 @@ for (const write of ["updateMetadata", "recoverInterrupted"] as const) {
       const writer = createRunPersistence(cwd);
       const written =
         write === "updateMetadata"
-          ? writer.updateMetadata?.("metadata-first", { sessionId: "writer" })
-          : writer.recoverInterrupted?.("metadata-first");
+          ? writer.updateMetadata("metadata-first", { autoResumeAttempts: 1 })
+          : write === "moveSession"
+            ? writer.moveSession("metadata-first", "writer", () => true)?.moved
+            : writer.recoverInterrupted("metadata-first");
       assert.equal(written, true);
 
       assert.equal(other.delete("metadata-first"), true);

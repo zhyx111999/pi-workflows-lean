@@ -221,7 +221,7 @@ export function registerWorkflowCommands(pi: ExtensionAPI, { getManager, getStor
         }
         case "resume": {
           if (!id) return ctx.ui.notify(USAGE, "warning");
-          if (await manager.resume(id)) return ctx.ui.notify(`Resumed ${id}`, "info");
+          if (await manager.resume(id, { claimDelivery: true })) return ctx.ui.notify(`Resumed ${id}`, "info");
           ctx.ui.notify(manager.findRun(id) ? `Resume not available for ${id} yet` : `No run ${id}`, "warning");
           return;
         }
