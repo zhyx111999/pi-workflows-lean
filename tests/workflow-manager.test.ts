@@ -961,6 +961,38 @@ test(
 );
 
 test(
+  "a toolset factory that throws fails the run, releases its lease, and leaves it resumable",
+  withTempCwd(async (cwd) => {
+    const manager = new WorkflowManager({
+      cwd,
+      agent: fakeAgent(),
+      toolsets: {
+        webby: () => {
+          throw new Error("toolset factory exploded");
+        },
+      },
+    });
+    manager.on("error", () => {});
+
+    const { runId, promise } = manager.startInBackground(oneAgentScript, undefined, { toolset: "webby" });
+    await assert.rejects(promise, /toolset factory exploded/);
+    assert.equal(manager.getRun(runId)?.status, "failed");
+    assert.equal(manager.getRun(runId)?.lease, undefined, "the failed execution released its lease");
+    const failed = manager.getPersistence().load(runId);
+    assert.equal(failed?.status, "failed");
+    assert.match(failed?.error ?? "", /toolset factory exploded/);
+
+    // Once the factory works again, the run resumes and completes.
+    manager.reconfigureAfterReload({ toolsets: { webby: () => [] } });
+    assert.equal(await manager.resume(runId), true);
+    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    assert.equal(manager.getPersistence().load(runId)?.status, "completed");
+  }),
+);
+
+test(
   "a run that hit maxAgents finishes on resume once the limit is raised",
   withTempCwd(async (cwd) => {
     // Sequential workers fill the cap; synthesis needs one more slot. Every
@@ -6151,6 +6183,51 @@ await agent('NEW-B')`;
     assert.ok(
       logs.some((l) => l.includes("no usable results")),
       "stale seeded history must not suppress the all-empty warning",
+    );
+  }),
+);
+
+test(
+  "the empty-fleet warning counts results this execution replayed from the journal",
+  withTempCwd(async (cwd) => {
+    // 'first' succeeds and is journaled; the run pauses while 'second' runs.
+    // On resume 'first' replays its usable result and 'second' comes back
+    // empty: the execution produced a result, so it must not warn.
+    let secondStarted = false;
+    let resumed = false;
+    const agent = {
+      async run(prompt: string, options?: { signal?: AbortSignal }) {
+        if (prompt === "first") return "usable";
+        if (resumed) return "";
+        secondStarted = true;
+        return new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener("abort", () => reject(new Error("paused")), { once: true });
+        });
+      },
+    };
+    const manager = new WorkflowManager({ cwd, agent });
+    manager.on("error", () => {});
+
+    const { runId, promise } = manager.startInBackground(twoAgentScript);
+    promise.catch(() => {});
+    for (let i = 0; i < 2000 && !secondStarted; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    assert.equal(manager.pause(runId), true);
+
+    resumed = true;
+    assert.equal(await manager.resume(runId), true);
+    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    const persisted = manager.getPersistence().load(runId);
+    assert.equal(persisted?.status, "completed");
+    const latestRow = (prompt: string) => persisted?.agents.filter((a) => a.prompt === prompt).at(-1);
+    assert.equal(latestRow("first")?.status, "done");
+    assert.equal(latestRow("second")?.status, "error", "the live call came back empty");
+    assert.ok(
+      !persisted?.logs.some((l) => l.includes("no usable results")),
+      "a replayed usable result counts toward this execution",
     );
   }),
 );
