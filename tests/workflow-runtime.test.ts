@@ -819,6 +819,24 @@ test("explicit phase() overrides the default first phase", async () => {
   assert.deepEqual(phases, ["B"]);
 });
 
+test("phase() rejects a title that is not a non-empty string", async () => {
+  for (const title of ["''", "'   '", "42", "undefined"]) {
+    await assert.rejects(
+      runWorkflow(
+        `export const meta = { name: 'p', description: 'd' }
+         phase(${title})
+         return {}`,
+        { agent: { run: async () => "ok" }, persistLogs: false },
+      ),
+      (error: unknown) =>
+        error instanceof WorkflowError &&
+        error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+        /phase\(title\) needs a non-empty string title/.test(error.message),
+      `phase(${title})`,
+    );
+  }
+});
+
 test("no declared phases => agent phase stays undefined (no synthetic phase)", async () => {
   const phases: Array<string | undefined> = [];
   const noop = {

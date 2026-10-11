@@ -147,18 +147,29 @@ test("parseWorkflowScript rejects phases that is not an array", () => {
   );
 });
 
-test("parseWorkflowScript rejects phases without title", () => {
-  assert.throws(
-    () => parseWorkflowScript("export const meta = { name: 'demo', description: 'desc', phases: [{ detail: 'x' }] }"),
-    /must have a title string/,
-  );
+test("parseWorkflowScript rejects a meta phase without a usable title, detail, or model", () => {
+  const cases: Array<[string, RegExp]> = [
+    ["'scalar'", /each meta phase must be an object/],
+    ["{ detail: 'x' }", /must have a non-empty title string/],
+    ["{ title: '  ' }", /must have a non-empty title string/],
+    ["{ title: 'Scan', detail: 3 }", /meta phase "Scan" detail must be a string/],
+    ["{ title: 'Scan', model: '' }", /meta phase "Scan" model must be a non-empty string/],
+  ];
+  for (const [phase, message] of cases) {
+    assert.throws(
+      () => parseWorkflowScript(`export const meta = { name: 'demo', description: 'desc', phases: [${phase}] }`),
+      message,
+    );
+  }
 });
 
-test("parseWorkflowScript rejects meta.model with wrong type", () => {
-  assert.throws(
-    () => parseWorkflowScript("export const meta = { name: 'demo', description: 'desc', model: 123 }"),
-    /must be a string/,
-  );
+test("parseWorkflowScript rejects a meta.model that is not a non-empty string", () => {
+  for (const model of ["123", "''"]) {
+    assert.throws(
+      () => parseWorkflowScript(`export const meta = { name: 'demo', description: 'desc', model: ${model} }`),
+      /meta\.model must be a non-empty string/,
+    );
+  }
 });
 
 test("parseWorkflowScript still parses a removed/unknown meta field (e.g. whenToUse)", () => {

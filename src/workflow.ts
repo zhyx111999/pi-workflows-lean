@@ -23,7 +23,7 @@ import { type AgentRegistry, loadAgentRegistry } from "./agent-registry.js";
 import type { AgentUsage } from "./agent-usage.js";
 import { DEFAULT_MAX_AGENTS } from "./config.js";
 import { deepFreeze } from "./deep-freeze.js";
-import type { WorkflowErrorCode } from "./errors.js";
+import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta } from "./model-routing.js";
 import type { ModelThinkingLevel } from "./model-spec.js";
@@ -396,7 +396,17 @@ export async function runWorkflow<T = unknown>(
 /** The workflow globals declared by the capability contract, bound to this run. */
 function createScriptGlobals(ctx: RunContext) {
   const { options, state, log, baseCwd } = ctx;
-  const phase = (title: string) => {
+  const phase = (title: unknown) => {
+    // A non-string or blank title would become a phase no row can be grouped under.
+    if (typeof title !== "string" || !title.trim()) {
+      throw new WorkflowError(
+        "phase(title) needs a non-empty string title",
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        {
+          recoverable: false,
+        },
+      );
+    }
     state.currentPhase = title;
     if (!state.phases.includes(title)) state.phases.push(title);
     options.onPhase?.(title);

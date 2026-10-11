@@ -128,7 +128,7 @@ export function createAgent(ctx: RunContext) {
   };
 
   // runWorkflow exposes this through trackScriptCalls, which also turns a synchronous validation throw into a rejection.
-  return (prompt: string, agentOptions: unknown = {}): Promise<unknown> => startAgentCall(prompt, agentOptions);
+  return (prompt: unknown, agentOptions: unknown = {}): Promise<unknown> => startAgentCall(prompt, agentOptions);
 }
 
 /** Report a journaled call as if it ran, keeping its recorded model and store writes. */

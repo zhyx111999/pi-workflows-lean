@@ -319,7 +319,10 @@ const capabilities: readonly CapabilityDescriptor[] = [
     ],
   }),
   runtimeGlobal("log", { signature: "log(message) => void" }),
-  runtimeGlobal("phase", { signature: "phase(title) => void" }),
+  runtimeGlobal("phase", {
+    signature: "phase(title) => void",
+    constraints: ["title must be a nonblank string"],
+  }),
   runtimeGlobal("args", { signature: "args: unknown", allowsUndefined: true }),
   runtimeGlobal("cwd", { signature: "cwd: string" }),
   runtimeGlobal("process", { signature: "process: { cwd(): string }" }),
@@ -356,6 +359,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
     constraints: [
       "must be the first statement",
       "name and description must be nonblank strings",
+      "each phase title and every model must be a nonblank string; a phase detail must be a string",
       "metadata must use literal values; expressions such as string concatenation and template interpolation are rejected",
       "the meta declaration is the only legal export because the remaining body executes inside an async function",
     ],

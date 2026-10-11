@@ -92,6 +92,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `runtime-global`
 - Support: `supported`
 - Signature: `phase(title) => void`
+- Constraint: title must be a nonblank string
 
 <a id="args"></a>
 ## args
@@ -168,6 +169,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `export const meta = { name: string, description: string, phases?: Array<{ title: string; detail?: string; model?: string }>, model?: string }`
 - Constraint: must be the first statement
 - Constraint: name and description must be nonblank strings
+- Constraint: each phase title and every model must be a nonblank string; a phase detail must be a string
 - Constraint: metadata must use literal values; expressions such as string concatenation and template interpolation are rejected
 - Constraint: the meta declaration is the only legal export because the remaining body executes inside an async function
 
