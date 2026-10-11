@@ -32,22 +32,11 @@ function hostSessionIdToSteal(session, probe) {
     // A probe skips only the persistence gate below; the sessionManager,
     // noExtensions, and workflow:-name gates above still apply. That is safe: a
     // probe is only ever sent through the pi.sendMessage of the session running
-    // this extension, so it cannot reach a foreign or child session. It is also
-    // necessary: omp print-mode hosts persist lazily after bind and report
-    // isSessionOnDisk()===false at session_start.
+    // this extension, so it cannot reach a foreign or child session.
     if (!probe) {
         try {
-            if (typeof sm.isPersisted === "function") {
-                if (!sm.isPersisted())
-                    return undefined;
-            }
-            else if (typeof sm.isSessionOnDisk === "function") {
-                if (!sm.isSessionOnDisk())
-                    return undefined;
-            }
-            else if (sm.persist !== true) {
+            if (!sm.isPersisted?.())
                 return undefined;
-            }
         }
         catch {
             return undefined;

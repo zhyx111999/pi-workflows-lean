@@ -1,9 +1,6 @@
 /** Holds one run's mutable state and the shared services that every workflow global uses. */
-import { WorkflowError, WorkflowErrorCode } from "../errors.js";
+import { WorkflowError, WorkflowErrorCode, workflowAbortedError, } from "../errors.js";
 import { createLimiter } from "./run-limits.js";
-export function workflowAbortedError() {
-    return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
-}
 export function createRuntimeState(meta, options, concurrency) {
     // The first declared phase is the default, so agents started before any
     // phase() call group under it instead of an orphan "(no phase)" bucket.

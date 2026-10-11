@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CapabilityClassification, CapabilitySupport, WORKFLOW_CAPABILITY_CONTRACT, } from "./workflow-capability-contract.js";
+import { CapabilityClassification, CapabilitySupport } from "./enums.js";
+import { WORKFLOW_CAPABILITY_CONTRACT, } from "./workflow-capability-contract.js";
 const GENERATED_MARKER = "<!-- GENERATED from WORKFLOW_CAPABILITY_CONTRACT; do not edit by hand. -->";
 const TABLE_START = "<!-- BEGIN GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";
 const TABLE_END = "<!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";

@@ -1,7 +1,6 @@
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { canonicalModelSpec, formatModelSpecWithThinking, resolveModelSpecWithThinking, } from "../model-spec.js";
 import { formatTierFallbackNotice, loadModelTierConfig, resolveTierModel, } from "../model-tier-config.js";
-import { applyPreSpawnModel, classifyModelSource, getPreSpawnModelResolver, } from "../pre-spawn-model.js";
 /**
  * Resolve which concrete model spec a subagent should use. Precedence, most
  * specific first:
@@ -43,8 +42,7 @@ export function resolveAgentModelSpec(options, mainModel, loadConfig = loadModel
  * Model selection for one WorkflowAgent. A spec that does not resolve is handled
  * by who asked for it:
  * - An explicit model or tier (including phase routing, which only fills
- *   options.model when the user configured that phase), or a pre-spawn policy
- *   `use`, throws MODEL_NOT_FOUND. Resolution is deterministic, so retrying is
+ *   options.model when the user configured that phase) throws MODEL_NOT_FOUND. Resolution is deterministic, so retrying is
  *   pointless, and silently substituting another model would run real calls
  *   against weights the caller never chose.
  * - An untagged agent only reached the spec through an implicit route (the
@@ -58,33 +56,9 @@ export class AgentModelSelector {
     constructor(routing) {
         this.routing = routing;
     }
-    async select(request, registry) {
+    select(request, registry) {
         const { mainModel, inheritMainModel } = this.routing;
-        let modelSpec = resolveAgentModelSpec(request, mainModel, this.routing.loadTierConfig, () => warnTierUnconfiguredOnce(mainModel, () => this.routing.listModels(registry)), { inheritMainModel });
-        const modelSource = classifyModelSource({
-            model: request.model,
-            tier: request.tier,
-            resolvedModel: modelSpec,
-            modelSource: request.modelSource,
-        });
-        const resolver = request.preSpawnModel ?? this.routing.preSpawnModel ?? getPreSpawnModelResolver();
-        let pinned = Boolean(request.model || request.tier);
-        let policySelectedSpec;
-        if (resolver) {
-            const decision = await applyPreSpawnModel(resolver, {
-                requestedModel: request.model,
-                ...(request.thinking !== undefined ? { requestedThinking: request.thinking } : {}),
-                tier: request.tier,
-                resolvedModel: modelSpec,
-                modelSource,
-                label: request.label,
-            });
-            if (decision.action === "use") {
-                modelSpec = decision.model;
-                pinned = true;
-                policySelectedSpec = decision.model;
-            }
-        }
+        const modelSpec = resolveAgentModelSpec(request, mainModel, this.routing.loadTierConfig, () => warnTierUnconfiguredOnce(mainModel, () => this.routing.listModels(registry)), { inheritMainModel });
         if (!modelSpec)
             return { thinkingLevel: request.thinking };
         // Pi CLI-style parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
@@ -94,13 +68,10 @@ export class AgentModelSelector {
         if (resolved.warning)
             console.warn(`[workflow] ${resolved.warning}`);
         if (!resolved.model) {
-            if (pinned) {
-                // Name the spec that was actually pinned: a policy `use` replaces the requested tier/model.
-                const message = policySelectedSpec
-                    ? `Model "${modelSpec}" selected by preSpawnModel policy was not found. Use /workflows-models to choose an available model.`
-                    : request.model
-                        ? (resolved.error ?? `Model "${modelSpec}" not found. Use /workflows-models to choose an available model.`)
-                        : `tier "${request.tier}" from model-tiers.json resolves to "${modelSpec}", which is not available. Use /workflows-models to choose an available model.`;
+            if (request.model || request.tier) {
+                const message = request.model
+                    ? (resolved.error ?? `Model "${modelSpec}" not found. Use /workflows-models to choose an available model.`)
+                    : `tier "${request.tier}" from model-tiers.json resolves to "${modelSpec}", which is not available. Use /workflows-models to choose an available model.`;
                 throw new WorkflowError(message, WorkflowErrorCode.MODEL_NOT_FOUND, {
                     recoverable: false,
                     agentLabel: request.label,

@@ -7,7 +7,6 @@ import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import { ensureDir as ensureDirFs, listJsonFilesSafe, resolvePersistenceFs, unlinkIfExistsSafe, } from "./fs-persistence.js";
 import { settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import { createRunRecordStore } from "./run-record-store.js";
-export { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents, } from "./run-agent-settlement.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 /**
  * Sanitize a persisted/incoming auto-resume attempt counter: corrupt or
@@ -80,19 +79,15 @@ export function createRunPersistence(cwd, fsOverride, options) {
     const _unlinkSync = fs.unlinkSync;
     const _writeFileSync = fs.writeFileSync;
     const maxTerminalRunsOnDisk = options?.maxTerminalRunsOnDisk ?? DEFAULT_MAX_TERMINAL_RUNS_ON_DISK;
-    const paths = workflowProjectPaths(cwd);
-    const runsDir = paths.runsDir;
-    const legacyRunsDir = paths.legacyRunsDir;
+    const { runsDir } = workflowProjectPaths(cwd);
     const ensureDir = () => ensureDirFs(fs, runsDir);
-    const runPath = (dir, runId) => join(dir, `${runId}.json`);
-    const primaryRunPath = (runId) => runPath(runsDir, runId);
-    const legacyRunPath = (runId) => runPath(legacyRunsDir, runId);
-    const lockPath = (dir, runId) => join(dir, `${runId}.lock`);
-    const primaryLockPath = (runId) => lockPath(runsDir, runId);
-    const legacyLockPath = (runId) => lockPath(legacyRunsDir, runId);
-    const candidateRunPaths = (runId) => [primaryRunPath(runId), legacyRunPath(runId)];
+    const runPath = (runId) => join(runsDir, `${runId}.json`);
+    const lockPath = (runId) => join(runsDir, `${runId}.lock`);
     // A record is its head file or the backup that recovers it.
-    const existingRecordPath = (runId) => candidateRunPaths(runId).find((path) => _existsSync(path) || _existsSync(`${path}.bak`));
+    const recordExists = (runId) => {
+        const path = runPath(runId);
+        return _existsSync(path) || _existsSync(`${path}.bak`);
+    };
     // Runs this instance has written or read. Every write path re-saves a state it
     // obtained that way, so a known run whose record is now absent was deleted by
     // another writer; recreating it would resurrect the deleted run. A run this
@@ -119,12 +114,12 @@ export function createRunPersistence(cwd, fsOverride, options) {
             return null;
         }
     };
-    const readLock = (runId) => readLockAt(primaryLockPath(runId));
+    const readLock = (runId) => readLockAt(lockPath(runId));
     // Short writer mutex serializes append + head commit, including metadata
     // writes while a long-lived execution lease is held. Never busy-wait.
     const mutate = (runId, fn) => {
         ensureDir();
-        const path = `${primaryRunPath(runId)}.write-lock`;
+        const path = `${runPath(runId)}.write-lock`;
         const token = `${process.pid}-${Date.now()}-${Math.random()}`;
         const ownerFile = `${path}.${randomUUID()}.owner`;
         const release = (target) => {
@@ -184,11 +179,10 @@ export function createRunPersistence(cwd, fsOverride, options) {
     };
     // Merge a small write into the run's existing record; never creates one.
     const updateExistingRecord = (runId, write) => mutate(runId, () => {
-        const path = existingRecordPath(runId);
-        if (!path)
+        if (!recordExists(runId))
             return false;
         knownRunIds.add(runId);
-        return write(path);
+        return write(runPath(runId));
     });
     // list() cache: recomputed lazily, invalidated synchronously by every
     // mutation this instance performs (save()/delete()) so a stale read can
@@ -199,17 +193,15 @@ export function createRunPersistence(cwd, fsOverride, options) {
     let listCacheAt = 0;
     let directoryStamp = "";
     let reconciledAt = 0;
-    const directoryVersion = () => [runsDir, legacyRunsDir]
-        .map((dir) => {
+    const directoryVersion = () => {
         try {
-            const s = fs.statSync(dir);
+            const s = fs.statSync(runsDir);
             return `${s.ino}:${s.mtimeMs}:${s.ctimeMs}`;
         }
         catch {
             return "missing";
         }
-    })
-        .join("|");
+    };
     const invalidateListCache = () => {
         listCache = undefined;
     };
@@ -235,52 +227,36 @@ export function createRunPersistence(cwd, fsOverride, options) {
     // forever until something ELSE about the file changes. The inode always
     // changes on such a rename, so adding it closes that hole for free.
     const fileStateCache = new Map();
-    const removeStaleLegacyLock = (runId) => {
-        const lock = legacyLockPath(runId);
-        const existing = readLockAt(lock);
-        if (existing?.runId === runId && pidIsAlive(existing.pid))
-            return false;
-        try {
-            if (_existsSync(lock))
-                _unlinkSync(lock);
-        }
-        catch {
-            return false;
-        }
-        return true;
-    };
     const computeList = () => {
         const byRunId = new Map();
         const seenPaths = new Set();
-        for (const dir of [runsDir, legacyRunsDir]) {
-            for (const file of listJsonFilesSafe(fs, dir)) {
-                const path = join(dir, file);
-                seenPaths.add(path);
-                try {
-                    const stat = _statSync(path);
-                    const cached = fileStateCache.get(path);
-                    // Reuse the last parse when the file is byte-identical (same
-                    // mtime + size + inode) to what produced it — the dominant case
-                    // on every poll tick once a run goes terminal and stops changing.
-                    // ino is what actually rules out a false "unchanged" match on a
-                    // coarse-mtime filesystem (see the field doc comment above).
-                    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.ino === stat.ino) {
-                        if (!byRunId.has(cached.state.runId))
-                            byRunId.set(cached.state.runId, cached.state);
-                        continue;
-                    }
-                    const record = JSON.parse(_readFileSync(path, "utf-8"));
-                    const state = records.preview(path, record);
-                    knownRunIds.add(state.runId);
-                    fileStateCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, state });
-                    if (!byRunId.has(state.runId))
-                        byRunId.set(state.runId, state);
+        for (const file of listJsonFilesSafe(fs, runsDir)) {
+            const path = join(runsDir, file);
+            seenPaths.add(path);
+            try {
+                const stat = _statSync(path);
+                const cached = fileStateCache.get(path);
+                // Reuse the last parse when the file is byte-identical (same
+                // mtime + size + inode) to what produced it — the dominant case
+                // on every poll tick once a run goes terminal and stops changing.
+                // ino is what actually rules out a false "unchanged" match on a
+                // coarse-mtime filesystem (see the field doc comment above).
+                if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.ino === stat.ino) {
+                    if (!byRunId.has(cached.state.runId))
+                        byRunId.set(cached.state.runId, cached.state);
+                    continue;
                 }
-                catch {
-                    // Skip corrupted/unreadable files; don't let a stale cache entry
-                    // for a file that's now failing to read linger either.
-                    fileStateCache.delete(path);
-                }
+                const record = JSON.parse(_readFileSync(path, "utf-8"));
+                const state = records.preview(path, record);
+                knownRunIds.add(state.runId);
+                fileStateCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, state });
+                if (!byRunId.has(state.runId))
+                    byRunId.set(state.runId, state);
+            }
+            catch {
+                // Skip corrupted/unreadable files; don't let a stale cache entry
+                // for a file that's now failing to read linger either.
+                fileStateCache.delete(path);
             }
         }
         // Prune cache entries for files that no longer exist (deleted runs) so
@@ -306,12 +282,10 @@ export function createRunPersistence(cwd, fsOverride, options) {
         for (const run of terminal.slice(0, excess)) {
             try {
                 mutate(run.runId, () => {
-                    if ([primaryLockPath(run.runId), legacyLockPath(run.runId)].some((path) => {
-                        const lock = readLockAt(path);
-                        return lock && pidIsAlive(lock.pid);
-                    }))
+                    const lock = readLock(run.runId);
+                    if (lock && pidIsAlive(lock.pid))
                         return;
-                    const fresh = records.peek(primaryRunPath(run.runId)) ?? records.peek(legacyRunPath(run.runId));
+                    const fresh = records.peek(runPath(run.runId));
                     if (fresh && TERMINAL_RUN_STATUSES.has(fresh.status) && !fresh.pendingDelivery)
                         deleteRunFiles(run.runId);
                 });
@@ -335,53 +309,48 @@ export function createRunPersistence(cwd, fsOverride, options) {
                 throw error;
             }
         };
-        for (const path of candidateRunPaths(runId)) {
-            // Delete every readable recovery candidate before releasing either lock:
-            // a foreign resume that acquires between those operations must never find
-            // a surviving primary, backup, or legacy record to resurrect. The backup
-            // goes before the head so a reader never recovers from it mid-delete; a
-            // backup alone is still a record, so removing it is a deletion.
-            const backup = `${path}.bak`;
-            if (unlinkData(backup))
-                deleted = true;
-            for (const sidecar of [`${path}.tmp`, records.logPath(path)]) {
-                unlinkData(sidecar);
-                fileStateCache.delete(sidecar);
-            }
-            if (unlinkData(path))
-                deleted = true;
-            fileStateCache.delete(backup);
-            fileStateCache.delete(path);
-            records.forget(path);
+        // Delete every recovery candidate before releasing the lock: a foreign
+        // resume that acquires in between must never find a surviving head or
+        // backup to resurrect. The backup goes before the head so a reader never
+        // recovers from it mid-delete; a backup alone is still a record, so
+        // removing it is a deletion.
+        const path = runPath(runId);
+        const backup = `${path}.bak`;
+        if (unlinkData(backup))
+            deleted = true;
+        for (const sidecar of [`${path}.tmp`, records.logPath(path)]) {
+            unlinkData(sidecar);
+            fileStateCache.delete(sidecar);
         }
-        for (const dir of [runsDir, legacyRunsDir]) {
-            if (!_existsSync(dir))
-                continue;
-            for (const name of fs.readdirSync(dir)) {
+        if (unlinkData(path))
+            deleted = true;
+        fileStateCache.delete(backup);
+        fileStateCache.delete(path);
+        records.forget(path);
+        if (_existsSync(runsDir)) {
+            for (const name of fs.readdirSync(runsDir)) {
                 if (name === `${runId}.log` ||
                     name.startsWith(`${runId}.json.result-`) ||
                     (name.startsWith(`${runId}.json.write-lock.`) && (name.endsWith(".owner") || name.includes(".reap-"))))
-                    unlinkData(join(dir, name));
+                    unlinkData(join(runsDir, name));
             }
         }
-        // Locks come LAST, after both primary and legacy data/recovery candidates
-        // have been removed. deleteRun() deliberately holds its acquired lease
-        // across this sequence, so opening this final release window sooner would
-        // let another process resume a record that is about to be deleted.
-        for (const lock of [primaryLockPath(runId), legacyLockPath(runId)]) {
-            unlinkIfExistsSafe(fs, lock);
-            fileStateCache.delete(lock);
-        }
+        // The lock goes LAST, after the data and its recovery candidates.
+        // deleteRun() deliberately holds its acquired lease across this sequence,
+        // so releasing it sooner would let another process resume a record that is
+        // about to be deleted.
+        unlinkIfExistsSafe(fs, lockPath(runId));
+        fileStateCache.delete(lockPath(runId));
         return deleted;
     };
     return {
         exportResult(runId, result) {
             return mutate(runId, () => {
-                if (!candidateRunPaths(runId).some((path) => _existsSync(path)))
+                if (!_existsSync(runPath(runId)))
                     throw new Error("Run disappeared before result export");
                 const json = JSON.stringify({ runId, result }, null, 2);
                 const hash = createHash("sha256").update(json).digest("hex");
-                const path = `${primaryRunPath(runId)}.result-${hash}`;
+                const path = `${runPath(runId)}.result-${hash}`;
                 if (_existsSync(path))
                     return path;
                 const temporary = `${path}.${randomUUID()}.tmp`;
@@ -398,12 +367,12 @@ export function createRunPersistence(cwd, fsOverride, options) {
         save(state) {
             ensureDir();
             state.updatedAt = new Date().toISOString();
-            const path = primaryRunPath(state.runId);
+            const path = runPath(state.runId);
             // Atomic write: a crash mid-write can't corrupt the live file (tmp+rename is
             // atomic on the same filesystem). A .bak from the previous good save is the
             // recovery fallback if the primary is somehow truncated.
             mutate(state.runId, () => {
-                if (knownRunIds.has(state.runId) && !existingRecordPath(state.runId))
+                if (knownRunIds.has(state.runId) && !recordExists(state.runId))
                     throw new RunRecordDeletedError(state.runId);
                 records.save(path, state);
                 knownRunIds.add(state.runId);
@@ -416,14 +385,10 @@ export function createRunPersistence(cwd, fsOverride, options) {
                 enforceRetention();
         },
         loadPreview(runId) {
-            for (const path of candidateRunPaths(runId)) {
-                const record = records.peek(path);
-                if (record) {
-                    knownRunIds.add(runId);
-                    return record;
-                }
-            }
-            return null;
+            const record = records.peek(runPath(runId));
+            if (record)
+                knownRunIds.add(runId);
+            return record;
         },
         recoverInterrupted(runId) {
             return updateExistingRecord(runId, (path) => records.recoverInterrupted(path));
@@ -432,21 +397,17 @@ export function createRunPersistence(cwd, fsOverride, options) {
             return updateExistingRecord(runId, (path) => records.updateMetadata(path, patch, expectedDeliveryId));
         },
         load(runId) {
-            // Try the primary, then the .bak — so a corrupt primary doesn't lose the run.
-            for (const path of candidateRunPaths(runId)) {
-                let state;
-                try {
-                    state = records.read(path);
-                }
-                catch {
-                    return null;
-                }
-                if (state) {
-                    knownRunIds.add(runId);
-                    return state;
-                }
+            // The store recovers a corrupt head from its .bak; a damaged log reads as no run.
+            let state;
+            try {
+                state = records.read(runPath(runId));
             }
-            return null;
+            catch {
+                return null;
+            }
+            if (state)
+                knownRunIds.add(runId);
+            return state;
         },
         list() {
             const now = Date.now();
@@ -480,10 +441,8 @@ export function createRunPersistence(cwd, fsOverride, options) {
         },
         acquireRunLease(runId) {
             ensureDir();
-            const path = primaryRunPath(runId);
-            const lock = primaryLockPath(runId);
-            if (!removeStaleLegacyLock(runId))
-                return null;
+            const path = runPath(runId);
+            const lock = lockPath(runId);
             for (let attempt = 0; attempt < 2; attempt++) {
                 const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
                 const payload = {
@@ -519,7 +478,7 @@ export function createRunPersistence(cwd, fsOverride, options) {
             try {
                 const existing = readLock(lease.runId);
                 if (existing?.token === lease.token)
-                    _unlinkSync(primaryLockPath(lease.runId));
+                    _unlinkSync(lockPath(lease.runId));
             }
             catch {
                 // Best-effort cleanup only.

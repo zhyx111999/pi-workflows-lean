@@ -1,6 +1,7 @@
 // Rebuilds a managed run from its persisted record so resume() can execute it again.
 import { recomputeWorkflowSnapshot } from "../display.js";
-import { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE, sanitizeAutoResumeAttempts, VALID_PERSISTED_AGENT_STATUSES, } from "../run-persistence.js";
+import { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE } from "../run-agent-settlement.js";
+import { sanitizeAutoResumeAttempts, VALID_PERSISTED_AGENT_STATUSES, } from "../run-persistence.js";
 import { retargetAgentRow } from "./task-list-reuse.js";
 /**
  * The live run for a resume. The snapshot is seeded with the recorded agents,
@@ -43,14 +44,12 @@ export function resumedRun(input) {
         args: input.args,
         journal,
         checkpoint: persisted.checkpoint,
-        background: true,
         // Resuming may move delivery to the current session for old records, but never the parent lineage.
         sessionId: persisted.sessionId ?? input.currentSessionId,
         parentSessionId: persisted.parentSessionId ?? persisted.sessionId ?? input.currentSessionId,
         parentSessionFile: persisted.parentSessionFile,
         pendingDelivery: persisted.pendingDelivery,
         lease: input.lease,
-        autoResume: persisted.autoResume,
         autoResumeAttempts: sanitizeAutoResumeAttempts(persisted.autoResumeAttempts),
         // Run limits are not restored: every execution uses the manager's current ones.
         toolset: persisted.toolset,

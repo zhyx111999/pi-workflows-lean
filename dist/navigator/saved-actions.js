@@ -3,10 +3,10 @@ import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "../save
 import { isSafeSavedWorkflowName } from "../workflow-saved.js";
 import { sameIdentity, savedIdentity } from "./items.js";
 import { currentStorage } from "./session.js";
-/** Register `/<name>` for a saved workflow, resolving cwd, manager, and storage live at run time. */
+/** Register `/<name>` for a saved workflow, resolving manager and storage live at run time. */
 function registerSavedCommand(session, saved) {
     const { pi, manager, options } = session;
-    return registerSavedWorkflow(pi, options.getCwd ?? (() => options.cwd ?? process.cwd()), saved, options.getManager ?? (() => manager), () => currentStorage(session)?.load(saved.name) != null, () => currentStorage(session)?.load(saved.name));
+    return registerSavedWorkflow(pi, saved, options.getManager ?? (() => manager), () => currentStorage(session)?.load(saved.name));
 }
 function findSaved(session, target) {
     return session.model.saved().find((candidate) => sameIdentity(target, savedIdentity(candidate)));

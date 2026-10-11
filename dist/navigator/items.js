@@ -5,7 +5,6 @@ export function savedIdentity(workflow) {
     return {
         kind: "saved",
         path: workflow.path,
-        source: workflow.source,
         name: workflow.name,
         revision: savedWorkflowRevision(workflow),
     };
@@ -17,10 +16,7 @@ export function sameIdentity(a, b) {
         return a.runId === b.runId;
     const left = a;
     const right = b;
-    return (left.path === right.path &&
-        left.source === right.source &&
-        left.name === right.name &&
-        left.revision === right.revision);
+    return left.path === right.path && left.name === right.name && left.revision === right.revision;
 }
 /** Runs first, then saved workflows, keeping those that match `filter` case-insensitively. */
 export function visibleItems(filter, runs, saved) {

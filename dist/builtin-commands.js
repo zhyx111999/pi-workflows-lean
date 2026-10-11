@@ -12,7 +12,6 @@ import { findBuiltinWorkflow } from "./builtin-workflows.js";
 import { claimCommand, isCommandRegistered } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
 import { parseCommandArgs } from "./saved-commands.js";
-import { createWorkflowStorage } from "./workflow-saved.js";
 function alreadyRegistered(pi, name) {
     return isCommandRegistered(pi, name);
 }
@@ -70,15 +69,7 @@ function resolveBuiltinOrNotify(name, cwd, args, ctx) {
         return undefined;
     }
 }
-export function registerBuiltinWorkflows(pi, opts) {
-    const getManager = () => {
-        const m = opts.getManager?.() ?? opts.manager;
-        if (!m)
-            throw new Error("registerBuiltinWorkflows: no WorkflowManager");
-        return m;
-    };
-    const getCwd = () => opts.getCwd?.() ?? opts.cwd ?? process.cwd();
-    const getStorage = () => opts.getStorage?.() ?? opts.storage ?? createWorkflowStorage(getCwd());
+export function registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage }) {
     /**
      * A project/user saved workflow always takes precedence over a built-in of
      * the same name — on every path, not just the `subagents` tool's `name`

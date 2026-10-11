@@ -1,9 +1,8 @@
 /** Renders the rows of the live workflows panel, compact or detailed with a rolling token/s rate. */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { aggregateAgentUsage, fmtCost, fmtTokenSegment, shorten, statusIcon, tokenFigures, } from "../display.js";
+import { aggregateAgentUsage, fmtCompact, fmtCost, fmtTokenSegment, shorten, statusIcon, tokenFigures, } from "../display.js";
 import { shortModel } from "../navigator/format.js";
 import { runSummary } from "../run-record-store.js";
-import { fmtTokensShort } from "./compact-format.js";
 function isActive(run) {
     return run.status === "running" || run.status === "paused";
 }
@@ -142,14 +141,14 @@ function renderRunBody(snap, agents, maxAgents, theme) {
             `${done}/${phaseAgents.length} agents`,
             running ? `${running} running` : "",
             errors ? `${errors} errors` : "",
-            fmtTokenSegment(aggregateAgentUsage(phaseAgents), fmtTokensShort),
+            fmtTokenSegment(aggregateAgentUsage(phaseAgents), fmtCompact),
         ]
             .filter(Boolean)
             .join(" · ");
         lines.push(theme.fg("accent", `  ${marker} ${title}`) + dim(`  ${phaseMeta}`));
         const visible = phaseAgents.slice(-maxAgents);
         for (const a of visible) {
-            const segment = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtTokensShort);
+            const segment = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtCompact);
             const tok = segment ? dim(` ${segment}`) : "";
             const mdl = shortModel(a.model);
             const model = mdl ? dim(` · ${mdl}`) : "";
@@ -190,7 +189,7 @@ export function renderPanelDetailed(manager, theme, width, maxAgents, now) {
         const meta = [
             `${done}/${snap ? agents.length : summary.total} agents`,
             snap?.currentPhase || "",
-            fmtTokenSegment(runUsage, fmtTokensShort),
+            fmtTokenSegment(runUsage, fmtCompact),
             // Cost is known only once the run finalizes its usage.
             usage?.cost ? fmtCost(usage.cost) : "",
             rate > 0 ? `${tokenRateIsEstimated(r.runId) ? "~" : ""}${Math.round(rate)} tok/s` : "",

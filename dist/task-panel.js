@@ -20,8 +20,7 @@
  * send capture, pending markers, retries, and dispatch.
  */
 import { AgentSession } from "@earendil-works/pi-coding-agent";
-import { fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
-import { fmtTokensShort } from "./task-panel/compact-format.js";
+import { fmtCompact, fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
 import { _resetDeliveryDispatchForTests, flushSessionDiskPending, routeBackgroundDelivery, setPendingTextRenderer, } from "./task-panel/delivery-dispatch.js";
 import { resolveDeliverySessionId, sessionEndpoints, } from "./task-panel/delivery-endpoints.js";
 import { _resetDeliveryRetriesForTests, cancelSessionRetries } from "./task-panel/delivery-retry.js";
@@ -29,15 +28,16 @@ import { _resetHostSendCaptureForTests, boundSessionSends, cancelUnsentWaiters, 
 import { panelWidget } from "./task-panel/panel-widget.js";
 import { deliveredAwaitingClear, forgetAwaitingClear } from "./task-panel/pending-markers.js";
 import { deliveredMaxChars, failedRunText, pausedRunText, persistedResultPath, summarizeResult, } from "./task-panel/result-text.js";
-export const WORKFLOW_LIFECYCLE_EVENT = "pi-dynamic-workflows:lifecycle";
 // ─── Live panel ────────────────────────────────────────────────────────────────
 /**
  * Install the live "workflows running" panel below the editor. It redraws on
  * every manager event and is informational only — the user opens the navigator
- * with /workflows. The unused `_pi` keeps the public signature stable.
+ * with /workflows. `loadSettings` is read fresh (with a short TTL cache) on each
+ * render, so `/workflows-progress` takes effect without a restart; without it
+ * the panel is always compact.
  */
-export function installTaskPanel(_pi, manager, ui, opts = {}) {
-    ui.setWidget("workflow-tasks", panelWidget(manager, opts.loadSettings), { placement: "belowEditor" });
+export function installTaskPanel(manager, ui, loadSettings) {
+    ui.setWidget("workflow-tasks", panelWidget(manager, loadSettings), { placement: "belowEditor" });
 }
 // ─── Delivered messages ────────────────────────────────────────────────────────
 /** The message delivered when a background run completes, ending with a pointer to the full result. */
@@ -45,7 +45,7 @@ export function deliverText(run, opts = {}) {
     const summary = summarizeResult(run.result?.result, opts.maxChars);
     const tu = run.result?.tokenUsage;
     const cost = tu?.cost ? ` · ${fmtCost(tu.cost)}` : "";
-    const segment = fmtTokenSegment(tokenFigures(tu), fmtTokensShort);
+    const segment = fmtTokenSegment(tokenFigures(tu), fmtCompact);
     const tokens = `${segment ? ` · ${segment}` : ""}${cost}`;
     const agents = run.result?.agentCount ?? run.snapshot.agentCount;
     const duration = run.result?.durationMs ? ` · ${(run.result.durationMs / 1000).toFixed(1)}s` : "";
@@ -96,12 +96,13 @@ export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
 /** Sessions whose probe captured a send. A failed probe stays unmarked and is retried on the next bind. */
 const probedSessionIds = new Set();
 /**
- * Quiet hosts (omp never sends custom messages itself) never trip the
- * AgentSession prototype patch, so no confirming send is captured. One probe
- * through pi.sendMessage forces it: the host's void wrapper calls the live
- * session's sendCustomMessage synchronously, and the patch captures that
- * receiver before this returns. A host whose pi.sendMessage still throws during
- * early startup stays unmarked so the next bind probes again.
+ * A session constructed before the prototype patch (e.g. the one running when
+ * the extension reloads) was never captured at construction, and may not send
+ * a custom message on its own. One probe through pi.sendMessage forces the
+ * capture: the host's void wrapper calls the live session's sendCustomMessage
+ * synchronously, and the patch captures that receiver before this returns. A
+ * pi.sendMessage that still throws during early startup leaves the session
+ * unmarked, so the next bind probes again.
  */
 function probeHostSessionSend(pi, sessionId) {
     if (probedSessionIds.has(sessionId))
@@ -139,8 +140,7 @@ function patchAgentSessionCapture() {
             return;
         patchedSessionPrototypes.add(proto);
         // Primary hook: `_bindExtensionCore` runs at session construction, before
-        // any extension code, so a stock pi host is captured without a probe. The
-        // omp bundle does not expose it; there the probe below does the capture.
+        // any extension code, so a new session is captured without a probe.
         if (typeof proto._bindExtensionCore === "function") {
             const bindCore = proto._bindExtensionCore;
             proto._bindExtensionCore = function patchedBindExtensionCore(...args) {
@@ -271,7 +271,7 @@ export function resumeSessionDelivery(sessionId, manager) {
  * the teardown cannot deliver into the outgoing session.
  */
 export function suspendResultDelivery(manager) {
-    suspendSessionDelivery(manager.getSessionId?.());
+    suspendSessionDelivery(manager.getSessionId());
 }
 /**
  * Unsuspend and flush queued deliveries for the manager's bound session.
@@ -279,11 +279,14 @@ export function suspendResultDelivery(manager) {
  * Prefer {@link bindSessionDelivery} which also captures a fresh stable send.
  */
 export function resumeResultDelivery(manager) {
-    resumeSessionDelivery(manager.getSessionId?.(), manager);
+    resumeSessionDelivery(manager.getSessionId(), manager);
 }
-function deliveryManager(manager) {
-    return manager;
-}
+// ─── Result delivery ───────────────────────────────────────────────────────────
+/**
+ * Managers whose delivery listeners are installed, with the last loadSettings
+ * seen on install (used when binding endpoints).
+ */
+let deliveryInstalls = new WeakMap();
 // turn_end is registered once per ExtensionAPI instance (pi.on has no off()), and
 // each handler looks up that instance's latest manager: several live pi
 // instances can interleave installs, and a cross-project rebuild must not stack
@@ -304,41 +307,11 @@ let turnEndDeliveryManagers = new WeakMap();
  * {@link bindSessionDelivery} on session_start.
  */
 export function installResultDelivery(pi, manager, opts = {}) {
-    const m = deliveryManager(manager);
-    m.__deliveryLoadSettings = opts.loadSettings;
+    const installed = deliveryInstalls.get(manager);
+    const install = installed ?? {};
+    install.loadSettings = opts.loadSettings;
+    deliveryInstalls.set(manager, install);
     patchAgentSessionCapture();
-    m.__lifecycleEventEmitter = (data) => pi.events?.emit(WORKFLOW_LIFECYCLE_EVENT, data);
-    if (!m.__lifecycleEventInstalled) {
-        m.__lifecycleEventInstalled = true;
-        const emitLifecycle = (status) => ({ runId }) => {
-            const run = manager.getRun(runId);
-            const persistence = manager.getPersistence();
-            const persisted = run
-                ? undefined
-                : persistence.loadPreview
-                    ? persistence.loadPreview(runId)
-                    : persistence.load(runId);
-            const lifecycle = run?.background
-                ? { name: run.snapshot.name, sessionId: resolveDeliverySessionId(run, manager) }
-                : persisted
-                    ? { name: persisted.workflowName, sessionId: persisted.sessionId }
-                    : undefined;
-            if (!lifecycle)
-                return;
-            m.__lifecycleEventEmitter?.({
-                status,
-                runId,
-                name: lifecycle.name,
-                ...(lifecycle.sessionId ? { sessionId: lifecycle.sessionId } : {}),
-            });
-        };
-        manager.on("started", emitLifecycle("started"));
-        manager.on("resumed", emitLifecycle("resumed"));
-        manager.on("paused", emitLifecycle("paused"));
-        manager.on("complete", emitLifecycle("completed"));
-        manager.on("error", emitLifecycle("failed"));
-        manager.on("stopped", emitLifecycle("stopped"));
-    }
     // After each turn, bind the session if its send was not captured yet, then
     // flush whatever is still pending for it.
     const existingTurnEnd = turnEndDeliveryManagers.get(pi);
@@ -351,13 +324,12 @@ export function installResultDelivery(pi, manager, opts = {}) {
             const activeManager = turnEndDeliveryManagers.get(pi)?.manager;
             if (!activeManager)
                 return;
-            const active = deliveryManager(activeManager);
             let sid;
             try {
-                sid = ctx?.sessionManager?.getSessionId?.() ?? activeManager.getSessionId?.();
+                sid = ctx?.sessionManager?.getSessionId?.() ?? activeManager.getSessionId();
             }
             catch {
-                sid = activeManager.getSessionId?.();
+                sid = activeManager.getSessionId();
             }
             if (!sid)
                 return;
@@ -366,7 +338,7 @@ export function installResultDelivery(pi, manager, opts = {}) {
                 probeHostSessionSend(pi, sid);
                 if (boundSessionSends.get(sid)) {
                     bindSessionDelivery(sid, pi, {
-                        loadSettings: active.__deliveryLoadSettings,
+                        loadSettings: deliveryInstalls.get(activeManager)?.loadSettings,
                         manager: activeManager,
                         sessionManager: ctx?.sessionManager,
                     });
@@ -381,7 +353,7 @@ export function installResultDelivery(pi, manager, opts = {}) {
     // A newly-created manager can replace the current project while this pi and
     // session endpoint remain live. Refresh only the routing pointers; preserve
     // the session transport, generation, and suspension state until bindCore.
-    const sid = manager.getSessionId?.();
+    const sid = manager.getSessionId();
     if (sid) {
         const endpoint = sessionEndpoints.get(sid);
         if (endpoint) {
@@ -389,26 +361,23 @@ export function installResultDelivery(pi, manager, opts = {}) {
             endpoint.manager = manager;
         }
     }
-    if (m.__deliveryInstalled)
+    if (installed)
         return;
-    m.__deliveryInstalled = true;
     manager.on("complete", ({ runId }) => {
         const run = manager.getRun(runId);
-        // Only background runs are delivered: a foreground run already returned its
-        // result inline as the tool result.
-        if (!run?.background)
+        if (!run)
             return;
         const sessionId = resolveDeliverySessionId(run, manager);
         const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
         const content = deliverText(run, {
             resultPath: persistedResultPath(manager, runId, run.result?.result),
-            maxChars: deliveredMaxChars(endpoint?.loadSettings ?? m.__deliveryLoadSettings),
+            maxChars: deliveredMaxChars(endpoint?.loadSettings ?? install.loadSettings),
         });
         routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
     });
     manager.on("error", ({ runId, error }) => {
         const run = manager.getRun(runId);
-        if (!run?.background)
+        if (!run)
             return;
         const text = failedRunText(runId, error);
         routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
@@ -419,7 +388,7 @@ export function installResultDelivery(pi, manager, opts = {}) {
     // is the user's own action, so it delivers nothing.
     manager.on("paused", (event) => {
         const run = manager.getRun(event.runId);
-        if (!run?.background)
+        if (!run)
             return;
         const text = pausedRunText(event);
         if (text)
@@ -436,6 +405,7 @@ export function _resetDeliveryRegistriesForTests() {
     sessionEndpoints.clear();
     probedSessionIds.clear();
     turnEndDeliveryManagers = new WeakMap();
+    deliveryInstalls = new WeakMap();
 }
 /** @internal test helper — register a confirming session send directly. */
 export function _registerBoundSessionSendForTests(sessionId, send) {
@@ -462,7 +432,5 @@ export function _getSessionDeliveryEndpointForTests(sessionId) {
         suspended: ep.suspended,
         generation: ep.generation,
         hasSend: typeof ep.send === "function",
-        // Append is never an ACK; the field stays so the inspected shape is unchanged.
-        hasAppend: false,
     };
 }

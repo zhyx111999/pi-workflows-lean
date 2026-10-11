@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 /**
  * Live extension state that Pi may hand from one extension generation to the
@@ -72,38 +71,16 @@ export function handoffWorkflowRuntime(runtime, ttlMs = RELOAD_HANDOFF_TTL_MS) {
     setSlot(slot);
 }
 /**
- * Claim a staged runtime. `cwd` is accepted for API compatibility with tests
- * and callers that want to assert project identity after the claim; the slot
- * itself is process-wide. When `cwd` is provided and the staged runtime's
- * project path (runtime.cwd / manager.getCwd()) is a different resolved path,
- * the claim still succeeds — the caller (extension factory / session_start)
- * decides keep vs rebuild. Returns undefined only when nothing is staged.
+ * Take the staged runtime out of the process-wide slot, whatever its project:
+ * the caller (extension factory / session_start) decides keep vs rebuild.
+ * Returns undefined only when nothing is staged.
  *
  * Prefer {@link claimWorkflowRuntime} for version-aware claiming.
  */
-export function takeWorkflowRuntime(cwd) {
+export function takeWorkflowRuntime() {
     const slot = getSlot();
     if (!slot)
         return undefined;
-    // Optional cwd filter used by tests that stage multiple logical projects in
-    // sequence and take by identity. When cwd is omitted, take whatever is pending.
-    if (cwd !== undefined) {
-        const want = resolve(cwd);
-        const stagedCwd = resolve(slot.runtime.cwd);
-        let managerCwd = stagedCwd;
-        try {
-            managerCwd = resolve(slot.runtime.manager.getCwd());
-        }
-        catch {
-            // no getCwd
-        }
-        // Match if the caller asks for the staged project OR the process launch
-        // dir (factory claim path) OR the manager's own project path.
-        const launch = resolve(process.cwd());
-        if (want !== stagedCwd && want !== managerCwd && want !== launch) {
-            return undefined;
-        }
-    }
     clearSlot(slot);
     return slot.runtime;
 }
@@ -117,8 +94,8 @@ export function takeWorkflowRuntime(cwd) {
  * from the session project the manager was bound to. Project identity is
  * checked after the claim by the extension (manager.getCwd() vs ctx.cwd).
  */
-export function claimWorkflowRuntime(_cwd) {
-    const runtime = takeWorkflowRuntime(); // process-wide slot
+export function claimWorkflowRuntime() {
+    const runtime = takeWorkflowRuntime();
     if (!runtime)
         return {};
     return runtime.extensionVersion === WORKFLOW_EXTENSION_VERSION
@@ -138,18 +115,9 @@ export function claimWorkflowRuntime(_cwd) {
  */
 export function pauseStrandedWorkflowRuntime(runtime) {
     let paused = 0;
-    let live = [];
+    let live;
     try {
-        if (typeof runtime.manager.listLiveRuns === "function") {
-            live = runtime.manager.listLiveRuns();
-        }
-        else if (typeof runtime.manager.listRuns === "function") {
-            // Defensive: older managers handed across a package-version edge case.
-            live = runtime.manager.listRuns().flatMap((r) => {
-                const liveRun = runtime.manager.getRun(r.runId);
-                return liveRun ? [liveRun] : [];
-            });
-        }
+        live = runtime.manager.listLiveRuns();
     }
     catch {
         // Stubs in tests / partially constructed managers — nothing to pause.
@@ -170,9 +138,9 @@ export const SESSION_REPLACEMENT_REASONS = new Set(["reload", "new", "resume", "
 /**
  * Test/cleanup helper. When `runtime` is provided, only clears if it is the
  * currently staged runtime (identity guard). When omitted, clears whatever is
- * staged. `cwd` is ignored for the slot model (kept for call-site compatibility).
+ * staged.
  */
-export function discardWorkflowRuntime(_cwd, runtime) {
+export function discardWorkflowRuntime(runtime) {
     const slot = getSlot();
     if (!slot)
         return;

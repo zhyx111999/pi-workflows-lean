@@ -68,25 +68,15 @@ export function createWorkflowStorage(cwd, fsOverride) {
     const paths = workflowProjectPaths(cwd);
     const dirs = {
         project: paths.savedDir,
-        legacy: paths.legacySavedDir,
         user: workflowUserSavedDir(),
     };
+    const LOCATIONS = ["project", "user"];
     const ensureDir = (dir) => ensureDirFs(fs, dir);
-    const locationFor = (source) => (source === "user" ? "user" : "project");
-    const sourcePath = (name, source) => {
+    const locationPath = (name, location) => {
         assertSafeSavedWorkflowName(name);
-        return join(dirs[source], `${name}.json`);
+        return join(dirs[location], `${name}.json`);
     };
-    const sourceFor = (workflow) => {
-        if (workflow.source === "project" || workflow.source === "legacy" || workflow.source === "user")
-            return workflow.source;
-        // Defensive compatibility for records supplied by older callers. Real rows
-        // always carry source and are still checked against their exact path below.
-        if (workflow.path.startsWith(dirs.legacy))
-            return "legacy";
-        return workflow.location === "user" ? "user" : "project";
-    };
-    const loadFromFile = (path, source) => {
+    const loadFromFile = (path, location) => {
         const data = readJsonWithBackupRecovery(fs, path);
         if (!data || typeof data !== "object" || !isSafeSavedWorkflowName(data.name ?? ""))
             return null;
@@ -107,8 +97,7 @@ export function createWorkflowStorage(cwd, fsOverride) {
         return {
             ...rest,
             script: script,
-            location: locationFor(source),
-            source,
+            location,
             path,
         };
     };
@@ -121,10 +110,10 @@ export function createWorkflowStorage(cwd, fsOverride) {
         }
     };
     const exactCurrent = (workflow) => {
-        const source = sourceFor(workflow);
+        const location = workflow.location === "user" ? "user" : "project";
         let expected;
         try {
-            expected = sourcePath(workflow.name, source);
+            expected = locationPath(workflow.name, location);
         }
         catch (error) {
             return { ok: false, code: "invalid", message: error instanceof Error ? error.message : String(error) };
@@ -136,13 +125,13 @@ export function createWorkflowStorage(cwd, fsOverride) {
                 message: "Saved workflow source changed; refresh the navigator before retrying.",
             };
         }
-        const current = loadFromFile(expected, source);
+        const current = loadFromFile(expected, location);
         if (!current) {
             return hasRecord(expected)
                 ? { ok: false, code: "stale", message: "Saved workflow source is unreadable or no longer valid." }
                 : { ok: false, code: "missing", message: "Saved workflow no longer exists." };
         }
-        if (current.source !== source ||
+        if (current.location !== location ||
             current.name !== workflow.name ||
             savedWorkflowRevision(current) !== savedWorkflowRevision(workflow)) {
             return { ok: false, code: "stale", message: "Saved workflow changed; refresh the navigator before retrying." };
@@ -213,13 +202,11 @@ export function createWorkflowStorage(cwd, fsOverride) {
     return {
         save(workflow, location = "project") {
             assertSafeSavedWorkflowName(workflow.name);
-            const source = location === "user" ? "user" : "project";
-            ensureDir(dirs[source]);
-            const path = sourcePath(workflow.name, source);
+            ensureDir(dirs[location]);
+            const path = locationPath(workflow.name, location);
             const saved = {
                 ...workflow,
                 location,
-                source,
                 path,
                 savedAt: new Date().toISOString(),
             };
@@ -231,39 +218,29 @@ export function createWorkflowStorage(cwd, fsOverride) {
         load(name) {
             if (!isSafeSavedWorkflowName(name))
                 return null;
-            return (loadFromFile(sourcePath(name, "project"), "project") ??
-                loadFromFile(sourcePath(name, "legacy"), "legacy") ??
-                loadFromFile(sourcePath(name, "user"), "user"));
+            return loadFromFile(locationPath(name, "project"), "project") ?? loadFromFile(locationPath(name, "user"), "user");
         },
         list() {
             const workflows = [];
             const seen = new Set();
-            const addDir = (source) => {
-                for (const file of listJsonFilesSafe(fs, dirs[source])) {
-                    const workflow = loadFromFile(join(dirs[source], file), source);
+            for (const location of LOCATIONS) {
+                for (const file of listJsonFilesSafe(fs, dirs[location])) {
+                    const workflow = loadFromFile(join(dirs[location], file), location);
                     if (workflow && !seen.has(workflow.name)) {
                         seen.add(workflow.name);
                         workflows.push(workflow);
                     }
                 }
-            };
-            addDir("project");
-            addDir("legacy");
-            addDir("user");
+            }
             return workflows.sort((a, b) => a.name.localeCompare(b.name));
         },
         delete(workflow, location) {
             if (typeof workflow === "string") {
                 if (!isSafeSavedWorkflowName(workflow))
                     return false;
-                const sources = location === "user"
-                    ? ["user"]
-                    : location === "project"
-                        ? ["project", "legacy"]
-                        : ["project", "legacy", "user"];
                 let deleted = false;
-                for (const source of sources) {
-                    const current = loadFromFile(sourcePath(workflow, source), source);
+                for (const tier of location ? [location] : LOCATIONS) {
+                    const current = loadFromFile(locationPath(workflow, tier), tier);
                     if (!current)
                         continue;
                     const result = removeSource(current.path);
@@ -294,26 +271,24 @@ export function createWorkflowStorage(cwd, fsOverride) {
             // A command name is globally resolved by precedence, so a target that is
             // occupied in any tier is ambiguous even when the current row is hidden by
             // another tier. Reject before writing instead of mutating a fallback by name.
-            for (const source of ["project", "legacy", "user"]) {
-                const target = sourcePath(name, source);
+            for (const tier of LOCATIONS) {
+                const target = locationPath(name, tier);
                 if (hasRecord(target)) {
                     return { ok: false, code: "conflict", message: `A saved workflow named /${name} already exists.` };
                 }
             }
-            const source = sourceFor(current.workflow);
-            const targetPath = sourcePath(name, source);
+            const { location } = current.workflow;
+            const targetPath = locationPath(name, location);
             const renamed = {
                 ...current.workflow,
                 name,
-                source,
-                location: locationFor(source),
                 path: targetPath,
                 savedAt: new Date().toISOString(),
             };
             let sourcePrimary;
             let sourceBackup;
             try {
-                ensureDir(dirs[source]);
+                ensureDir(dirs[location]);
                 sourcePrimary = snapshotFile(current.workflow.path);
                 sourceBackup = snapshotFile(`${current.workflow.path}.bak`);
                 // The replacement must have both primary and backup before the source

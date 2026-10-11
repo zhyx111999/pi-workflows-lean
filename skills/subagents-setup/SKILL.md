@@ -43,7 +43,7 @@ Later files win per key: `~/.pi/workflows/settings.json`, `<project>/.pi/workflo
 
 ## Agent roles
 
-`<project>/.pi/agents/<name>.md` wins over `~/.pi/agent/agents/<name>.md` (old `~/.pi/agents/` still read). Scripts use `agentType: "<name>"`. All fields are optional; `name` defaults to the file name.
+`<project>/.pi/agents/<name>.md` wins over `~/.pi/agent/agents/<name>.md`. Scripts use `agentType: "<name>"`. All fields are optional; `name` defaults to the file name.
 
 ```markdown
 ---

@@ -1,7 +1,7 @@
 /** Lays out single phase and agent rows, and the column widths they share, inside the run view's panes. */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { fmtTokenSegment, tokenFigures } from "../display.js";
-import { compactTokens, ELLIPSIS, shortModel } from "./format.js";
+import { fmtCompact, fmtTokenSegment, tokenFigures } from "../display.js";
+import { ELLIPSIS, shortModel } from "./format.js";
 /** Narrowest usable Phases pane, in cells. */
 export const LW_MIN = 14;
 /** Narrowest usable agents pane, in cells. */
@@ -72,7 +72,7 @@ export function leftPhaseRow(p, i, selected, agents, innerW, theme) {
 /** Build a right-pane agent row (content field, exact width = innerW). */
 export function rightAgentRow(a, selected, modelColStart, innerW, theme) {
     const dotColor = AGENT_DOT_COLOR[a.status] ?? "dim";
-    const stats = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), compactTokens);
+    const stats = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtCompact);
     const model = shortModel(a.model) ?? "";
     // Stable 2-cell marker so columns never shift on selection: "› " | "  ".
     // Layout: <marker:2><dot><sp><name> … <model> … <stats(right-aligned)>.

@@ -1,9 +1,8 @@
 /** Runs a live agent() call under the concurrency limit: its worktree, usage accounting, retries and journaling. */
 import { createAgentCallUsageTracker, sumAgentUsage } from "../agent-usage.js";
-import { WorkflowError, WorkflowErrorCode, wrapError } from "../errors.js";
+import { WorkflowError, WorkflowErrorCode, workflowAbortedError, wrapError } from "../errors.js";
 import { createWorktree, removeWorktree } from "../worktree.js";
 import { dispatchAttempt, linkAttemptAbort, withTimeout } from "./agent-attempt.js";
-import { workflowAbortedError } from "./run-context.js";
 import { normalizeAgentRetries, retryBackoffMs } from "./run-limits.js";
 /** A string result that is blank means the subagent produced no answer at all. */
 export function isEmptyTextAgentResult(result, schema) {

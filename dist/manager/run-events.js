@@ -34,7 +34,6 @@ export function runEventHooks(managed, sink) {
         onLog: (message) => {
             managed.snapshot.logs.push(message);
             sink.emit("log", { runId: managed.runId, message });
-            sink.progress();
         },
         onPhase: (title) => {
             managed.snapshot.currentPhase = title;
@@ -42,7 +41,6 @@ export function runEventHooks(managed, sink) {
                 managed.snapshot.phases.push(title);
             }
             sink.emit("phase", { runId: managed.runId, title });
-            sink.progress();
         },
         onAgentStart: (event) => {
             const row = (event.replayed ? replayedRow(managed, event) : undefined) ?? newRow(managed, event);
@@ -57,7 +55,6 @@ export function runEventHooks(managed, sink) {
                 managed.replayedAgentCalls.add(event.id);
             managed.agentTimestampsByCallId.set(event.id, { ...timestamp });
             sink.emit("agentStart", { runId: managed.runId, ...event });
-            sink.progress();
         },
         onAgentModel: (event) => {
             const agent = managed.agentsById.get(event.id);
@@ -67,7 +64,6 @@ export function runEventHooks(managed, sink) {
             agent.model = event.model;
             // No write here: this fires once per attempt, and later writes carry the field.
             sink.emit("agentModel", { runId: managed.runId, agentId: agent.id, ...event });
-            sink.progress();
         },
         onAgentUsage: (event) => {
             const agent = managed.agentsById.get(event.id);
@@ -83,7 +79,6 @@ export function runEventHooks(managed, sink) {
             // Displays sum live per-agent usage; this refreshes them without adding
             // estimates to the persisted run total.
             sink.emit("tokenUsage", { runId: managed.runId, usage: managed.snapshot.tokenUsage });
-            sink.progress();
         },
         onAgentSession: (event) => {
             const agent = managed.agentsById.get(event.callId);
@@ -98,7 +93,6 @@ export function runEventHooks(managed, sink) {
             // The session exists before the first prompt. Write it now so an immediate
             // pause or crash still leaves the link to the child session.
             sink.persist();
-            sink.progress();
         },
         onAgentEnd: (event) => {
             const agent = managed.agentsById.get(event.id);
@@ -132,7 +126,6 @@ export function runEventHooks(managed, sink) {
                 managed.agentsById.delete(event.id);
             }
             sink.emit("agentEnd", { runId: managed.runId, ...event });
-            sink.progress();
         },
         onAgentHistory: (event) => {
             const agent = managed.agentsById.get(event.id);
@@ -140,7 +133,6 @@ export function runEventHooks(managed, sink) {
                 agent.history = event.history;
             }
             sink.emit("agentHistory", { runId: managed.runId, agentId: agent?.id, ...event });
-            sink.progress();
         },
         registerAgentSteer: ({ id, label, steer }) => {
             const entry = { label, steer };
@@ -162,7 +154,6 @@ export function runEventHooks(managed, sink) {
         onTokenUsage: (usage) => {
             managed.snapshot.tokenUsage = usage;
             sink.emit("tokenUsage", { runId: managed.runId, usage });
-            sink.progress();
         },
     };
 }

@@ -1,6 +1,4 @@
 /** Wording and size limits for the messages delivered when a background run finishes, fails, or pauses. */
-import { join } from "node:path";
-import { formatBytes } from "./compact-format.js";
 /** Default cap on the JSON-dump fallback in a delivered result summary. Overridable
  *  via the `deliveredResultMaxChars` setting in ~/.pi/workflows/settings.json. */
 const DEFAULT_DELIVERED_MAX_CHARS = 400;
@@ -34,14 +32,11 @@ export function summarizeResult(result, maxChars = DEFAULT_DELIVERED_MAX_CHARS) 
     const droppedBytes = Buffer.byteLength(json, "utf8") - Buffer.byteLength(kept, "utf8");
     return `${kept}\n…(truncated ${formatBytes(droppedBytes)})`;
 }
-/** Absolute path to a run's persisted result JSON. Undefined if the persistence
- *  layer can't be resolved — delivery must never throw in the complete handler. */
+/** Absolute path to a run's exported result JSON. Undefined if the export
+ *  fails — delivery must never throw in the complete handler. */
 export function persistedResultPath(manager, runId, result) {
     try {
-        const persistence = manager.getPersistence();
-        return persistence.exportResult
-            ? persistence.exportResult(runId, result)
-            : join(persistence.getRunsDir(), `${runId}.json`);
+        return manager.getPersistence().exportResult(runId, result);
     }
     catch {
         return undefined;
@@ -77,4 +72,12 @@ export function pausedRunText({ runId, reason, error, resetHint, checkpoint }) {
             `Answer it with subagents_control action "resume", runId "${runId}", checkpointId "${checkpoint.checkpointId}", and your response.`);
     }
     return undefined;
+}
+/** Human-readable byte size for the dropped-tail hint: 512 B, 3.2 KB, 1.4 MB. */
+function formatBytes(n) {
+    if (n < 1024)
+        return `${n} B`;
+    if (n < 1024 * 1024)
+        return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

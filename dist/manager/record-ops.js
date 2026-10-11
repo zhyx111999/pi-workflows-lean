@@ -1,11 +1,7 @@
 // Lease-guarded edits to run records that no execution in this process owns.
 import { WorkflowErrorCode } from "../errors.js";
-import { INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents, settleNonTerminalPersistedAgents, } from "../run-persistence.js";
+import { settleNonTerminalPersistedAgents } from "../run-persistence.js";
 import { runSummary } from "../run-record-store.js";
-/** A run's record from the cheap preview read when the store has one. */
-export function readRecordPreview(persistence, runId) {
-    return persistence.loadPreview ? persistence.loadPreview(runId) : persistence.load(runId);
-}
 /** A lease for `runId`, or undefined when it is held elsewhere or the probe fails. */
 export function tryAcquireRunLease(persistence, runId) {
     try {
@@ -14,16 +10,6 @@ export function tryAcquireRunLease(persistence, runId) {
     catch {
         return undefined;
     }
-}
-/** Point a record at another delivery session, leaving the rest as written. False when it is gone. */
-export function rehomeRecord(persistence, runId, sessionId) {
-    if (persistence.updateMetadata)
-        return persistence.updateMetadata(runId, { sessionId });
-    const state = persistence.load(runId);
-    if (!state)
-        return false;
-    persistence.save({ ...state, sessionId });
-    return true;
 }
 /**
  * Move undelivered results of `previousSessionId` that are only on disk to
@@ -42,7 +28,7 @@ export function rehomePendingRecords(persistence, sessionId, previousSessionId, 
                 continue;
             if (previousSessionId == null || state.sessionId !== previousSessionId)
                 continue;
-            if (rehomeRecord(persistence, state.runId, sessionId))
+            if (persistence.updateMetadata(state.runId, { sessionId }))
                 moved++;
         }
     }
@@ -68,20 +54,7 @@ export function recoverStaleRuns(persistence) {
             if (!lease)
                 continue;
             try {
-                if (persistence.recoverInterrupted) {
-                    persistence.recoverInterrupted(p.runId);
-                    continue;
-                }
-                const fresh = persistence.load(p.runId);
-                if (!fresh || (fresh.status !== "running" && fresh.status !== "paused"))
-                    continue;
-                const endedAt = new Date().toISOString();
-                persistence.save({
-                    ...fresh,
-                    status: "paused",
-                    updatedAt: endedAt,
-                    agents: settleInterruptedPersistedAgents(fresh.agents, INTERRUPTED_AGENT_CAUSE, endedAt),
-                });
+                persistence.recoverInterrupted(p.runId);
             }
             finally {
                 persistence.releaseRunLease(lease);
@@ -138,20 +111,14 @@ export function writeAutoResumeAttempts(persistence, runId, attempts, onMissing)
     if (!lease)
         return false;
     try {
-        const current = readRecordPreview(persistence, runId);
+        const current = persistence.loadPreview(runId);
         if (!current) {
             onMissing();
             return false;
         }
-        if ((current.autoResumeAttempts ?? 0) !== attempts) {
-            if (persistence.updateMetadata) {
-                if (!persistence.updateMetadata(runId, { autoResumeAttempts: attempts }))
-                    return false;
-            }
-            else
-                persistence.save({ ...current, autoResumeAttempts: attempts });
-        }
-        return true;
+        if ((current.autoResumeAttempts ?? 0) === attempts)
+            return true;
+        return persistence.updateMetadata(runId, { autoResumeAttempts: attempts });
     }
     finally {
         persistence.releaseRunLease(lease);

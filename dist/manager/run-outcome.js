@@ -1,13 +1,10 @@
 // Decides how a finished execution is reported: failure cause, final status, empty-result warning.
 import { emptyFleetSummary } from "../display.js";
-import { isProviderUsageLimit, WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, } from "../errors.js";
-function abortedError() {
-    return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
-}
+import { isProviderUsageLimit, WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, workflowAbortedError, } from "../errors.js";
 /** The escaped error as a WorkflowError. A checkpoint suspension during an abort is just the abort. */
 function asWorkflowError(error, aborted) {
     if (error instanceof WorkflowCheckpointSuspensionError && aborted)
-        return abortedError();
+        return workflowAbortedError();
     if (error instanceof WorkflowError)
         return error;
     const message = error instanceof Error ? error.message : String(error);
@@ -15,7 +12,7 @@ function asWorkflowError(error, aborted) {
 }
 /**
  * Classify an error that escaped runWorkflow. Several causes can race: a
- * provider limit, the host's abort, a user pause()/stop(), a real failure.
+ * provider limit, a user pause()/stop(), a real failure.
  * Each abort carries the reason object of whoever caused it, so the first
  * cause decides; a later one never relabels it.
  */
@@ -26,21 +23,15 @@ export function classifyFailure(managed, error) {
         (managed.usageLimitEscapedBeforeLifecycleControl === workflowError ||
             (!signal.aborted && managed.lifecycleControl === undefined));
     const lifecycleControlOwnsExecution = managed.lifecycleControl !== undefined && signal.reason === managed.lifecycleControl.abortReason;
-    const externalAbortOwnsExecution = managed.externalAbort !== undefined && signal.reason === managed.externalAbort.abortReason;
     // pause()/stop() already reported its own AbortError, and a provider result
     // that arrives after it must not revive a stop or arm quota auto-resume.
     const announced = lifecycleControlOwnsExecution &&
         (workflowError.code === WorkflowErrorCode.WORKFLOW_ABORTED ||
             (isProviderUsageLimit(workflowError) && !usageLimitPaused));
-    const terminalError = externalAbortOwnsExecution ? abortedError() : workflowError;
     let status;
     if (usageLimitPaused) {
         // A limit that escaped before a later pause()/stop() stays a quota pause.
         status = "paused";
-    }
-    else if (externalAbortOwnsExecution) {
-        // The host abort came first; a late agent result cannot turn it into a failure.
-        status = "aborted";
     }
     else if (announced) {
         status = undefined;
@@ -52,7 +43,7 @@ export function classifyFailure(managed, error) {
         // A real failure wins even when a pause()/stop() arrived after it escaped.
         status = "failed";
     }
-    return { error: workflowError, terminalError, status, usageLimitPaused, announced };
+    return { error: workflowError, status, usageLimitPaused, announced };
 }
 /**
  * A warning when every agent of this execution returned nothing. agent()

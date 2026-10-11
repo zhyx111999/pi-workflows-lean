@@ -41,7 +41,6 @@ const INDEX_KEYS = new Set([
     "currentPhase",
     "pauseReason",
     "resetHint",
-    "autoResume",
     "autoResumeAttempts",
 ]);
 function markerIndex(marker) {
@@ -53,16 +52,9 @@ const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 function isHead(value) {
     return !!value && typeof value === "object" && value.format === FORMAT;
 }
-function validateRecord(record) {
-    if (!record || typeof record !== "object" || Array.isArray(record))
-        throw new Error("Invalid run record");
-    if (Object.hasOwn(record, "format") && !isHead(record))
+function validateHead(record) {
+    if (!isHead(record))
         throw new Error("Unsupported run record format");
-    if (!isHead(record)) {
-        if (typeof record.runId !== "string")
-            throw new Error("Invalid legacy run identity");
-        return;
-    }
     if (!Number.isSafeInteger(record.bytes) ||
         record.bytes <= 0 ||
         !Number.isSafeInteger(record.sequence) ||
@@ -76,10 +68,11 @@ function validateRecord(record) {
         record.keys.some((key) => typeof key !== "string"))
         throw new Error("Invalid run head");
 }
-function readRecord(fs, path) {
+function readHead(fs, path) {
     const record = readJsonWithBackupRecovery(fs, path);
-    if (record)
-        validateRecord(record);
+    if (record === null)
+        return null;
+    validateHead(record);
     return record;
 }
 function digest(line) {
@@ -200,12 +193,8 @@ export function createRunRecordStore(fs) {
             cache.delete(key);
         }
     }
+    /** The full run a validated head commits to, replayed from its log (or the cache). */
     function hydrate(path, head) {
-        if (!Number.isSafeInteger(head.bytes) ||
-            head.bytes <= 0 ||
-            !Number.isSafeInteger(head.sequence) ||
-            head.sequence <= 0)
-            throw new Error("Invalid run commit boundary");
         const cached = cache.get(path);
         if (cached?.generation === head.generation &&
             cached.bytes === head.bytes &&
@@ -251,41 +240,33 @@ export function createRunRecordStore(fs) {
         return result;
     }
     function read(path) {
-        const record = readRecord(fs, path);
-        if (!record)
+        const head = readHead(fs, path);
+        if (!head)
             return null;
-        if (!isHead(record))
-            return record;
         // A committed-but-damaged log fails closed, rather than silently replaying
         // an older paid-call prefix. Only a corrupt/missing head uses its backup.
-        return structuredClone(hydrate(path, record));
+        return structuredClone(hydrate(path, head));
     }
     function peek(path) {
-        const record = readRecord(fs, path);
-        return record ? preview(path, record) : null;
+        const head = readHead(fs, path);
+        return head ? preview(path, head) : null;
     }
-    function preview(path, record) {
-        validateRecord(record);
-        const head = isHead(record) ? record : undefined;
-        const index = head?.index ?? Object.fromEntries(Object.entries(record).filter(([key]) => INDEX_KEYS.has(key)));
-        const keys = head?.keys ?? Object.keys(record);
+    /** A light view of a run from its head; fields outside the index load the log on first access. */
+    function preview(path, head) {
+        validateHead(head);
+        const { index } = head;
         const view = { ...index };
         // Getters close over only the small head/path, never the hydrated state.
-        // Enumeration/spread retains the full-record API for existing consumers.
-        for (const key of keys)
+        // Enumeration and spread still see every field of the full record.
+        for (const key of head.keys)
             if (!Object.hasOwn(index, key))
                 Object.defineProperty(view, key, {
                     enumerable: true,
                     configurable: true,
-                    get: () => {
-                        const full = head ? hydrate(path, head) : read(path);
-                        if (!full)
-                            throw new Error("Run record disappeared");
-                        return structuredClone(full[key]);
-                    },
+                    get: () => structuredClone(hydrate(path, head)[key]),
                 });
         // Markers are needed to route pending delivery without loading results.
-        if (head?.pendingDelivery) {
+        if (head.pendingDelivery) {
             const marker = { ...head.pendingDelivery };
             if (marker.kind === "text")
                 Object.defineProperty(marker, "text", {
@@ -301,7 +282,7 @@ export function createRunRecordStore(fs) {
                 configurable: true,
             });
         }
-        summaries.set(view, head?.summary ?? runSummary(record));
+        summaries.set(view, head.summary);
         return view;
     }
     function commit(path, head, delta, fields) {
@@ -333,8 +314,7 @@ export function createRunRecordStore(fs) {
         return next;
     }
     function save(path, state) {
-        const previous = readRecord(fs, path);
-        const head = isHead(previous) ? previous : undefined;
+        const head = readHead(fs, path) ?? undefined;
         const prior = head ? hydrate(path, head) : undefined;
         const before = prior ? (cache.get(path)?.cells ?? cellsOf(prior)) : new Map();
         const after = cellsOf(state);
@@ -360,17 +340,13 @@ export function createRunRecordStore(fs) {
         remember(path, next, copy, after);
     }
     function updateMetadata(path, patch, expectedDeliveryId) {
-        const record = readRecord(fs, path);
+        const record = readHead(fs, path);
         if (!record)
             return false;
         if (expectedDeliveryId &&
             record.pendingDelivery?.deliveryId &&
             record.pendingDelivery.deliveryId !== expectedDeliveryId)
             return false;
-        if (!isHead(record)) {
-            save(path, { ...record, ...patch });
-            return true;
-        }
         const updated = { ...patch, updatedAt: new Date().toISOString() };
         const after = cellsOf(updated);
         const delta = deltaOf(new Map(Object.keys(updated).map((key) => [key, "null"])), after);
@@ -399,25 +375,14 @@ export function createRunRecordStore(fs) {
         return true;
     }
     function recoverInterrupted(path) {
-        const record = readRecord(fs, path);
-        if (!record)
+        const head = readHead(fs, path);
+        if (!head)
             return false;
-        const head = isHead(record) ? record : undefined;
-        const status = head ? head.index.status : record.status;
-        const summary = head?.summary ?? runSummary(record);
+        const status = head.index.status;
+        const { summary } = head;
         if (status !== "running" && !(status === "paused" && summary.active > 0))
             return false;
         const endedAt = new Date().toISOString();
-        if (!head) {
-            const legacy = record;
-            save(path, {
-                ...legacy,
-                status: "paused",
-                updatedAt: endedAt,
-                agents: settleInterruptedPersistedAgents(legacy.agents ?? [], INTERRUPTED_AGENT_CAUSE, endedAt),
-            });
-            return true;
-        }
         commit(path, head, { set: { status: "paused", updatedAt: endedAt }, remove: [], arrays: {}, settleAgentsAt: endedAt }, {
             keys: [...new Set([...head.keys, "status", "updatedAt", "agents"])],
             index: { ...head.index, status: "paused", updatedAt: endedAt },

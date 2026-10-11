@@ -1,5 +1,4 @@
 // Runs one workflow subagent: picks its tools, model, and session, prompts it, and returns its answer.
-import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { createCodingTools, getAgentDir, } from "@earendil-works/pi-coding-agent";
 import { listAvailableModels } from "./agent/available-models.js";
@@ -18,8 +17,6 @@ import { canonicalModelSpec, formatModelSpecWithThinking, validateThinkingLevel,
 import { loadModelTierConfig } from "./model-tier-config.js";
 /** Child sessions load no host extensions unless explicitly opted in. */
 export const DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS = Object.freeze([]);
-/** Process-global subagent id counter: unique across concurrent workflow runs. */
-let workflowAgentSeq = 0;
 /**
  * Runs subagents for one workflow invocation. Production creates one instance
  * per run, so per-instance caches (tier config, resource loaders, threads) live
@@ -44,7 +41,6 @@ export class WorkflowAgent {
     sessionManagers;
     activeThreads = new Set();
     /** Unique per-instance identity: agent ids must never collide across WorkflowAgent instances. */
-    agentInstanceId = randomUUID();
     constructor(options = {}) {
         this.cwd = options.cwd ?? process.cwd();
         this.baseTools = options.tools ?? createCodingTools(this.cwd);
@@ -56,7 +52,6 @@ export class WorkflowAgent {
         this.models = new AgentModelSelector({
             mainModel: options.mainModel,
             inheritMainModel: options.inheritMainModel ?? false,
-            preSpawnModel: options.preSpawnModel,
             loadTierConfig: () => this.loadTierConfig(),
             listModels: listAvailableModels,
         });
@@ -99,7 +94,7 @@ export class WorkflowAgent {
         });
         // 2. Which model it runs on.
         const modelRegistry = await this.getRegistry(options.modelRegistry);
-        const choice = await this.models.select(options, modelRegistry);
+        const choice = this.models.select(options, modelRegistry);
         // 3. The session it runs in. Persisted sessions are keyed by the runner's
         //    project cwd, not runCwd, so short-lived worktree agents still group
         //    under the project.
@@ -118,7 +113,6 @@ export class WorkflowAgent {
                 cwd: runCwd,
                 cwdIsExplicit: options.cwd !== undefined,
                 agentDir,
-                agentId: this.agentIdFor(options, runCwd),
                 sessionManager,
                 keepSessionManager: Boolean(options.thread),
                 customTools,
@@ -277,18 +271,6 @@ export class WorkflowAgent {
             sessionManager.branch(leafId);
         else
             sessionManager.resetLeaf();
-    }
-    /**
-     * Unique id in the SDK's process-global agent registry. Concurrent sessions
-     * created without one all default to "Main" and replace each other there.
-     * One-shot calls embed a per-process sequence, so retries and concurrent runs
-     * never reuse an id; a named thread keeps one id per instance because it is
-     * one continuing session.
-     */
-    agentIdFor(options, runCwd) {
-        if (options.thread)
-            return `workflow:${runCwd}:${this.agentInstanceId}:${options.thread}`;
-        return `workflow:${runCwd}:${process.pid}:${++workflowAgentSeq}`;
     }
     buildPrompt(prompt, options, structured) {
         const parts = [this.instructions, options.instructions, prompt].filter(Boolean);

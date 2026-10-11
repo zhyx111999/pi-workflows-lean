@@ -1,6 +1,6 @@
 /**
- * Workflow manager: owns every run's lifecycle. A run starts in the background
- * (or inline via runSync), executes through runWorkflow, and can be paused,
+ * Workflow manager: owns every run's lifecycle. A run starts in the background,
+ * executes through runWorkflow, and can be paused,
  * stopped, resumed, re-homed to another session, or deleted. Each execution
  * holds a cross-process lease on its run and writes the run record as it goes.
  */
@@ -13,7 +13,7 @@ import { attachCheckpointResponse, checkpointAlreadyConsumed } from "./manager/c
 import { waitForPausedExecutionSettlement } from "./manager/execution-settlement.js";
 import { LiveRuns } from "./manager/live-runs.js";
 import { newManagedRun } from "./manager/new-run.js";
-import { abortRecord, readRecordPreview, recoverStaleRuns, rehomePendingRecords, rehomeRecord, tryAcquireRunLease, writeAutoResumeAttempts, } from "./manager/record-ops.js";
+import { abortRecord, recoverStaleRuns, rehomePendingRecords, tryAcquireRunLease, writeAutoResumeAttempts, } from "./manager/record-ops.js";
 import { resumedRun } from "./manager/resume-state.js";
 import { executeRun } from "./manager/run-execution.js";
 import { initialRunRecord } from "./manager/run-record.js";
@@ -148,7 +148,7 @@ export class WorkflowManager extends EventEmitter {
             return this.live.isCurrent(managed);
         }
         try {
-            if (!rehomeRecord(this.persistence, managed.runId, sessionId)) {
+            if (!this.persistence.updateMetadata(managed.runId, { sessionId })) {
                 this.live.dropIfDeleted(managed);
                 return false;
             }
@@ -163,7 +163,7 @@ export class WorkflowManager extends EventEmitter {
     // ── Starting runs ──────────────────────────────────────────────────────────
     /** Start a workflow in the background. Returns the run ID at once; `promise` settles with the run. */
     startInBackground(script, args, exec = {}) {
-        const managed = this.registerNewRun(script, args, exec, true);
+        const managed = this.registerNewRun(script, args, exec);
         try {
             this.persistence.save(initialRunRecord(managed));
         }
@@ -179,23 +179,11 @@ export class WorkflowManager extends EventEmitter {
         promise.catch(() => { });
         return { runId: managed.runId, promise };
     }
-    /**
-     * Run a workflow and wait for its result, tracked like a background run so
-     * the navigator and task panel show it. Only tests use this today.
-     */
-    async runSync(script, args, exec = {}) {
-        const managed = this.registerNewRun(script, args, exec, false);
-        // Write at once so listRuns() shows the run before its first agent finishes.
-        this.live.persistRun(managed);
-        return this.execute(managed, script, args, exec);
-    }
     /** Create a run, take its lease, and add it to `runs`. Throws when the lease is taken. */
-    registerNewRun(script, args, exec, background) {
+    registerNewRun(script, args, exec) {
         const managed = newManagedRun(script, args, {
-            background,
             sessionId: this.sessionId,
             sessionFile: this.sessionFile,
-            autoResume: exec.autoResume,
             toolset: exec.toolset,
         });
         const lease = this.persistence.acquireRunLease(managed.runId);
@@ -423,7 +411,7 @@ export class WorkflowManager extends EventEmitter {
     findRun(runId) {
         let run;
         try {
-            run = readRecordPreview(this.persistence, runId);
+            run = this.persistence.loadPreview(runId);
         }
         catch {
             // A damaged record is unreadable, not deleted; list() skips it as well.

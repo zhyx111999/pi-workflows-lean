@@ -141,7 +141,7 @@ export default function extension(pi) {
         // lost). Replacement reasons stage the runtime for the next generation
         // only when the destination is the same project; quit/unknown/cross-project
         // pause in-flight runs onto the journal path.
-        const outgoingSessionId = manager.getSessionId?.();
+        const outgoingSessionId = manager.getSessionId();
         suspendResultDelivery(manager);
         const reason = event?.reason;
         const runtime = {
@@ -162,7 +162,7 @@ export default function extension(pi) {
                 const targetCwd = sessionFileCwd(event?.targetSessionFile);
                 if (targetCwd !== cwd) {
                     pauseStrandedWorkflowRuntime(runtime);
-                    discardWorkflowRuntime(cwd, runtime);
+                    discardWorkflowRuntime(runtime);
                     dropSessionDelivery(outgoingSessionId);
                     return;
                 }
@@ -173,7 +173,7 @@ export default function extension(pi) {
                 const targetCwd = sessionFileCwd(event?.targetSessionFile);
                 if (targetCwd && targetCwd !== cwd) {
                     pauseStrandedWorkflowRuntime(runtime);
-                    discardWorkflowRuntime(cwd, runtime);
+                    discardWorkflowRuntime(runtime);
                     dropSessionDelivery(outgoingSessionId);
                     return;
                 }
@@ -184,13 +184,10 @@ export default function extension(pi) {
             return;
         }
         pauseStrandedWorkflowRuntime(runtime);
-        discardWorkflowRuntime(cwd, runtime);
+        discardWorkflowRuntime(runtime);
         dropSessionDelivery(outgoingSessionId);
     });
-    registerWorkflowCommands(pi, getManager, {
-        getStorage,
-        getCwd,
-    });
+    registerWorkflowCommands(pi, { getManager, getStorage, getCwd });
     registerWorkflowProgressCommands(pi, {
         load: () => loadWorkflowSettings({ cwd: getCwd() }),
         save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, getCwd()),
@@ -240,7 +237,7 @@ export default function extension(pi) {
         // Handlers load by name from the live storage, so a later same-session
         // overwrite picks up the new script; Pi still cannot drop source-only
         // names left over from a prior generation — those handlers notify.
-        registerAllSavedWorkflows(pi, getCwd, getStorage, getManager);
+        registerAllSavedWorkflows(pi, getStorage, getManager);
         if (pausedForMismatch > 0) {
             ctx.ui.notify(`Paused ${pausedForMismatch} active workflow(s) that could not safely continue in this session (extension update or project switch). Resume them from /workflows when ready.`, "warning");
             pausedForMismatch = 0;
@@ -285,11 +282,7 @@ export default function extension(pi) {
                 dropSessionDelivery(previousSessionId);
             }
         }
-        installTaskPanel(pi, manager, ctx.ui, {
-            storage,
-            cwd,
-            loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }),
-        });
+        installTaskPanel(manager, ctx.ui, () => loadWorkflowSettings({ cwd: getCwd() }));
     });
     // Keep mainModel in sync with mid-session /model (and cycle/restore). Without
     // this, workflow subagents that fall through to mainModel keep the frozen

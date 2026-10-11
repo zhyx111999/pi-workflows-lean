@@ -31,31 +31,17 @@ export function clearRunPending(manager, runId, deliveryId, run) {
         const live = run ?? manager.getRun(runId);
         if (live?.pendingDelivery?.deliveryId && live.pendingDelivery.deliveryId !== deliveryId)
             return "stale";
-        const persistence = manager.getPersistence?.();
-        if (persistence) {
-            if (persistence.updateMetadata) {
-                if (!persistence.updateMetadata(runId, { pendingDelivery: undefined }, deliveryId)) {
-                    const remaining = persistence.loadPreview ? persistence.loadPreview(runId) : persistence.load(runId);
-                    if (remaining)
-                        return "stale";
-                }
-            }
-            else {
-                const state = persistence.load(runId);
-                if (state?.pendingDelivery?.deliveryId && state.pendingDelivery.deliveryId !== deliveryId)
-                    return "stale";
-                if (state?.pendingDelivery) {
-                    const { pendingDelivery: _drop, ...rest } = state;
-                    persistence.save(rest);
-                }
-            }
-        }
+        const persistence = manager.getPersistence();
+        // A refused clear on a record that still exists means another delivery owns it.
+        if (!persistence.updateMetadata(runId, { pendingDelivery: undefined }, deliveryId) &&
+            persistence.loadPreview(runId))
+            return "stale";
         if (live)
             live.pendingDelivery = undefined;
         return "cleared";
     }
     catch {
-        warnDelivery(run?.sessionId ?? manager.getSessionId?.(), `Workflow ${runId}: result delivered, but its pending marker could not be cleared.`);
+        warnDelivery(run?.sessionId ?? manager.getSessionId(), `Workflow ${runId}: result delivered, but its pending marker could not be cleared.`);
         return "failed";
     }
 }
@@ -66,18 +52,11 @@ export function clearRunPending(manager, runId, deliveryId, run) {
  */
 export function persistRunPending(manager, run) {
     try {
-        // Prefer merging into an existing on-disk record so we don't clobber the
+        // Merge into an existing on-disk record so we don't clobber the
         // manager's richer write that follows the complete/error emit.
-        const persistence = manager.getPersistence?.();
-        if (!persistence)
+        const persistence = manager.getPersistence();
+        if (persistence.updateMetadata(run.runId, { pendingDelivery: run.pendingDelivery, sessionId: run.sessionId }))
             return "saved";
-        if (persistence.updateMetadata?.(run.runId, { pendingDelivery: run.pendingDelivery, sessionId: run.sessionId }))
-            return "saved";
-        const existing = persistence.load(run.runId);
-        if (existing) {
-            persistence.save({ ...existing, pendingDelivery: run.pendingDelivery, sessionId: run.sessionId });
-            return "saved";
-        }
         if (run.pendingDelivery) {
             persistence.save({
                 runId: run.runId,
@@ -106,18 +85,9 @@ export function persistRunPending(manager, run) {
     }
 }
 /** Give a disk-only pending run its delivery id. It never creates a record. */
-export function persistDiskMarker(manager, runId, marker, state) {
+export function persistDiskMarker(manager, runId, marker) {
     try {
-        const persistence = manager.getPersistence?.();
-        if (!persistence)
-            return "saved";
-        if (persistence.updateMetadata)
-            return persistence.updateMetadata(runId, { pendingDelivery: marker }) ? "saved" : "deleted";
-        const current = state ?? persistence.load(runId);
-        if (!current)
-            return "deleted";
-        persistence.save({ ...current, pendingDelivery: marker });
-        return "saved";
+        return manager.getPersistence().updateMetadata(runId, { pendingDelivery: marker }) ? "saved" : "deleted";
     }
     catch (error) {
         return error instanceof RunRecordDeletedError ? "deleted" : "failed";

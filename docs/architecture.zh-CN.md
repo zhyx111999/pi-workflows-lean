@@ -60,7 +60,6 @@ WorkflowAgent.run()                          agent.ts
 | `pi-extension.ts` | 装配一切：注册两个工具和斜杠命令，安装隐藏提示钩子、结果投递、额度暂停后的自动恢复；`session_start` 时绑定会话、处理跨项目切换 |
 | `extension-reload.ts` | `/reload`、`/new`、resume、fork 时，把正在运行的管理器交给下一代扩展，后台运行不中断 |
 | `workflow-editor.ts` / `parent-prompt.ts` | 隐藏的主模型提示词、`/workflows run` 的指令文字、`/workflows-progress` 命令 |
-| `index.ts` | 作为库使用时的唯一公开出口 |
 
 ### 工具层（给主模型）
 
@@ -89,7 +88,7 @@ WorkflowAgent.run()                          agent.ts
 | `resume-state.ts` | 从磁盘记录重建运行，以便恢复 |
 | `task-list-reuse.ts` | 修改后的任务列表：把没变的任务映射到原来的调用 |
 | `checkpoint-response.ts` | 暂停点：附加回应，恢复时校验 |
-| `abort-control.ts` / `execution-settlement.ts` | 记录中止的发起者（用户还是宿主），并有界地等待执行收尾 |
+| `abort-control.ts` / `execution-settlement.ts` | 记录用户的暂停或停止造成的中止，并有界地等待执行收尾 |
 | `terminal-retention.ts` | 控制内存里保留多少个已结束的运行 |
 
 ### 运行时层：执行一个脚本（`workflow.ts` + `runtime/`）
@@ -137,7 +136,7 @@ WorkflowAgent.run()                          agent.ts
 | `run-record-store.ts` | 存储格式：只追加的变更日志加一个原子提交的小索引头，详见 `docs/run-storage.md` |
 | `fs-persistence.ts` | 原子写入、备份等文件系统基础操作 |
 | `workflow-paths.ts` | 目录布局：`~/.pi/workflows/projects/<项目键>/`；Windows 上同一目录的不同写法共用一个项目键 |
-| `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`） |
+| `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`）：项目级和用户级两层，项目级优先 |
 | `shared-store.ts` / `logger.ts` | 运行内的键值存储；运行日志 `<runId>.log` |
 
 ### 投递与界面层
@@ -151,8 +150,8 @@ WorkflowAgent.run()                          agent.ts
 | `task-panel/result-text.ts` | 完成、失败、暂停、等待暂停点时的通知文字 |
 | `task-panel/panel-*.ts` | 输入框下方的实时进度面板 |
 | `workflow-ui.ts` + `navigator/` | `/workflows` 导航器：运行列表 → 阶段 → 子代理 → 详情 → 全文分页 |
-| `workflow-commands.ts` / `saved-commands.ts` / `builtin-commands.ts` | 人工使用的斜杠命令 |
-| `display.ts` / `agent-history.ts` | 快照与子代理历史的展示格式 |
+| `workflow-commands.ts` / `saved-commands.ts` / `builtin-commands.ts` | 人工使用的斜杠命令；处理函数通过 `CommandDeps`（`command-registry.ts`）的 getter 读取当前的管理器、存储和目录 |
+| `display.ts` / `agent-history.ts` | 快照与子代理历史的展示格式；数字格式（`fmtFull`、`fmtCompact`）和运行状态图标都只有这一份 |
 
 ### 配置层
 
@@ -160,7 +159,7 @@ WorkflowAgent.run()                          agent.ts
 |---|---|
 | `workflow-settings.ts` | `settings.json`：全局 → 仓库本地 → 项目覆盖，后者优先；运行限制只从这里读 |
 | `model-tier-config.ts` / `model-spec.ts` / `model-routing.ts` | 模型档位（`model-tiers.json`）、模型写法解析、按阶段路由 |
-| `agent-registry.ts` | 角色定义（agentType）目录 |
+| `agent-registry.ts` | 角色定义（agentType）：项目的 `.pi/agents` 优先于 `~/.pi/agent/agents` |
 | `usage-limit-scheduler.ts` | 额度暂停后的自动恢复：退避、抖动、上限 |
 | `worktree.ts` | 每个子代理独立的 git worktree：短路径；超时时结束整棵进程树 |
 
@@ -194,6 +193,8 @@ WorkflowAgent.run()                          agent.ts
 **确定性脚本。** 脚本必须可重放：禁止 `Date.now()`、`Math.random()`，需要的外部值通过 `args` 传入。否则恢复时，同一个调用会算出不同的身份哈希，无法复用。
 
 **能力契约是唯一事实来源。** 运行时注入哪些全局、`agent()` 接受哪些选项、文档里列出哪些能力，都来自同一份契约，并有测试保证三者一致。
+
+**只服务 Pi，不做兼容层。** 插件只由 Pi 通过 `extensions/workflow.ts` 加载，没有给其他程序用的库出口；只支持当前的 Pi，没有为其他宿主或旧版本保留的分支；运行记录只读当前的“索引头 + 日志”格式，也只读 `~/.pi/workflows` 下的目录。唯一保留的旧数据处理是 `manager/resume-state.ts` 过滤日志里带其他 `runId` 标签的条目，因为现有记录里确实有这类条目。
 
 **`dist/` 随仓库提交。** Pi 从 git 安装插件时只执行 `npm install --omit=dev`，不安装 TypeScript，也不编译，所以必须提交编译产物。`npm run check:dist` 保证提交的产物与源码一致。
 

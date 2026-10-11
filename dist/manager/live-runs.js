@@ -1,7 +1,6 @@
 // Keeps the manager's in-memory runs in step with their records, ignoring superseded executions.
 import { RunRecordDeletedError } from "../errors.js";
 import { PersistThrottle } from "./persist-throttle.js";
-import { readRecordPreview } from "./record-ops.js";
 import { runRecord, settleAgentsForTerminalRun } from "./run-record.js";
 import { TerminalRunRetention } from "./terminal-retention.js";
 /**
@@ -135,7 +134,7 @@ export class LiveRuns {
         if (!cached || cached.lease)
             return;
         try {
-            if (readRecordPreview(this.persistence, cached.runId))
+            if (this.persistence.loadPreview(cached.runId))
                 return;
         }
         catch {

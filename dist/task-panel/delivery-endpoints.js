@@ -18,5 +18,5 @@ export function warnDelivery(sessionId, message) {
 export function resolveDeliverySessionId(run, manager) {
     // The originating run wins; the manager binding covers runs that predate a
     // per-run sessionId.
-    return run.sessionId ?? manager.getSessionId?.();
+    return run.sessionId ?? manager.getSessionId();
 }

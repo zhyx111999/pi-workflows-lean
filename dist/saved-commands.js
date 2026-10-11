@@ -2,10 +2,8 @@
  * Saved workflows as `/<name>` slash commands. Each saved workflow becomes a
  * command that runs its script, passing parsed arguments through as `args`.
  */
-import { createCodingTools } from "@earendil-works/pi-coding-agent";
 import { claimCommand, commandOwner, isCommandRegistered } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
-import { runWorkflow } from "./workflow.js";
 function savedCommandOwnedByExtension(pi, name) {
     const owner = commandOwner(pi, name);
     return owner === "builtin" || owner === "saved";
@@ -18,12 +16,6 @@ export function savedWorkflowCommandAvailability(pi, name) {
     if (!isCommandRegistered(pi, name) || savedCommandOwnedByExtension(pi, name))
         return { ok: true };
     return { ok: false, message: `/${name} is already provided by Pi or another extension.` };
-}
-function reportText(result) {
-    const r = result.result;
-    if (r && typeof r.report === "string" && r.report.trim())
-        return r.report;
-    return JSON.stringify(result.result, null, 2);
 }
 export function parseCommandArgs(raw, parameters) {
     const out = {};
@@ -43,54 +35,32 @@ export function parseCommandArgs(raw, parameters) {
     }
     return out;
 }
-/** Register one saved workflow as a dynamically loaded slash command. */
-export function registerSavedWorkflow(pi, cwd, wf, manager, exists, loadWorkflow) {
+/**
+ * Register `/<name>` for a saved workflow. `load` re-reads the workflow at each
+ * invocation: Pi cannot unregister a command, so after a rename or delete the
+ * lingering command must find nothing rather than run a frozen script.
+ */
+export function registerSavedWorkflow(pi, wf, getManager, load) {
     const availability = savedWorkflowCommandAvailability(pi, wf.name);
     if (!availability.ok)
         return availability;
     if (isCommandRegistered(pi, wf.name))
         return { ok: true };
-    const getCwd = typeof cwd === "function" ? cwd : () => cwd;
-    const getManager = typeof manager === "function" ? manager : () => manager;
     try {
         pi.registerCommand(wf.name, {
             description: wf.description || `Saved workflow: ${wf.name}`,
             async handler(args, ctx) {
-                // The loader is deliberately evaluated at invocation. After rename/delete
-                // the old unavoidable Pi registration cannot execute a frozen script.
-                const liveWorkflow = loadWorkflow ? loadWorkflow() : exists && !exists() ? null : wf;
-                if (!liveWorkflow) {
+                const live = load();
+                if (!live) {
                     ctx.ui.notify(`/${wf.name} is not available in this project — reload the session to drop the stale command.`, "warning");
                     return;
                 }
                 try {
-                    const liveManager = getManager();
-                    if (liveManager) {
-                        const { runId } = liveManager.startInBackground(liveWorkflow.script, parseCommandArgs(args, liveWorkflow.parameters));
-                        ctx.ui.notify(backgroundStartNotice(liveWorkflow.name, runId, ctx.mode, "result"), "info");
-                        return;
-                    }
-                    const liveCwd = getCwd();
-                    ctx.ui.notify(`Starting /${liveWorkflow.name}…`, "info");
-                    const result = await runWorkflow(liveWorkflow.script, {
-                        cwd: liveCwd,
-                        args: parseCommandArgs(args, liveWorkflow.parameters),
-                        tools: createCodingTools(liveCwd),
-                        onPhase: (title) => ctx.ui.setStatus(`wf:${liveWorkflow.name}`, `${liveWorkflow.name}: ${title}`),
-                        // Manager-less fallback (production always goes through getManager):
-                        // legacy routing only — no mainModel/inheritMainModel plumbing, so
-                        // untagged agents follow the implicit medium tier / settings default.
-                    });
-                    ctx.ui.setStatus(`wf:${liveWorkflow.name}`, undefined);
-                    await pi.sendMessage({
-                        customType: `workflow:${liveWorkflow.name}`,
-                        content: reportText(result),
-                        display: true,
-                    });
+                    const { runId } = getManager().startInBackground(live.script, parseCommandArgs(args, live.parameters));
+                    ctx.ui.notify(backgroundStartNotice(live.name, runId, ctx.mode, "result"), "info");
                 }
                 catch (error) {
-                    ctx.ui.setStatus(`wf:${liveWorkflow.name}`, undefined);
-                    ctx.ui.notify(`/${liveWorkflow.name} failed: ${error instanceof Error ? error.message : error}`, "error");
+                    ctx.ui.notify(`/${live.name} failed: ${error instanceof Error ? error.message : error}`, "error");
                 }
             },
         });
@@ -101,11 +71,8 @@ export function registerSavedWorkflow(pi, cwd, wf, manager, exists, loadWorkflow
         return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
 }
-export function registerAllSavedWorkflows(pi, cwd, storage, manager) {
-    const getStorage = typeof storage === "function" ? storage : () => storage;
-    const getCwd = typeof cwd === "function" ? cwd : () => cwd;
+export function registerAllSavedWorkflows(pi, getStorage, getManager) {
     for (const workflow of getStorage().list()) {
-        const name = workflow.name;
-        registerSavedWorkflow(pi, getCwd, workflow, manager, () => getStorage().load(name) != null, () => getStorage().load(name));
+        registerSavedWorkflow(pi, workflow, getManager, () => getStorage().load(workflow.name));
     }
 }

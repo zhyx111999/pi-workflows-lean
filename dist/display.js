@@ -76,6 +76,33 @@ export function fmtCost(cost) {
 // runtime default, matching toLocaleString() semantics.
 const FULL_NUMBER_FORMAT = new Intl.NumberFormat();
 export const fmtFull = (n) => FULL_NUMBER_FORMAT.format(n);
+/** Compact number style for panels and narrow cells: 842, 35k, 35.7k, 1.3M (a trailing .0 is dropped). */
+export function fmtCompact(n) {
+    if (!Number.isFinite(n) || n <= 0)
+        return "0";
+    if (n < 1000)
+        return String(Math.round(n));
+    if (n < 1_000_000) {
+        const k = n / 1000;
+        return `${k >= 100 ? Math.round(k) : trimZero(k.toFixed(1))}k`;
+    }
+    return `${trimZero((n / 1_000_000).toFixed(1))}M`;
+}
+function trimZero(s) {
+    return s.endsWith(".0") ? s.slice(0, -2) : s;
+}
+/** Icon of a run's lifecycle status. Agent rows use {@link statusIcon}. */
+const RUN_STATUS_ICON = {
+    pending: "·",
+    running: "◆",
+    paused: "⏸",
+    completed: "✓",
+    failed: "✗",
+    aborted: "⊘",
+};
+export function runStatusIcon(status) {
+    return RUN_STATUS_ICON[status] ?? "?";
+}
 export function createWorkflowSnapshot(meta) {
     return {
         name: meta.name,

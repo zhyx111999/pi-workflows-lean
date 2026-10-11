@@ -1,10 +1,10 @@
 # Run storage protocol
 
-## Files and compatibility
+## Files
 
 New writes use a versioned `<runId>.json` head and a `<runId>.json.events.jsonl` log. The head stores routing/status fields, compact agent counts/usage, and a committed byte boundary, sequence, generation and SHA-256 chain tip. Scripts, arguments, journals, logs, agent rows and results live in log deltas, not the list index. `<runId>.json.bak` mirrors the last successful head write. Unknown format versions fail closed.
 
-The reader also accepts existing full-JSON records in both external and legacy project-local run directories. Listing legacy history must parse each old record once to derive its summary, but does not retain the full parse or write a migration. A subsequent write migrates that record. New records are not readable by older releases; back up run storage before upgrading if downgrade is required. Use `RunPersistence.load()` to obtain a reconstructed full record; do not treat the new head JSON as a full record.
+Records live only in `~/.pi/workflows/projects/<project>/runs/`, and only this format is read: a record in any other format is refused rather than guessed at. Use `RunPersistence.load()` to obtain a reconstructed full record; do not treat the head JSON as a full record.
 
 Conversation delivery exports `{runId, result}` to an immutable, content-hashed `.json.result-<hash>` artifact. It is a presentation artifact, not an input to resume. This preserves a directly readable full-result link without rewriting the full result on every delivery-marker update.
 

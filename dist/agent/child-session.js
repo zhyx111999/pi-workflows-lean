@@ -3,10 +3,6 @@ import { pinChildCacheRetention } from "../child-cache-retention.js";
 import { runtimeOf } from "./model-registry.js";
 export async function openChildSession(spec) {
     const { injected, modelRegistry } = spec;
-    // pi 0.80.8+ takes the registry's backing runtime so subagents share the host
-    // catalog and auth; omp's registry has no runtime and is passed itself. Never
-    // spread `modelRuntime: undefined`: it would shadow the SDK's default runtime.
-    const modelRuntime = runtimeOf(modelRegistry);
     const { session } = await createAgentSession({
         cwd: spec.cwd,
         agentDir: spec.agentDir,
@@ -18,13 +14,10 @@ export async function openChildSession(spec) {
         customTools: spec.customTools,
         // An injected resourceLoader wins and skips the shared build entirely.
         resourceLoader: injected.resourceLoader ?? (await spec.sharedResourceLoader()),
-        // `modelRegistry` is omp-only; the spread keeps it out of the upstream option type check.
-        ...(modelRuntime ? { modelRuntime } : { modelRegistry }),
+        // The registry's backing runtime, so subagents share the host catalog and auth.
+        modelRuntime: runtimeOf(modelRegistry),
         ...injected,
         ...(spec.cwdIsExplicit ? { cwd: spec.cwd } : {}),
-        // The computed id must win: an embedder's stable agentId would collide
-        // across runs in the process-global registry. `agentId` is omp-only, hence the spread.
-        ...{ agentId: spec.agentId },
         // The injected spread above would otherwise replace a thread's retained
         // manager, breaking turn continuity and failed-turn rollback.
         ...(spec.keepSessionManager ? { sessionManager: spec.sessionManager } : {}),

@@ -567,7 +567,7 @@ export function keyToAction(keyId, kind, itemKind) {
  * the user closes it (esc at the top level, or `q`).
  */
 export function openWorkflowNavigator(pi, manager, ui, opts = {}) {
-    const model = new NavigatorModel(manager, () => opts.getStorage?.() ?? opts.storage);
+    const model = new NavigatorModel(manager, () => opts.getStorage?.());
     const state = new NavigatorState();
     const session = { pi, manager, ui, options: opts, model, state };
     return ui.custom((tui, theme, _keybindings, done) => {

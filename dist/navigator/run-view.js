@@ -1,8 +1,8 @@
 /** The run view: a two-line run header over the Phases | agents panes, collapsing to one pane on narrow terminals. */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { fmtTokenSegment } from "../display.js";
+import { fmtCompact, fmtTokenSegment } from "../display.js";
 import { BX, renderTwoPaneFrame, topTitleSegment } from "./box-frame.js";
-import { compactTokens, ELLIPSIS, pluralize } from "./format.js";
+import { ELLIPSIS, pluralize } from "./format.js";
 import { computeLeftWidth, computeModelColStart, LW_MIN, leftPhaseRow, RW_MIN, rightAgentRow } from "./pane-rows.js";
 import { scrollWindow } from "./viewport.js";
 /** Lines for the "phases" and "agents" views; the cursor sits in the left or right pane respectively. */
@@ -43,7 +43,7 @@ function runHeader(model, runId, phases, width, theme) {
     const nameText = truncateToWidth(name, width, ELLIPSIS, false);
     const line0 = theme.fg("accent", theme.bold(nameText));
     // Line 1 — left status, right summary.
-    const headerSegment = fmtTokenSegment({ fresh, cacheRead, estimated }, compactTokens);
+    const headerSegment = fmtTokenSegment({ fresh, cacheRead, estimated }, fmtCompact);
     const rightRaw = `${done}/${total} ${pluralize("agent", total)}${headerSegment ? ` · ${headerSegment}` : ""}`;
     const rightW = visibleWidth(rightRaw);
     const gap = 2;

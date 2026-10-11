@@ -1,30 +1,23 @@
 // Runs one execution of a managed run through the workflow runtime and records how it ended.
 import { WorkflowCheckpointSuspensionError } from "../errors.js";
-import { INTERRUPTED_AGENT_CAUSE, TERMINAL_RUN_STATUSES } from "../run-persistence.js";
+import { INTERRUPTED_AGENT_CAUSE } from "../run-agent-settlement.js";
+import { TERMINAL_RUN_STATUSES } from "../run-persistence.js";
 import { isTaskListScript } from "../subagent-tasks.js";
 import { runWorkflow, } from "../workflow.js";
-import { ExternalAbortLink } from "./abort-control.js";
 import { runEventHooks } from "./run-events.js";
 import { classifyFailure, emptyFleetWarning } from "./run-outcome.js";
 import { settleInterruptedAgents } from "./run-record.js";
 /** Execute `script` for `managed` and record the outcome on the run. Rejects with the run's error. */
 export async function executeRun(live, managed, script, args, exec, settings) {
-    const { onProgress } = exec;
     // Explicit tools win; otherwise re-resolve the run's toolset name (how a
     // resumed /deep-research keeps its web tools); otherwise the default tools.
     const resolvedTools = exec.tools ?? (managed.toolset ? settings.toolsets?.[managed.toolset]?.() : undefined);
     const events = runEventHooks(managed, {
         emit: (event, payload) => live.emit(managed, event, payload),
-        progress: () => {
-            if (live.isCurrent(managed))
-                onProgress?.(managed.snapshot);
-        },
         persist: (required) => live.persistRun(managed, required),
         schedulePersist: () => live.schedulePersist(managed),
     });
-    const externalAbort = exec.externalSignal ? new ExternalAbortLink(exec.externalSignal, managed) : undefined;
     try {
-        externalAbort?.attach();
         const result = await runWorkflow(script, {
             ...settings.runtime,
             args,
@@ -46,7 +39,6 @@ export async function executeRun(live, managed, script, args, exec, settings) {
         throw settleFailure(live, managed, error);
     }
     finally {
-        externalAbort?.detach();
         live.deleteLeftovers(managed);
     }
 }
@@ -98,7 +90,7 @@ function settleFailure(live, managed, error) {
         managed.status = outcome.status;
     if (outcome.usageLimitPaused)
         managed.usageLimitPause = outcome.error;
-    managed.error = outcome.terminalError;
+    managed.error = outcome.error;
     if (outcome.usageLimitPaused) {
         live.emit(managed, "paused", {
             runId: managed.runId,
@@ -110,7 +102,7 @@ function settleFailure(live, managed, error) {
     else if (!outcome.announced && live.hasListeners("error")) {
         // EventEmitter throws on an unheard "error", which would skip the final
         // write, the lease release, and the rethrow.
-        live.emit(managed, "error", { runId: managed.runId, error: outcome.terminalError });
+        live.emit(managed, "error", { runId: managed.runId, error: outcome.error });
     }
     // The drain has finished, so agents still marked active no longer run.
     if (managed.status === "paused") {

@@ -1,9 +1,6 @@
 import packageJson from "../package.json" with { type: "json" };
 import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 import { WorkflowCapabilityContractError } from "./errors.js";
-/** Re-exported so contract consumers need only this module. */
-export { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
-export { WorkflowCapabilityContractError } from "./errors.js";
 const DETAILS_PATH = "skills/workflow-authoring/references/capability-details.md";
 const NONE = [];
 const option = (name, type, optional, defaultValue = null, constraints = NONE, dynamicReference = null) => ({ name, type, optional, default: defaultValue, constraints, dynamicReference });

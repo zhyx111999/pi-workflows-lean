@@ -28,11 +28,6 @@ export var WorkflowErrorCode;
      * so retrying the same spec would fail identically every time.
      */
     WorkflowErrorCode["MODEL_NOT_FOUND"] = "MODEL_NOT_FOUND";
-    /**
-     * A host preSpawnModel policy rejected this agent before createAgentSession.
-     * Distinct from MODEL_NOT_FOUND: the model may be available; the policy refused spawn.
-     */
-    WorkflowErrorCode["MODEL_SPAWN_REJECTED"] = "MODEL_SPAWN_REJECTED";
     /** Agent execution failed. */
     WorkflowErrorCode["AGENT_EXECUTION_ERROR"] = "AGENT_EXECUTION_ERROR";
     /** Run state persistence failed. */
@@ -89,6 +84,10 @@ export class WorkflowCapabilityContractError extends Error {
     }
 }
 /** Narrow an unknown failure to WorkflowError. */
+/** The error of a workflow stopped by an abort. Recoverable: its journal can resume. */
+export function workflowAbortedError() {
+    return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+}
 export function isWorkflowError(error) {
     return error instanceof WorkflowError;
 }

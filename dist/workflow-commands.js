@@ -2,24 +2,16 @@
  * `/workflows` slash command: list, inspect, and control background workflow runs.
  * Shares the extension's single WorkflowManager so background runs are reachable.
  */
-import { fmtFull, fmtTokenSegment, recomputeWorkflowSnapshot, renderWorkflowText, tokenFigures, } from "./display.js";
+import { fmtFull, fmtTokenSegment, recomputeWorkflowSnapshot, renderWorkflowText, runStatusIcon, tokenFigures, } from "./display.js";
 import { runSummary } from "./run-record-store.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import { SUBAGENTS_TOOL_NAME } from "./subagents-tool.js";
 import { buildForcedWorkflowPrompt } from "./workflow-editor.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
-const STATUS_ICON = {
-    pending: "·",
-    running: "◆",
-    paused: "⏸",
-    completed: "✓",
-    failed: "✗",
-    aborted: "⊘",
-};
 const USAGE = "Usage: /workflows [list] | run <prompt> | status <id> | watch <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
 const RUN_USAGE = "Usage: /workflows run <prompt> — force a dynamic workflow from the prompt";
 function summarizeRun(run) {
-    const icon = STATUS_ICON[run.status] ?? "?";
+    const icon = runStatusIcon(run.status);
     const { done, total } = runSummary(run);
     const segment = fmtTokenSegment(tokenFigures(run.tokenUsage), fmtFull);
     const tokens = segment ? ` · ${segment}` : "";
@@ -89,7 +81,7 @@ function watchRun(manager, pi, ctx, id) {
     return true;
 }
 function renderPersistedStatus(run) {
-    const lines = [`${STATUS_ICON[run.status] ?? "?"} ${run.workflowName} (${run.runId}) — ${run.status}`];
+    const lines = [`${runStatusIcon(run.status)} ${run.workflowName} (${run.runId}) — ${run.status}`];
     if (run.currentPhase)
         lines.push(`  phase: ${run.currentPhase}`);
     for (const agent of run.agents) {
@@ -104,13 +96,7 @@ function renderPersistedStatus(run) {
     return lines.join("\n");
 }
 /** Register the `/workflows` command against the shared manager. Idempotent. */
-export function registerWorkflowCommands(pi, manager, opts = {}) {
-    // Prefer opts.getManager when provided; otherwise accept a getter (or value)
-    // as the second argument. Both forms are supported so embedders can pass
-    // either a live accessor bag or a bare manager.
-    const getManager = opts.getManager ?? (typeof manager === "function" ? manager : () => manager);
-    const getCwd = () => opts.getCwd?.() ?? opts.cwd ?? process.cwd();
-    const getStorage = () => opts.getStorage?.() ?? opts.storage;
+export function registerWorkflowCommands(pi, { getManager, getStorage }) {
     try {
         const taken = (pi.getCommands?.() ?? []).some((c) => c.name === "workflows");
         if (taken)
@@ -168,13 +154,7 @@ export function registerWorkflowCommands(pi, manager, opts = {}) {
                     // an explicit `list`, gets the plain-text run list.
                     const wantsNavigator = sub !== "list" || parts.length === 0;
                     if (wantsNavigator && ctx.mode === "tui") {
-                        await openWorkflowNavigator(pi, manager, ctx.ui, {
-                            storage: getStorage(),
-                            cwd: getCwd(),
-                            getStorage,
-                            getCwd,
-                            getManager,
-                        });
+                        await openWorkflowNavigator(pi, manager, ctx.ui, { getStorage, getManager });
                         return;
                     }
                     const runs = manager.listRuns();
@@ -242,7 +222,7 @@ export function registerWorkflowCommands(pi, manager, opts = {}) {
                     // but be leased by a live process
                     // (resumed/running in another session) — saying "No run" would lie
                     // while that process burns tokens.
-                    const known = manager.getRun(id) ?? manager.getPersistence?.().load(id);
+                    const known = manager.getRun(id) ?? manager.getPersistence().loadPreview(id);
                     ctx.ui.notify(known ? `Cannot remove ${id}: it is active in another live session` : `No run ${id}`, known ? "warning" : "info");
                     return;
                 }
@@ -251,8 +231,6 @@ export function registerWorkflowCommands(pi, manager, opts = {}) {
                     if (!name)
                         return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
                     const storage = getStorage();
-                    if (!storage)
-                        return ctx.ui.notify("Saving is not available (no storage configured)", "error");
                     const runs = manager.listRuns();
                     const runIdArg = parts[2];
                     // Pick the named run, else the most recent run that still has its script.
@@ -274,11 +252,10 @@ export function registerWorkflowCommands(pi, manager, opts = {}) {
                         ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
                         return;
                     }
-                    const registration = registerSavedWorkflow(pi, getCwd, saved, getManager, 
                     // Always re-resolve storage at invocation — do not close over the
                     // instance from this save call, or a later project switch leaves
                     // the loader pointed at the source project's store.
-                    () => getStorage()?.load(name) != null, () => getStorage()?.load(name) ?? null);
+                    const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage().load(name));
                     // Surface a refused registration: the file persisted,
                     // but a host/extension-owned name never becomes a slash command —
                     // reporting plain success would silently mislead.
