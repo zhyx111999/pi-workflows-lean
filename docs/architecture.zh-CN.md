@@ -104,7 +104,7 @@ WorkflowAgent.run()                          agent.ts
 | `run-context.ts` | 一次运行的可变状态，以及各全局函数共享的服务 |
 | `run-limits.ts` | 把设置变成运行限制：并发闸门、最大子代理数、超时、重试 |
 | `script-vm.ts` | 建立 vm 上下文，只暴露声明过的全局 |
-| `agent-options.ts` | 校验 `agent()` 选项；可用选项以能力契约的 `AGENT_OPTIONS` 为准 |
+| `agent-options.ts` | 按能力契约 `AGENT_OPTIONS` 声明的取值规则校验 `agent()` 的 prompt 与每个选项（名称和值），并解析 isolation |
 | `agent-call.ts` | `agent()`：占用槽位，先尝试从日志复用，否则交给执行 |
 | `agent-execution.ts` / `agent-attempt.ts` | 真正运行：worktree 隔离、用量统计、重试、写日志、超时 |
 | `call-identity.ts` | 调用的身份哈希：决定日志里的结果能不能复用；`agentCallId` |
@@ -221,7 +221,7 @@ WorkflowAgent.run()                          agent.ts
 
 | 想做的事 | 要改的地方 |
 |---|---|
-| 给 `agent()` 加一个选项 | 能力契约的 `AGENT_OPTIONS` → `runtime/agent-options.ts`（如需校验）→ `runtime/agent-execution.ts` 或 `agent.ts` 使用它 → 如果会影响结果，加进 `runtime/call-identity.ts` → `npm run docs:generate` |
+| 给 `agent()` 加一个选项 | 能力契约的 `AGENT_OPTIONS`（声明取值规则，校验自动生效；新规则种类才需改 `runtime/agent-options.ts`）→ `runtime/agent-execution.ts` 或 `agent.ts` 使用它 → 如果会影响结果，加进 `runtime/call-identity.ts` → `npm run docs:generate` |
 | 加一个设置项 | `workflow-settings.ts`（解析与默认值）→ 用到它的地方 → 技能 `skills/subagents-setup/SKILL.md` |
 | 改工具说明 | `subagents-tool.ts` 或 `subagents-control-tool.ts` → `npm run context:generate` → 核对 `tests/workflow-prompt-budget.test.ts` 的体积预算 |
 | 改投递通知文字 | `task-panel/result-text.ts` |

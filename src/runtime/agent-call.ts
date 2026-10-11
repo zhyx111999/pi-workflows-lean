@@ -3,10 +3,9 @@
 import { agentDefinitionKey, resolveAgentType } from "../agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { resolveModelForPhase } from "../model-routing.js";
-import { validateThinkingLevel } from "../model-spec.js";
 import type { AgentOptions, JournalEntry } from "../workflow.js";
 import { type AgentCall, isEmptyTextAgentResult, runLiveAgent } from "./agent-execution.js";
-import { normalizeThread, resolveAgentCwd, validateAgentOptions } from "./agent-options.js";
+import { parseAgentCall, resolveIsolation } from "./agent-options.js";
 import { agentCallId, hashAgentCall } from "./call-identity.js";
 import { currentFanoutBatch } from "./fanout.js";
 import type { RunContext } from "./run-context.js";
@@ -16,9 +15,9 @@ export function createAgent(ctx: RunContext) {
   const { state } = ctx;
 
   /** Validate synchronously (a failure throws), enforce thread exclusivity, then start the call. */
-  const startAgentCall = (prompt: string, agentOptions: unknown): Promise<unknown> => {
-    validateAgentOptions(agentOptions);
-    const thread = normalizeThread(agentOptions.thread);
+  const startAgentCall = (rawPrompt: unknown, rawOptions: unknown): Promise<unknown> => {
+    const { prompt, options: agentOptions } = parseAgentCall(rawPrompt, rawOptions);
+    const { thread } = agentOptions;
     if (thread === undefined) return runAgentCall(prompt, agentOptions);
     if (state.activeThreads.has(thread)) {
       throw new WorkflowError(
@@ -28,21 +27,18 @@ export function createAgent(ctx: RunContext) {
       );
     }
     state.activeThreads.add(thread);
-    return runAgentCall(prompt, thread === agentOptions.thread ? agentOptions : { ...agentOptions, thread }).finally(
-      () => state.activeThreads.delete(thread),
-    );
+    return runAgentCall(prompt, agentOptions).finally(() => state.activeThreads.delete(thread));
   };
 
   const runAgentCall = async (prompt: string, agentOptions: AgentOptions): Promise<unknown> => {
     ctx.throwIfAborted();
-    validateThinkingLevel(agentOptions.thinking);
 
     // Invalid local configuration must fail before a slot is reserved, so it
     // cannot change the run's capacity or scheduling state.
     const definition = resolveAgentType(agentOptions.agentType, ctx.agentRegistry);
-    // isolation: false opts out; otherwise the call's isolation beats the definition's.
-    const isolation = agentOptions.isolation === false ? undefined : (agentOptions.isolation ?? definition?.isolation);
-    const cwd = resolveAgentCwd(agentOptions.cwd);
+    const isolation = resolveIsolation(agentOptions.isolation, definition?.isolation);
+    // Already resolved to its real path by parseAgentCall.
+    const cwd = agentOptions.cwd;
     if (cwd && isolation === "worktree") {
       throw new WorkflowError(
         "agent cwd cannot be combined with worktree isolation",
