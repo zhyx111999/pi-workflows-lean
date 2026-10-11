@@ -17,7 +17,7 @@ import test from "node:test";
 import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
 import type { AgentUsage } from "../src/agent-usage.js";
-import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { CallSequence } from "../src/runtime/call-position.js";
 import { createParallel, createPipeline } from "../src/runtime/fanout.js";
 import type { RunContext } from "../src/runtime/run-context.js";
@@ -522,6 +522,78 @@ return await agent('stuck', { label: 'stuck' })`,
   assert.equal(result.result, "retry-result");
   assert.equal(calls, 2);
   assert.equal(maxActive, 1);
+});
+
+test("a timed-out runner that ignores its abort is abandoned after the grace", { timeout: 5_000 }, async () => {
+  type LooseTool = { name: string; execute: (...args: unknown[]) => Promise<{ details?: { found?: boolean } }> };
+  let stuck: AgentRunOptions | undefined;
+  let stuckCalls = 0;
+  const events: string[] = [];
+  const ended: Array<{ label: string; result: unknown; errorCode?: WorkflowErrorCode }> = [];
+  const logs: string[] = [];
+  let lateWriteVisible: boolean | undefined;
+  const startedAt = Date.now();
+  const result = await runWorkflow<{ stuck: unknown; next: unknown }>(
+    `export const meta = { name: 'abandon_timeout', description: 'signal-ignoring runner' }
+const stuck = await agent('stuck', { label: 'stuck' })
+const next = await agent('next', { label: 'next' })
+return { stuck, next }`,
+    {
+      concurrency: 1,
+      agentTimeoutMs: 30,
+      agentRetries: 1,
+      agentRetryBackoffMs: () => 0,
+      drainAbortGraceMs: 100,
+      persistLogs: false,
+      onLog: (message) => logs.push(message),
+      onAgentStart: (event) => events.push(`start:${event.label}`),
+      onAgentHistory: (event) => events.push(`history:${event.label}`),
+      onAgentModel: (event) => events.push(`model:${event.label}`),
+      onAgentSession: (event) => events.push(`session:${event.callId}`),
+      registerAgentSteer: (event) => {
+        events.push(`steer:${event.label}`);
+        return () => events.push(`unsteer:${event.label}`);
+      },
+      onAgentEnd: (event) => ended.push({ label: event.label, result: event.result, errorCode: event.errorCode }),
+      agent: {
+        async run(prompt, options) {
+          if (prompt === "stuck") {
+            stuckCalls++;
+            stuck = options;
+            // Registered while live, never withdrawn by this hung runner.
+            options?.registerSteer?.(async () => {});
+            return new Promise(() => {});
+          }
+          // The abandoned runner is still alive; nothing it reports may reach the run.
+          stuck?.onHistory?.([]);
+          stuck?.onModelResolved?.("late/model");
+          stuck?.onSessionCreated?.({ sessionId: "late" });
+          stuck?.registerSteer?.(async () => {});
+          const stuckPut = stuck?.systemTools?.find((tool) => tool.name === "store_put") as LooseTool | undefined;
+          await assert.rejects(stuckPut?.execute("late", { key: "late", value: 1 }) ?? Promise.resolve());
+          const get = options?.systemTools?.find((tool) => tool.name === "store_get") as LooseTool | undefined;
+          lateWriteVisible = (await get?.execute("read", { key: "late" }))?.details?.found;
+          return "next-done";
+        },
+      },
+    },
+  );
+
+  assert.equal(result.result.stuck, null);
+  assert.equal(result.result.next, "next-done");
+  assert.ok(Date.now() - startedAt < 2_000, "the run does not wait for the abandoned runner");
+  assert.equal(stuckCalls, 1, "an abandoned runner is never retried alongside itself");
+  assert.deepEqual(ended, [
+    { label: "stuck", result: null, errorCode: WorkflowErrorCode.AGENT_TIMEOUT },
+    { label: "next", result: "next-done", errorCode: undefined },
+  ]);
+  assert.deepEqual(
+    events,
+    ["start:stuck", "steer:stuck", "unsteer:stuck", "start:next"],
+    "abandonment withdraws the hung session's steer registration",
+  );
+  assert.equal(lateWriteVisible, false, "the abandoned runner's store write is rejected");
+  assert.ok(logs.some((message) => message.includes("abandon")));
 });
 
 test("runWorkflow returns null when recoverable retries are exhausted", async () => {
@@ -1212,6 +1284,97 @@ return await agent('${name}', { isolation: 'worktree'${options} })`;
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
+});
+
+test("calls still queued when the run aborts create no worktree and never start", async () => {
+  const repo = createGitRepo("pi-worktree-queued-abort-");
+  const abort = new AbortController();
+  const firstRunning = createDeferred<void>();
+  const started: string[] = [];
+  const ended: string[] = [];
+  let dispatched = 0;
+  try {
+    const run = runWorkflow(
+      `export const meta = { name: 'queued_abort', description: 'queued worktree calls' }
+return await parallel([1, 2, 3].map((n) => () => agent('work ' + n, { label: 'w' + n, isolation: 'worktree' })))`,
+      {
+        cwd: repo,
+        concurrency: 1,
+        signal: abort.signal,
+        persistLogs: false,
+        onAgentStart: (event) => started.push(event.label),
+        onAgentEnd: (event) => ended.push(event.label),
+        agent: {
+          async run(_prompt, options) {
+            dispatched++;
+            firstRunning.resolve();
+            return new Promise((_resolve, reject) => {
+              options?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+            });
+          },
+        },
+      },
+    );
+    await firstRunning.promise;
+    abort.abort();
+    await assert.rejects(run, /aborted/);
+
+    assert.equal(dispatched, 1);
+    assert.deepEqual(started, ["w1"], "queued calls must not announce an agent after the abort");
+    assert.deepEqual(ended, [], "an abort is not reported as an agent failure");
+    const trees = execFileSync("git", ["-C", repo, "worktree", "list", "--porcelain"], { encoding: "utf8" })
+      .split("\n")
+      .filter((line) => line.startsWith("worktree "));
+    assert.equal(trees.length, 2, "only the base checkout and the started agent's tree exist");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("a checkpoint suspension stops queued calls without reporting them as failed", async () => {
+  const releaseFirst = createDeferred<void>();
+  const firstRunning = createDeferred<void>();
+  const started: string[] = [];
+  const ended: Array<{ label: string; result: unknown; errorCode?: WorkflowErrorCode }> = [];
+  const journal: JournalEntry[] = [];
+  let dispatched = 0;
+  const run = runWorkflow(
+    `export const meta = { name: 'queued_suspension', description: 'queued call at a checkpoint' }
+await parallel([
+  () => agent('one', { label: 'one' }),
+  () => agent('two', { label: 'two' }),
+  () => checkpoint({ kind: 'approval', checkpointId: 'gate', payload: {} }),
+])
+return 'must not complete'`,
+    {
+      concurrency: 1,
+      persistLogs: false,
+      onWorkflowCheckpoint: () => {},
+      onAgentJournal: (entry) => journal.push(entry),
+      onAgentStart: (event) => started.push(event.label),
+      onAgentEnd: (event) => ended.push({ label: event.label, result: event.result, errorCode: event.errorCode }),
+      agent: {
+        async run(prompt) {
+          dispatched++;
+          firstRunning.resolve();
+          await releaseFirst.promise;
+          return `${prompt}-done`;
+        },
+      },
+    },
+  );
+  await firstRunning.promise;
+  releaseFirst.resolve();
+  await assert.rejects(run, WorkflowCheckpointSuspensionError);
+
+  assert.equal(dispatched, 1);
+  assert.deepEqual(started, ["one"], "the queued call never starts once the run is suspended");
+  assert.deepEqual(ended, [{ label: "one", result: "one-done", errorCode: undefined }]);
+  assert.deepEqual(
+    journal.map((entry) => entry.result),
+    ["one-done"],
+    "the in-flight result is journaled; the queued call re-runs on resume",
+  );
 });
 
 test("replay does not create a worktree; a resume miss creates a fresh tree without base pollution", async () => {
@@ -2044,6 +2207,56 @@ return main`;
   // the journal — neither runner.run() is invoked again.
   assert.equal(calls.stray, 1, "the un-awaited agent's cached result must replay, not re-run, on resume");
   assert.equal(calls.main, 1, "the awaited agent's cached result must replay, not re-run, on resume");
+});
+
+test("an agent() call reached after the run ended neither replays nor reports", async () => {
+  type LooseTool = { name: string; execute: (...args: unknown[]) => Promise<unknown> };
+  const journal = new Map<number, JournalEntry>();
+  await runWorkflow(
+    `export const meta = { name: 'late_call', description: 'journal source' }
+return await agent('remember', { label: 'r' })`,
+    {
+      persistLogs: false,
+      onAgentJournal: (entry) => journal.set(entry.index, entry),
+      agent: {
+        async run(_prompt, options) {
+          const put = options?.systemTools?.find((tool) => tool.name === "store_put") as LooseTool | undefined;
+          await put?.execute("put", { key: "k", value: "v" });
+          return "remembered";
+        },
+      },
+    },
+  );
+  assert.deepEqual(journal.get(0)?.storeDelta, { k: "v" });
+
+  const events: string[] = [];
+  // args must be lossless JSON, so the script hands its own gate back through the result.
+  const result = await runWorkflow<{ status: string; release: () => void; settled: Promise<unknown> }>(
+    `export const meta = { name: 'late_call', description: 'late un-awaited chain' }
+let release
+const later = new Promise((resolve) => { release = resolve })
+const settled = later.then(() => agent('remember', { label: 'r' })).then((value) => value, (error) => error)
+return { status: 'done', release, settled }`,
+    {
+      resumeJournal: journal,
+      persistLogs: false,
+      onAgentStart: (event) => events.push(`start:${event.label}`),
+      onAgentEnd: (event) => events.push(`end:${event.label}`),
+      agent: {
+        async run() {
+          events.push("run");
+          return "unexpected";
+        },
+      },
+    },
+  );
+  assert.equal(result.result.status, "done");
+
+  result.result.release();
+  const outcome = await result.result.settled;
+  assert.ok(outcome instanceof WorkflowError, "the late call is rejected");
+  assert.match(outcome.message, /after the run ended/);
+  assert.deepEqual(events, [], "a finished run reports no further agents");
 });
 
 test("agent() retries back off between attempts (audit2 #7)", async () => {

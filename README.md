@@ -219,7 +219,7 @@ A schema-less agent call that comes back as whitespace-only text is a recoverabl
 
 Token totals stay cumulative across a pause and resume.
 
-Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the final wait for agents that ignore cancellation. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
+Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the wait for agents that ignore cancellation: the final wait of a cancelled run, and the wait after an agent attempt times out. A timed-out agent still running after the grace is abandoned without a retry and ends as a timeout failure, freeing its concurrency slot. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
 
 </details>
 

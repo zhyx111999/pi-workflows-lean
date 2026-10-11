@@ -40,7 +40,7 @@ export function normalizeAgentRetries(value: unknown): number {
   return Math.min(MAX_AGENT_RETRIES, Math.floor(value));
 }
 
-/** Grace for the aborted drain: Infinity waits forever; NaN, 0, negatives and overflow use the default. */
+/** Grace for a runner told to stop (aborted drain, timed-out attempt): Infinity waits forever; NaN, 0, negatives and overflow use the default. */
 export function resolveDrainAbortGraceMs(value: number | undefined): number {
   if (value === undefined) return DEFAULT_DRAIN_ABORT_GRACE_MS;
   if (value === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;

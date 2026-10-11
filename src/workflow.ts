@@ -117,11 +117,13 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /** Timeout per agent attempt in milliseconds. null/omitted means no hard timeout. */
   agentTimeoutMs?: number | null;
   /**
-   * Grace period (ms) for the final drain once the run is aborted (external
-   * abort or a fatal error). Agents are signaled at abort, but the signal is
-   * cooperative: a runner that ignores it would otherwise keep the run from
-   * ever ending. After the grace the drain stops waiting; the store is
-   * disposed, nothing more is journaled, and the host ignores stale writes.
+   * Grace period (ms) for a runner told to stop: the final drain once the run
+   * is aborted (external abort or a fatal error), and an agent attempt that
+   * timed out. The abort signal is cooperative: a runner that ignores it would
+   * otherwise hold its concurrency slot, or keep the run from ever ending.
+   * After the grace a timed-out agent is abandoned without a retry and ends
+   * as a timeout failure; the drain stops waiting, the store is disposed,
+   * nothing more is journaled, and the host ignores stale writes.
    *
    * Until the run is aborted the drain waits without limit, also when it
    * paused at a checkpoint, because those results are wanted. Default 10_000;
@@ -211,7 +213,9 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   /**
    * Called when a live agent's session can take instructions, with `steer`
    * queueing one into it. Returns the function that unregisters the session
-   * when it ends. `id` is the same per-call id as the onAgent* events.
+   * when it ends; it must tolerate a second call, because the runtime also
+   * calls it when the attempt ends. `id` is the same per-call id as the
+   * onAgent* events.
    */
   registerAgentSteer?: (agent: { id: string; label: string; steer: (text: string) => Promise<void> }) => () => void;
   /**

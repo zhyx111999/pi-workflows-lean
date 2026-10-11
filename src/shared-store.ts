@@ -2,9 +2,11 @@
  * In-memory key-value store scoped to a single workflow run.
  *
  * One `SharedStore` instance is created at run start and disposed when the run
- * ends. Two MCP-compatible tool definitions (`store_put` / `store_get`) are
- * injected into every agent's tool list so parallel agents can share
- * intermediate state without coordinating through the script itself.
+ * ends; a disposed store rejects every write, so a late caller fails loudly
+ * instead of writing state nobody journals. Two MCP-compatible tool
+ * definitions (`store_put` / `store_get`) are injected into every agent's tool
+ * list so parallel agents can share intermediate state without coordinating
+ * through the script itself.
  *
  * Journal integration: callers capture `store.commitDelta(deltaKey)` alongside
  * each agent result in the journal. On resume, `store.applyDelta(delta)` rebuilds
@@ -48,6 +50,12 @@ export class SharedStore {
   // (moved to the top, preserving last-write order), and compaction (see
   // compactHistory) drops everything below the topmost permanent write.
   private readonly keyHistories = new Map<string, { writes: Array<{ window?: string; value: unknown }> }>();
+  private disposed = false;
+
+  /** Every mutation and delta hand-off calls this first. */
+  private assertWritable(): void {
+    if (this.disposed) throw new Error("SharedStore is disposed: its run has ended and it accepts no more writes");
+  }
 
   private historyFor(key: string) {
     let history = this.keyHistories.get(key);
@@ -84,6 +92,7 @@ export class SharedStore {
 
   /** Store a value under `key`. Overwrites any existing value. */
   put(key: string, value: unknown): void {
+    this.assertWritable();
     // Untracked (direct-API) write: survives every window discard. One clone,
     // shared by the log entry and the map (recompute relies on that sharing),
     // so caller-side mutation can never alias into the store.
@@ -101,6 +110,7 @@ export class SharedStore {
    * writes can be journaled and replayed independently.
    */
   trackPut(key: string, value: unknown, deltaKey: string): void {
+    this.assertWritable();
     // A non-string deltaKey would tag the entry window === undefined — PERMANENT,
     // un-rollbackable — and key the delta map with "undefined". Refuse it.
     if (typeof deltaKey !== "string") {
@@ -164,9 +174,12 @@ export class SharedStore {
    * window's write-log entries stay: a committed write is permanent history
    * that later discards must not remove (resume replay re-applies it). A
    * later discardDelta for the same key is a no-op — the delta bookkeeping
-   * is gone — so committed entries are unreachable by rollbacks.
+   * is gone — so committed entries are unreachable by rollbacks. A disposed
+   * store throws: its deltas are gone, and an empty one would journal as if
+   * the agent wrote nothing.
    */
   commitDelta(deltaKey: string): Record<string, unknown> {
+    this.assertWritable();
     const delta = this.agentDeltas.get(deltaKey) ?? {};
     this.agentDeltas.delete(deltaKey);
     // Detach this window's surviving log entries (they are permanent history
@@ -203,7 +216,8 @@ export class SharedStore {
    * write by an earlier window resurfaces only if that window itself is still
    * live or committed.
    *
-   * A no-op if `deltaKey` never wrote anything (nothing to roll back).
+   * A no-op if `deltaKey` never wrote anything (nothing to roll back), which
+   * includes every key of a disposed store, so failure cleanup never throws.
    */
   discardDelta(deltaKey: string): void {
     // Guard against undefined/non-string callers: untagged entries have
@@ -229,6 +243,7 @@ export class SharedStore {
    * no window's discard may remove them.
    */
   applyDelta(delta: Record<string, unknown>): void {
+    this.assertWritable();
     // Clone everything first: a clone failure mid-loop must not leave the
     // store half-applied.
     const entries = Object.entries(delta).map(([k, v]) => [k, structuredClone(v)] as const);
@@ -245,6 +260,7 @@ export class SharedStore {
    * Prefer `applyDelta` for resume replay — see journal integration above.
    */
   restore(snap: Record<string, unknown>): void {
+    this.assertWritable();
     // Clone everything BEFORE clearing: a clone failure must leave the current
     // state untouched rather than half-restored.
     const entries = Object.entries(snap).map(([k, v]) => [k, structuredClone(v)] as const);
@@ -259,8 +275,9 @@ export class SharedStore {
     }
   }
 
-  /** Clear all entries (called when the run ends). */
+  /** Clear all entries and refuse later writes (called when the run ends). */
   dispose(): void {
+    this.disposed = true;
     this.map.clear();
     this.agentDeltas.clear();
     this.keyHistories.clear();
@@ -272,8 +289,15 @@ export class SharedStore {
  * agent call id `${runId}:${callIndex}` (see the `SharedStore` class doc).
  * Used internally by `runWorkflow` so each agent's puts are tracked in the
  * store's delta journal and can be replayed additively on resume.
+ * `acceptsWrites` turns false once the agent's attempt has ended: a runner
+ * abandoned while ignoring its abort must not write after its delta was
+ * discarded, where no journal or rollback would ever see the write.
  */
-export function createAgentStoreTools(store: SharedStore, deltaKey: string): ToolDefinition[] {
+export function createAgentStoreTools(
+  store: SharedStore,
+  deltaKey: string,
+  acceptsWrites: () => boolean,
+): ToolDefinition[] {
   const storePut = defineTool({
     name: "store_put",
     label: "Store Put",
@@ -285,6 +309,9 @@ export function createAgentStoreTools(store: SharedStore, deltaKey: string): Too
       value: Type.Any({ description: "The value to store (any JSON-serializable value)." }),
     }),
     async execute(_id: string, params: { key: string; value: unknown }) {
+      if (!acceptsWrites()) {
+        throw new Error("This agent call has ended; the shared store no longer accepts its writes.");
+      }
       store.trackPut(params.key, params.value, deltaKey);
       return {
         content: [{ type: "text", text: `Stored value under key "${params.key}".` }],
