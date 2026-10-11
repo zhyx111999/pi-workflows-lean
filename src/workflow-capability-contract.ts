@@ -1,4 +1,5 @@
 import packageJson from "../package.json" with { type: "json" };
+import { deepFreeze } from "./deep-freeze.js";
 import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 import { WorkflowCapabilityContractError } from "./errors.js";
 
@@ -569,14 +570,6 @@ function validateDefinition(definition: WorkflowCapabilityDefinition): Capabilit
     }
   }
   return diagnostics;
-}
-
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const nested of Object.values(value)) deepFreeze(nested);
-    Object.freeze(value);
-  }
-  return value;
 }
 
 /** Installed validated workflow capability contract. */

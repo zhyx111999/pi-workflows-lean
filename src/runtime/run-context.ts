@@ -64,7 +64,7 @@ export interface RuntimeState {
 }
 
 /** Fixed inputs of a run, resolved once by runWorkflow. */
-export interface RunSetup {
+interface RunSetup {
   readonly options: WorkflowRunOptions;
   readonly runId: string;
   readonly baseCwd: string;

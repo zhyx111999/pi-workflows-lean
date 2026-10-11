@@ -6,7 +6,7 @@ Use this page for routine scripts. Open the generated capability index only when
 
 Start with the only legal export: `export const meta = { name, description, phases?: [{ title, detail?, model? }] }`. Values are nonblank literals; declare only used phases and call `phase()` before each phase's work. The remaining body already runs inside an async function: write helpers as ordinary declarations; `export default` and other exports are invalid. Return the result explicitly.
 
-The runtime supplies `agent`, `parallel`, `pipeline`, `checkpoint`, `phase`, `log`, `args`, `cwd`, and restricted `process.cwd()`. Imports, `require()`, filesystem modules, `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable. The Node VM realm is implementation substrate, not a security boundary or public API.
+The runtime supplies `agent`, `parallel`, `pipeline`, `checkpoint`, `phase`, `log`, `args`, `cwd`, and restricted `process.cwd()`. `args` is a deeply frozen copy, so copy before sorting or editing it: `[...args.items].sort()`. Imports, `require()`, filesystem modules, `Date.now()`, `Math.random()`, and no-argument `new Date()` are unavailable. The Node VM realm is implementation substrate, not a security boundary or public API.
 
 ## Topology
 

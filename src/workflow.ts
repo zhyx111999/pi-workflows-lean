@@ -21,6 +21,7 @@ import type { AgentHistoryEntry } from "./agent-history.js";
 import { type AgentRegistry, loadAgentRegistry } from "./agent-registry.js";
 import type { AgentUsage } from "./agent-usage.js";
 import { DEFAULT_MAX_AGENTS } from "./config.js";
+import { deepFreeze } from "./deep-freeze.js";
 import type { WorkflowErrorCode } from "./errors.js";
 import { createWorkflowLogger } from "./logger.js";
 import { parseModelRoutingFromMeta } from "./model-routing.js";
@@ -28,8 +29,9 @@ import type { ModelThinkingLevel } from "./model-spec.js";
 import { createAgent } from "./runtime/agent-call.js";
 import { createCheckpoint } from "./runtime/checkpoint.js";
 import { assertDeterministicSource } from "./runtime/determinism.js";
+import { cloneDurableJsonValue } from "./runtime/durable-json.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
-import { createRunContext, createRuntimeState } from "./runtime/run-context.js";
+import { createRunContext, createRuntimeState, type RunContext } from "./runtime/run-context.js";
 import { resolveAgentTimeoutMs, resolveConcurrency } from "./runtime/run-limits.js";
 import { finishRun, sealRunFatal } from "./runtime/run-teardown.js";
 import { readMetaExport } from "./runtime/script-meta.js";
@@ -55,7 +57,11 @@ export interface WorkflowMeta {
 export interface JournalEntry {
   /** Lexical call index of the agent()/checkpoint() call within the run. */
   index: number;
-  /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
+  /**
+   * Identity hash of the call (runtime/call-identity.ts) over every input that
+   * shapes its result: for agent() the prompt and resolved call options, for
+   * checkpoint() its kind, id and payload. Replay requires an exact match.
+   */
   hash: string;
   result: unknown;
   /**
@@ -325,36 +331,12 @@ export async function runWorkflow<T = unknown>(
   });
   const { state, log } = ctx;
 
-  // 2. Expose the workflow globals declared by the capability contract.
-  const phase = (title: string) => {
-    state.currentPhase = title;
-    if (!state.phases.includes(title)) state.phases.push(title);
-    options.onPhase?.(title);
-  };
-  const context = createScriptContext(
-    {
-      agent: createAgent(ctx),
-      parallel: createParallel(ctx),
-      pipeline: createPipeline(ctx),
-      checkpoint: createCheckpoint(ctx),
-      log,
-      phase,
-      args: options.args,
-      cwd: baseCwd,
-      process: Object.freeze({ cwd: () => options.cwd ?? process.cwd() }),
-      console: {
-        log,
-        info: log,
-        warn: (m: unknown) => log(`[warn] ${String(m)}`),
-        error: (m: unknown) => log(`[error] ${String(m)}`),
-      },
-    } satisfies WorkflowRuntimeImplementations,
-    logger,
-  );
-
-  // 3. Run the script, then always drain its outstanding agent() calls.
+  // 2. Expose the workflow globals and run the script, then always drain its
+  // outstanding agent() calls. The globals are built inside the try, so args
+  // that cannot be persisted losslessly fail the run like any script error.
   let successResult: WorkflowRunResult<T> | undefined;
   try {
+    const context = createScriptContext(createScriptGlobals(ctx), logger);
     const result = await runScript(context, body, `${meta.name || "workflow"}.js`);
     // A script that caught its checkpoint suspension still pauses instead of
     // completing; an external abort keeps priority over the suspension.
@@ -386,9 +368,41 @@ export async function runWorkflow<T = unknown>(
   }
 }
 
+/** The workflow globals declared by the capability contract, bound to this run. */
+function createScriptGlobals(ctx: RunContext) {
+  const { options, state, log, baseCwd } = ctx;
+  const phase = (title: string) => {
+    state.currentPhase = title;
+    if (!state.phases.includes(title)) state.phases.push(title);
+    options.onPhase?.(title);
+  };
+  return {
+    agent: createAgent(ctx),
+    parallel: createParallel(ctx),
+    pipeline: createPipeline(ctx),
+    checkpoint: createCheckpoint(ctx),
+    log,
+    phase,
+    // The caller's args are persisted for resume. The script gets a frozen
+    // copy, so an in-place edit such as args.items.sort() throws instead of
+    // changing what a resumed run sees.
+    args: options.args === undefined ? undefined : deepFreeze(cloneDurableJsonValue(options.args, "workflow args")),
+    cwd: baseCwd,
+    process: Object.freeze({ cwd: () => baseCwd }),
+    console: {
+      log,
+      info: log,
+      warn: (m: unknown) => log(`[warn] ${String(m)}`),
+      error: (m: unknown) => log(`[error] ${String(m)}`),
+    },
+  } satisfies WorkflowRuntimeImplementations;
+}
+
 /** Split a script into its validated literal `meta` and the body that runs in the vm. */
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
   assertDeterministicSource(script);
   const { meta, start, end } = readMetaExport(script);
-  return { meta, body: script.slice(0, start) + script.slice(end) };
+  // Keep the meta statement's line breaks, so body line N is still script line N in stack traces.
+  const metaLineBreaks = script.slice(start, end).replace(/[^\n\r\u2028\u2029]/g, "");
+  return { meta, body: script.slice(0, start) + metaLineBreaks + script.slice(end) };
 }
