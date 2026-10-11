@@ -45,6 +45,7 @@ export function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
       model: a.model,
       sessionId: a.sessionId,
       sessionFile: a.sessionFile,
+      priorExecutions: a.priorExecutions,
     };
   });
   return {

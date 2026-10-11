@@ -32,6 +32,28 @@ export interface WorkflowAgentSnapshot {
   sessionId?: string;
   /** Child session file, absent for in-memory child sessions. */
   sessionFile?: string;
+  /**
+   * Earlier executions of this call, oldest first. A call has one row that
+   * shows its latest execution; a resume that re-runs the call keeps the
+   * superseded one here, so counts stay per call while its spend still counts.
+   */
+  priorExecutions?: PriorAgentExecution[];
+}
+
+/** How one superseded execution of a call ended. */
+export interface PriorAgentExecution {
+  label: string;
+  status: WorkflowAgentStatus;
+  resultPreview?: string;
+  error?: string;
+  errorCode?: WorkflowErrorCode;
+  model?: string;
+  sessionId?: string;
+  sessionFile?: string;
+  tokens?: number;
+  tokenUsage?: AgentUsage;
+  startedAt?: string;
+  endedAt?: string;
 }
 
 export interface WorkflowSnapshot {
@@ -89,8 +111,13 @@ export function tokenFigures(
   return { fresh: Math.max(reported, estimate - cacheRead), cacheRead, estimated: usage?.estimated === true };
 }
 
-/** Sum a set of agents into fresh vs cacheRead totals, via {@link tokenFigures}. */
-export function aggregateAgentUsage(agents: ReadonlyArray<Pick<WorkflowAgentSnapshot, "tokens" | "tokenUsage">>): {
+/**
+ * Sum a set of agents into fresh vs cacheRead totals, via {@link tokenFigures}.
+ * An agent's prior executions were paid for too, so they count with it.
+ */
+export function aggregateAgentUsage(
+  agents: ReadonlyArray<Pick<WorkflowAgentSnapshot, "tokens" | "tokenUsage" | "priorExecutions">>,
+): {
   fresh: number;
   cacheRead: number;
   estimated: boolean;
@@ -98,11 +125,16 @@ export function aggregateAgentUsage(agents: ReadonlyArray<Pick<WorkflowAgentSnap
   let fresh = 0;
   let cacheRead = 0;
   let estimated = false;
-  for (const a of agents) {
-    const f = tokenFigures(a.tokenUsage, a.tokens);
-    fresh += f.fresh;
-    cacheRead += f.cacheRead;
-    if (f.estimated) estimated = true;
+  for (const agent of agents) {
+    // Records are read from disk, so a malformed history must not throw here.
+    const prior = Array.isArray(agent.priorExecutions) ? agent.priorExecutions : [];
+    for (const execution of [agent, ...prior]) {
+      if (!execution || typeof execution !== "object") continue;
+      const f = tokenFigures(execution.tokenUsage, execution.tokens);
+      fresh += f.fresh;
+      cacheRead += f.cacheRead;
+      if (f.estimated) estimated = true;
+    }
   }
   return { fresh, cacheRead, estimated };
 }

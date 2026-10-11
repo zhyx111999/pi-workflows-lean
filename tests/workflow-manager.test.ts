@@ -453,11 +453,15 @@ test(
     assert.equal(firsts[0]?.status, "done");
     assert.equal(firsts[0]?.startedAt, aStartedAt, "seeded timestamps survive every later persist");
     const seconds = persisted?.agents.filter((a) => a.prompt === "second") ?? [];
-    assert.equal(seconds.length, 2, "the killed attempt stays as history next to its live retry");
-    assert.equal(seconds[0]?.status, "skipped");
-    assert.equal(seconds[1]?.status, "done");
+    assert.equal(seconds.length, 1, "the live retry takes over its call's row");
+    assert.equal(seconds[0]?.status, "done");
+    assert.deepEqual(
+      seconds[0]?.priorExecutions?.map((prior) => prior.status),
+      ["skipped"],
+      "the killed attempt stays as the row's history",
+    );
     const snapshot = manager.getRun(runId)?.snapshot;
-    assert.equal(snapshot?.agentCount, 3);
+    assert.equal(snapshot?.agentCount, 2);
     assert.equal(snapshot?.doneCount, 2);
   }),
 );
@@ -561,15 +565,23 @@ test(
 
     const persisted = manager.getPersistence().load("legacy-run");
     assert.equal(persisted?.status, "completed");
-    const ghost = persisted?.agents.find((a) => a.status === "skipped");
+    assert.equal(persisted?.agents.length, 2, "each live re-execution takes over its call's row");
+    assert.deepEqual(
+      persisted?.agents.map((a) => [a.status, a.priorExecutions?.map((prior) => prior.status)]),
+      [
+        ["done", ["done"]],
+        ["done", ["skipped"]],
+      ],
+      "the recorded executions are kept as history",
+    );
+    const ghost = persisted?.agents[1]?.priorExecutions?.[0];
     assert.equal(ghost?.error, "interrupted");
-    assert.equal(ghost?.recoverable, false);
+    assert.equal(ghost?.errorCode, WorkflowErrorCode.WORKFLOW_ABORTED);
     assert.ok(ghost?.endedAt, "the ghost gets a settle timestamp");
     assert.ok(
       Date.parse(ghost?.endedAt ?? "") >= Date.parse(savedUpdatedAt),
       "the ghost settles at resume wall-clock, never before the record's last write",
     );
-    assert.equal(persisted?.agents.length, 4, "preserved history + both live re-executions");
   }),
 );
 
@@ -1892,12 +1904,14 @@ return { a, b }`;
       assert.equal(resumed, true);
       // resume() seeds the snapshot from the persisted agents (#206): the
       // pre-pause pair (done + skipped) is present immediately, so wait for
-      // the LIVE re-execution of agent 2 to push the third entry.
+      // the LIVE re-execution of agent 2 to take over its row.
+      const second = () => manager.getRun(runId)?.snapshot.agents.find((a) => a.label === "second");
       let waitSpin = 0;
-      while ((manager.getRun(runId)?.snapshot.agents.length ?? 0) < 3 && waitSpin++ < 2000) {
+      while (second()?.status !== "running" && waitSpin++ < 2000) {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
-      assert.equal(manager.getRun(runId)?.snapshot.agents.length, 3, "the live retry pushed its own entry");
+      assert.equal(manager.getRun(runId)?.snapshot.agents.length, 2, "the live retry takes over its call's row");
+      assert.equal(second()?.priorExecutions?.[0]?.status, "skipped", "the paused execution is its history");
       // The snapshot entry is pushed at onAgentStart, before the runner has
       // registered its deferred attempt — keep resolving until the live call
       // actually picks it up and the run completes.
@@ -5800,24 +5814,25 @@ test(
       assert.match(row.status, /^(queued|running|done|error|skipped)$/);
       assert.ok(row.callId === undefined || typeof row.callId === "string", "no non-string callId re-persisted");
     }
-    const settledGhost = persisted?.agents.find((a) => a.prompt === "second" && a.status === "skipped");
+    const settledGhost = persisted?.agents.find((a) => a.prompt === "second")?.priorExecutions?.[0];
+    assert.equal(settledGhost?.status, "skipped");
     assert.equal(settledGhost?.error, "interrupted", "the ghost's stale error is overwritten by the interrupt cause");
     const endedOnly = persisted?.agents.find((a) => a.prompt === "fourth");
     assert.equal(endedOnly?.endedAt, "2026-01-01T00:00:07.000Z", "an endedAt-only terminal row keeps its timestamp");
-    // Seeded: valid done rows ("first", "third") + the valid ghost (settled
-    // skipped); with no journal in this fixture the script's two calls
-    // re-execute live, appending one row each.
-    assert.equal(persisted?.agents.length, 6);
+    // Seeded: valid rows ("third", "fourth", "first") + the valid ghost
+    // (settled skipped); with no journal in this fixture the script's two
+    // calls re-execute live, each taking over its call's row.
+    assert.equal(persisted?.agents.length, 4);
   }),
 );
 
 test(
-  "resume replay updates the LAST matching callId row and refreshes its label (#206)",
+  "resume replay updates its call's row and refreshes its label, keeping the killed execution as history (#206)",
   withTempCwd(async (cwd) => {
-    // Shape: two seeded rows share one callId (a killed re-attempt left a ghost
-    // next to the row that later completed). The journaled replay must update
-    // the LATEST row — the most recent execution — and leave the older row
-    // untouched, and it must refresh the (unhashed) label from the replayed call.
+    // Shape: a killed execution of call 0, then a live re-run that completed.
+    // The re-run takes over the call's row with the killed execution as its
+    // history; the later journaled replay updates that row and must refresh
+    // the (unhashed) label from the replayed call.
     const seen: string[] = [];
     const state = { agent2Attempts: 0 };
     let markAgent2Started: () => void = () => {};
@@ -5873,15 +5888,14 @@ return { a, b }`;
     await promise.catch(() => {});
 
     // Resume 1 (label variant B): agent 1 runs live and completes (journaled);
-    // agent 2 hangs -> pause. Two rows now share callId `${runId}:0`.
+    // agent 2 hangs -> pause. Call 0's row now shows the variant-B execution.
     const scriptB = scriptV1.replace("'first'", "'first-b'");
     assert.equal(await manager.resume(runId, { script: scriptB }), true);
     await agent2Started;
     assert.equal(manager.pause(runId), true);
 
-    // Resume 2 (label variant C): agent 1's journal replays — it must update the
-    // LAST callId-0 row (the variant-B one) and refresh its label, leaving the
-    // ghost row from run 1 untouched.
+    // Resume 2 (label variant C): agent 1's journal replays — it must update
+    // call 0's row and refresh its label, leaving the history untouched.
     const scriptC = scriptV1.replace("'first'", "'first-c'");
     const seenBeforeResume2 = seen.length;
     assert.equal(await manager.resume(runId, { script: scriptC }), true);
@@ -5893,13 +5907,16 @@ return { a, b }`;
     const persisted = manager.getPersistence().load(runId);
     assert.equal(persisted?.status, "completed");
     const rows = persisted?.agents.filter((a) => a.prompt === "FIRST" || a.callId === `${runId}:0`) ?? [];
-    assert.equal(rows.length, 2, "ghost history row + the row that completed — no replay duplicates");
-    assert.equal(rows[0]?.label, "first", "the older row is untouched by the replay");
-    assert.equal(rows[0]?.status, "skipped");
-    assert.equal(rows[1]?.label, "first-c", "the latest row is the replay target and gets the refreshed label");
-    assert.equal(rows[1]?.prompt, "FIRST", "the replay target row carries the replayed prompt");
-    assert.ok(rows[1]?.startedAt, "the replay target row keeps seeded timestamps");
-    assert.equal(rows[1]?.status, "done");
+    assert.equal(rows.length, 1, "one row for the call — no replay or re-run duplicates");
+    assert.equal(rows[0]?.label, "first-c", "the replay target gets the refreshed label");
+    assert.equal(rows[0]?.prompt, "FIRST", "the replay target row carries the replayed prompt");
+    assert.ok(rows[0]?.startedAt, "the replay target row keeps seeded timestamps");
+    assert.equal(rows[0]?.status, "done");
+    assert.deepEqual(
+      rows[0]?.priorExecutions?.map((prior) => [prior.label, prior.status]),
+      [["first", "skipped"]],
+      "the killed execution is history the replay leaves untouched",
+    );
   }),
 );
 
@@ -6026,10 +6043,9 @@ test(
     for (let i = 0; i < 2000 && manager.getRun("clamp-run")?.status === "running"; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    const ghost = manager
-      .getPersistence()
-      .load("clamp-run")
-      ?.agents.find((a) => a.status === "skipped");
+    // The live re-run took over the row; the settled ghost is its history.
+    const ghost = manager.getPersistence().load("clamp-run")?.agents[0]?.priorExecutions?.[0];
+    assert.equal(ghost?.status, "skipped");
     assert.ok(ghost);
     assert.ok(
       Date.parse(ghost.endedAt ?? "") >= Date.parse("2027-06-01T00:00:00.000Z"),

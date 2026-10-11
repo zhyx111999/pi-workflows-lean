@@ -5,6 +5,7 @@ import { preview, type WorkflowAgentSnapshot } from "../display.js";
 import { isProviderUsageLimit } from "../errors.js";
 import type { WorkflowRunOptions } from "../workflow.js";
 import type { ManagedRun } from "../workflow-manager.js";
+import { nextAgentRowId, supersedeAgentRow } from "./agent-rows.js";
 
 /** A running agent session that can take an instruction mid-run. */
 export interface SteerableAgent {
@@ -193,30 +194,34 @@ type AgentStartEvent = Parameters<NonNullable<WorkflowRunOptions["onAgentStart"]
 
 /**
  * The row seeded from the record at resume for a replayed call, refreshed from
- * the call. Call ids are positional and can repeat, so the last matching row is
- * the latest execution of the call. Label is not part of the call hash, so a
- * label-only edit still replays and must update the row.
+ * the call. A replay is the recorded execution itself, so the row stays as it
+ * is. Label is not part of the call hash, so a label-only edit still replays
+ * and must update the row.
  */
 function replayedRow(managed: ManagedRun, event: AgentStartEvent): WorkflowAgentSnapshot | undefined {
-  const agents = managed.snapshot.agents;
-  for (let i = agents.length - 1; i >= 0; i--) {
-    const seeded = agents[i];
-    if (seeded.callId !== event.id) continue;
-    seeded.label = event.label;
-    seeded.phase = event.phase;
-    seeded.prompt = event.prompt;
-    if (event.model) seeded.model = event.model;
-    return seeded;
-  }
-  return undefined;
+  const seeded = managed.snapshot.agents.find((agent) => agent.callId === event.id);
+  if (!seeded) return undefined;
+  seeded.label = event.label;
+  seeded.phase = event.phase;
+  seeded.prompt = event.prompt;
+  if (event.model) seeded.model = event.model;
+  return seeded;
 }
 
-/** Append a running row; a replayed call without a seeded row carries its recorded model, session, and tokens. */
+/**
+ * A running row for the call. A call has one row: when this execution re-runs
+ * a call that already has one, the new row takes its place and keeps the
+ * superseded execution as history. Row ids name one execution's row (its
+ * timestamps are kept by id, and rows above seededAgentCount belong to this
+ * execution), so the new row gets a new id. A replayed call without a seeded
+ * row carries its recorded model, session, and tokens.
+ */
 function newRow(managed: ManagedRun, event: AgentStartEvent): WorkflowAgentSnapshot {
+  const agents = managed.snapshot.agents;
   const prior = event.replayed ? managed.replayedAgentStatesByCallId.get(event.id) : undefined;
   const priorSession = event.replayed ? managed.agentSessionsByCallId.get(event.id) : undefined;
   const row: WorkflowAgentSnapshot = {
-    id: managed.snapshot.agents.length + 1,
+    id: nextAgentRowId(agents),
     callId: event.id,
     label: event.label,
     phase: event.phase,
@@ -228,8 +233,15 @@ function newRow(managed: ManagedRun, event: AgentStartEvent): WorkflowAgentSnaps
     tokens: prior?.tokens,
     tokenUsage: prior?.tokenUsage,
   };
-  managed.snapshot.agents.push(row);
-  return row;
+  const position = agents.findIndex((agent) => agent.callId === event.id);
+  if (position === -1) {
+    agents.push(row);
+    return row;
+  }
+  const superseded = agents[position];
+  agents[position] = supersedeAgentRow(superseded, managed.agentTimestamps.get(superseded.id), row);
+  managed.agentTimestamps.delete(superseded.id);
+  return agents[position];
 }
 
 /** Add one settled agent's exact usage to the run total that gets persisted. */
