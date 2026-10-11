@@ -78,22 +78,36 @@ describe("workflow settings", () => {
     });
   });
 
-  it("loads and normalizes excludeSubagentTools, dropping non-string/blank entries (#107)", () => {
+  it("loads excludeSubagentTools, dropping invalid entries and preserving an explicit empty list", () => {
     withSettingsPath((settingsPath) => {
       mkdirSync(dirname(settingsPath), { recursive: true });
 
       writeFileSync(settingsPath, JSON.stringify({ excludeSubagentTools: ["pi-subagents", "spawn"] }), "utf-8");
       assert.deepEqual(loadWorkflowSettings(settingsPath), { excludeSubagentTools: ["pi-subagents", "spawn"] });
 
-      // Non-string and blank entries are filtered out.
-      writeFileSync(settingsPath, JSON.stringify({ excludeSubagentTools: ["keep", 42, "", "  ", null] }), "utf-8");
+      writeFileSync(settingsPath, JSON.stringify({ excludeSubagentTools: [" keep ", 42, "", "  ", null] }), "utf-8");
       assert.deepEqual(loadWorkflowSettings(settingsPath), { excludeSubagentTools: ["keep"] });
 
-      // An all-invalid (or empty) list yields no key at all.
-      writeFileSync(settingsPath, JSON.stringify({ excludeSubagentTools: [1, 2, ""] }), "utf-8");
-      assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+      for (const value of [[], [1, 2, ""]]) {
+        writeFileSync(settingsPath, JSON.stringify({ excludeSubagentTools: value }), "utf-8");
+        assert.deepEqual(loadWorkflowSettings(settingsPath), { excludeSubagentTools: [] });
+      }
       writeFileSync(settingsPath, JSON.stringify({ excludeSubagentTools: "nope" }), "utf-8");
       assert.deepEqual(loadWorkflowSettings(settingsPath), {});
+    });
+  });
+
+  it("lets an explicit empty excludeSubagentTools clear an inherited or saved denylist", () => {
+    withSettingsPath((settingsPath) => {
+      const projectSettingsPath = join(dirname(settingsPath), "project-settings.json");
+      const options = { settingsPath, projectSettingsPath };
+      saveWorkflowSettings({ excludeSubagentTools: ["spawn"] }, settingsPath);
+
+      saveWorkflowSettings({ excludeSubagentTools: [] }, { ...options, scope: "project" });
+      assert.deepEqual(loadWorkflowSettings(options), { excludeSubagentTools: [] });
+
+      saveWorkflowSettings({ excludeSubagentTools: [] }, settingsPath);
+      assert.deepEqual(loadWorkflowSettings(settingsPath), { excludeSubagentTools: [] });
     });
   });
 
@@ -285,6 +299,32 @@ describe("workflow settings", () => {
         assert.deepEqual(loadWorkflowSettings({ projectSettingsPath: getWorkflowProjectSettingsPath(cwd) }), {
           progressPanelMode: "detailed",
         });
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("saves cwd preferences into the project override for keys the repo-local file would shadow", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-project-settings-"));
+    const cwd = join(dir, "project");
+    const fakeHome = join(dir, "home");
+    try {
+      withFakeHome(fakeHome, () => {
+        const localPath = getProjectLocalWorkflowSettingsPath(cwd);
+        mkdirSync(dirname(localPath), { recursive: true });
+        const repoSettings = JSON.stringify({ progressPanelMode: "compact" });
+        writeFileSync(localPath, repoSettings);
+
+        saveWorkflowSettingsForCwd({ progressPanelMode: "detailed", progressPanelMaxAgents: 12 }, cwd);
+
+        assert.deepEqual(loadWorkflowSettings({ cwd }), { progressPanelMode: "detailed", progressPanelMaxAgents: 12 });
+        assert.deepEqual(loadWorkflowSettings(), { progressPanelMode: "detailed", progressPanelMaxAgents: 12 });
+        // Only the shadowed key is pinned for this project; the repo file is never written.
+        assert.deepEqual(JSON.parse(readFileSync(getWorkflowProjectSettingsPath(cwd), "utf-8")), {
+          progressPanelMode: "detailed",
+        });
+        assert.equal(readFileSync(localPath, "utf-8"), repoSettings);
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -27,6 +27,8 @@ Suffix sets thinking: `off|minimal|low|medium|high|xhigh|max`. An empty value vo
 
 Later files win per key: `~/.pi/workflows/settings.json`, `<project>/.pi/workflows/settings.json`, `~/.pi/workflows/projects/<key>/settings.json`.
 
+A change in an earlier file is shadowed while a later file sets the same key. `/workflows-progress` saves globally and, for keys either project file sets, to the project override.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `defaultConcurrency` | 8 (≤16) | parallel subagents |
@@ -38,7 +40,7 @@ Later files win per key: `~/.pi/workflows/settings.json`, `<project>/.pi/workflo
 | `persistAgentSessions` | false | keep subagent transcripts as Pi sessions |
 | `inheritMainModel` | false | untiered subagents use the main model |
 | `deliveredResultMaxChars` | 400 | cap on a result's JSON fallback |
-| `excludeSubagentTools` | [] | extra tools denied to subagents |
+| `excludeSubagentTools` | [] | extra tools denied to subagents; `[]` clears an earlier file |
 | `providerMiddlewareExtensions` | [] | trusted provider/auth extensions for subagents |
 
 ## Agent roles
