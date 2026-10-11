@@ -207,6 +207,10 @@ test("navigator overlay stays inside the host's allocation at every terminal siz
   sweep("phases");
 });
 
+const ESC = String.fromCharCode(27);
+/** A colour code followed by a phase's done/total figure. */
+const COLOURED_PROGRESS = new RegExp(`${ESC}\\[(\\d+)m(\\d/\\d)`, "g");
+
 test("the one-pane phase list colours each phase by its agents' status, as the two-pane view does", () => {
   const manager = fakeManager([2, 1, 1]);
   const run = manager.getRun("r0");
@@ -215,14 +219,14 @@ test("the one-pane phase list colours each phase by its agents' status, as the t
   run.snapshot.agents[2].status = "error";
   // Colour names as distinct ANSI codes, which take no width, so layout is unchanged.
   const codes: Record<string, number> = { error: 31, success: 32, warning: 33, accent: 36, muted: 37, dim: 90 };
-  const ansi = { fg: (c: string, s: string) => `\x1b[${codes[c] ?? 39}m${s}\x1b[39m`, bold: (s: string) => s };
+  const ansi = { fg: (c: string, s: string) => `${ESC}[${codes[c] ?? 39}m${s}${ESC}[39m`, bold: (s: string) => s };
   const colours = (width: number) => {
     const model = new NavigatorModel(manager);
     const state = new NavigatorState();
     state.drill(model);
     state.move(1, 3); // leave the first row, whose selection styling hides its status colour
     const text = renderNavigator(state, model, width, ansi as never, 20).join("\n");
-    return [...text.matchAll(/\x1b\[(\d+)m(\d\/\d)/g)].map((m) => `${m[2]}:${m[1]}`);
+    return [...text.matchAll(COLOURED_PROGRESS)].map((m) => `${m[2]}:${m[1]}`);
   };
   const twoPane = colours(80);
   assert.ok(twoPane.includes(`1/2:${codes.warning}`), JSON.stringify(twoPane));
