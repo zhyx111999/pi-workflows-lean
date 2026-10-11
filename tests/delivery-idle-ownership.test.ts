@@ -4,13 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 import { setTimeout as delay, setImmediate as tick } from "node:timers/promises";
-import { _setStreamingAckTimeoutForTests } from "../src/task-panel/host-send-capture.js";
-import {
-  _getStealMapForTests,
-  _registerHostSessionForTests,
-  _resetDeliveryRegistriesForTests,
-  suspendSessionDelivery,
-} from "../src/task-panel.js";
+import { _setStreamingAckTimeoutForTests, confirmedSessionSend } from "../src/task-panel/confirmed-send.js";
+import { _resetDeliveryRegistriesForTests, suspendSessionDelivery } from "../src/task-panel.js";
 
 const temporaryRoots: string[] = [];
 afterEach(() => {
@@ -74,8 +69,7 @@ function host() {
   const emit = (event: Event) => {
     for (const listener of listeners) listener(event);
   };
-  _registerHostSessionForTests(session);
-  const send = _getStealMapForTests().get("idle-host");
+  const send = confirmedSessionSend(session, "idle-host");
   assert.ok(send);
   return {
     session,

@@ -16,9 +16,11 @@ import {
   takeWorkflowRuntime,
 } from "../src/extension-reload.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
-import { _registerBoundSessionSendForTests, _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
+import { useHostSessionClass } from "../src/task-panel/host-session-capture.js";
+import { _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
 import { getWorkflowSettingsPath } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
+import { FakeHostSession, type HostMessage, sendMessageTo } from "./helpers/fake-host-session.js";
 
 describe("workflow extension - tool availability", () => {
   it("registers exactly the two subagents tools and hands the live runtime across reload", async () => {
@@ -241,7 +243,9 @@ describe("workflow extension - tool availability", () => {
           );
           handoffWorkflowRuntime(staged);
 
-          const secondDelivered: string[] = [];
+          // Pi binds the second generation's pi to the replacement host session.
+          useHostSessionClass(FakeHostSession);
+          const hostSession = new FakeHostSession(`session-${reason}`);
           const secondHandlers: Record<string, Array<(...args: any[]) => any>> = {};
           const secondPi = {
             registerTool: () => {},
@@ -255,19 +259,11 @@ describe("workflow extension - tool availability", () => {
             setActiveTools: (tools: string[]) => {
               activeTools.splice(0, activeTools.length, ...tools);
             },
-            sendMessage: (msg: { content?: string }) => {
-              if (msg.content) secondDelivered.push(msg.content);
-            },
+            sendMessage: sendMessageTo(hostSession),
           } as unknown as ExtensionAPI;
           installExtension(secondPi);
           assert.equal(takeWorkflowRuntime(), undefined, "second generation claims the staged runtime");
 
-          // Production session_start does not pass stableSend — steal map only.
-          _resetDeliveryRegistriesForTests();
-          _registerBoundSessionSendForTests(`session-${reason}`, (msg) => {
-            if (typeof msg.content === "string") secondDelivered.push(msg.content);
-            return Promise.resolve();
-          });
           secondHandlers.session_start?.[0]?.(
             { reason },
             {
@@ -296,10 +292,11 @@ describe("workflow extension - tool availability", () => {
             id === runId ? fakeRun : origGet(id);
           staged.manager.emit("complete", { runId });
           assert.ok(
-            secondDelivered.some((c) => c.includes(`ok-${reason}`)),
-            `completion after ${reason} handoff must deliver via the stolen host send`,
+            hostSession.received.some(({ message }) => message.content.includes(`ok-${reason}`)),
+            `completion after ${reason} handoff must deliver through the captured host session`,
           );
           discardWorkflowRuntime();
+          _resetDeliveryRegistriesForTests();
         }
       });
     } finally {
@@ -623,7 +620,9 @@ describe("workflow extension - tool availability", () => {
         discardWorkflowRuntime();
         const activeTools = ["bash", "read"];
         const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-        const delivered: string[] = [];
+        useHostSessionClass(FakeHostSession);
+        const hostSession = new FakeHostSession("s-prebind");
+        const delivered = () => hostSession.received.map(({ message }) => message.content);
         const pi = {
           registerTool: () => {},
           registerCommand: () => {},
@@ -636,11 +635,11 @@ describe("workflow extension - tool availability", () => {
           setActiveTools: (tools: string[]) => {
             activeTools.splice(0, activeTools.length, ...tools);
           },
-          sendMessage: (msg: { content?: string }) => {
+          sendMessage: (msg: HostMessage, options?: unknown) => {
             if (!(pi as { _bound?: boolean })._bound) {
               throw new Error("Extension runtime not initialized");
             }
-            if (msg.content) delivered.push(msg.content);
+            sendMessageTo(hostSession)(msg, options);
           },
           _bound: false,
         } as unknown as ExtensionAPI & { _bound: boolean };
@@ -665,11 +664,11 @@ describe("workflow extension - tool availability", () => {
           setActiveTools: (tools: string[]) => {
             activeTools.splice(0, activeTools.length, ...tools);
           },
-          sendMessage: (msg: { content?: string }) => {
+          sendMessage: (msg: HostMessage, options?: unknown) => {
             if (!(pi2 as { _bound?: boolean })._bound) {
               throw new Error("Extension runtime not initialized");
             }
-            if (msg.content) delivered.push(msg.content);
+            sendMessageTo(hostSession)(msg, options);
           },
           _bound: false,
         } as unknown as ExtensionAPI & { _bound: boolean };
@@ -691,14 +690,9 @@ describe("workflow extension - tool availability", () => {
           return live.some((r: { runId?: string }) => r?.runId === "bg-prebind") ? live : [...live, fakeRun];
         };
         mgr.emit("complete", { runId: "bg-prebind" });
-        assert.equal(delivered.length, 0, "must not deliver while runtime unbound");
+        assert.equal(delivered().length, 0, "must not deliver while runtime unbound");
 
         pi2._bound = true;
-        _resetDeliveryRegistriesForTests();
-        _registerBoundSessionSendForTests("s-prebind", (msg) => {
-          if (typeof msg.content === "string") delivered.push(msg.content);
-          return Promise.resolve();
-        });
         handlers2.session_start?.[0]?.(
           { reason: "reload" },
           {
@@ -712,10 +706,11 @@ describe("workflow extension - tool availability", () => {
           },
         );
         assert.ok(
-          delivered.some((c) => c.includes("prebind-ok")),
+          delivered().some((c) => c.includes("prebind-ok")),
           "session_start must flush the pre-bind queue",
         );
         discardWorkflowRuntime();
+        _resetDeliveryRegistriesForTests();
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });

@@ -32,7 +32,7 @@ import { createWorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 
-export { installHostSessionCapture } from "./task-panel.js";
+export { useHostSessionClass } from "./task-panel/host-session-capture.js";
 
 /**
  * Bound for the read-only session-header probe (first line only). Independent of
@@ -169,6 +169,8 @@ export default function extension(pi: ExtensionAPI) {
       cwd,
       extensionVersion: WORKFLOW_EXTENSION_VERSION,
       manager,
+      // A generation that takes the runtime over rebinds delivery itself.
+      release: () => dropSessionDelivery(outgoingSessionId),
     };
 
     if (reason && SESSION_REPLACEMENT_REASONS.has(reason)) {
@@ -185,7 +187,6 @@ export default function extension(pi: ExtensionAPI) {
         if (targetCwd !== cwd) {
           pauseStrandedWorkflowRuntime(runtime);
           discardWorkflowRuntime(runtime);
-          dropSessionDelivery(outgoingSessionId);
           return;
         }
         handoffWorkflowRuntime(runtime);
@@ -196,7 +197,6 @@ export default function extension(pi: ExtensionAPI) {
         if (targetCwd && targetCwd !== cwd) {
           pauseStrandedWorkflowRuntime(runtime);
           discardWorkflowRuntime(runtime);
-          dropSessionDelivery(outgoingSessionId);
           return;
         }
         handoffWorkflowRuntime(runtime);
@@ -208,7 +208,6 @@ export default function extension(pi: ExtensionAPI) {
 
     pauseStrandedWorkflowRuntime(runtime);
     discardWorkflowRuntime(runtime);
-    dropSessionDelivery(outgoingSessionId);
   });
 
   registerWorkflowCommands(pi, { getManager, getStorage, getCwd });

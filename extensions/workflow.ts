@@ -12,6 +12,6 @@ const distUrl = `${pathToFileURL(distPath).href}?v=${statSync(distPath).mtimeMs}
 
 const host = await import("@earendil-works/pi-coding-agent");
 const extension = await import(distUrl);
-extension.installHostSessionCapture(host.AgentSession);
+extension.useHostSessionClass(host.AgentSession);
 export const sessionFileCwd = extension.sessionFileCwd;
 export default extension.default;

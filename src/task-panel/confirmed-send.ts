@@ -1,46 +1,26 @@
 /**
- * Captures each host session's sendCustomMessage and wraps it so a workflow
- * result counts as delivered only once that session has persisted it.
+ * Wraps a captured host session's sendCustomMessage so a workflow result
+ * counts as delivered only once that session has persisted it.
  */
 
 import type { DeliverySend } from "./delivery-endpoints.js";
 import { sessionFileContainsEntry } from "./session-file-scan.js";
 
-/** The parts of an AgentSession the capture relies on; optional so test doubles can supply only what they use. */
-export interface StealCandidate {
+/** The parts of an AgentSession a confirmed send relies on; optional so test doubles can supply only what they use. */
+export interface HostSession {
   sendCustomMessage?: DeliverySend;
   isStreaming?: boolean;
   isIdle?: boolean;
   waitForIdle?: () => Promise<void>;
-  agent?: {
-    hasQueuedMessages?: () => boolean;
-  };
   subscribe?: (
-    listener: (event: {
-      type?: string;
-      message?: { role?: string; customType?: string; details?: unknown };
-      followUp?: readonly unknown[];
-      steering?: readonly unknown[];
-    }) => void,
+    listener: (event: { type?: string; message?: { role?: string; customType?: string; details?: unknown } }) => void,
   ) => () => void;
   sessionManager?: {
     getSessionId?: () => string;
-    getSessionName?: () => string | undefined;
-    getEntries?: () => Array<{ type?: string; customType?: string; details?: unknown }>;
     getBranch?: () => Array<{ id?: string; type?: string; customType?: string; details?: unknown }>;
     getSessionFile?: () => string | undefined;
-    isPersisted?: () => boolean;
   };
-  _resourceLoader?: { noExtensions?: boolean };
-  _bindExtensionCore?: (...args: unknown[]) => unknown;
 }
-
-/**
- * Confirming sends keyed by host sessionId. Workflow children (in-memory,
- * noExtensions, or named `workflow:…`) never enter this map, so a result can
- * never be routed into a subagent's session.
- */
-export const boundSessionSends = new Map<string, DeliverySend>();
 
 interface ActiveStreamingWaiter {
   sessionId: string;
@@ -53,32 +33,6 @@ const activeStreamingWaiters = new Set<ActiveStreamingWaiter>();
 const DEFAULT_STREAMING_ACK_TIMEOUT_MS = 60_000;
 let streamingAckTimeoutMs = DEFAULT_STREAMING_ACK_TIMEOUT_MS;
 
-function hostSessionIdToSteal(session: StealCandidate, probe?: boolean): string | undefined {
-  const sm = session.sessionManager;
-  if (!sm) return undefined;
-  if (session._resourceLoader?.noExtensions === true) return undefined;
-  try {
-    const name = sm.getSessionName?.();
-    if (typeof name === "string" && name.startsWith("workflow:")) return undefined;
-  } catch {
-    // getSessionName unavailable — keep evaluating
-  }
-  if (typeof session.sendCustomMessage !== "function") return undefined;
-  const sid = sm.getSessionId?.();
-  // A probe skips only the persistence gate below; the sessionManager,
-  // noExtensions, and workflow:-name gates above still apply. That is safe: a
-  // probe is only ever sent through the pi.sendMessage of the session running
-  // this extension, so it cannot reach a foreign or child session.
-  if (!probe) {
-    try {
-      if (!sm.isPersisted?.()) return undefined;
-    } catch {
-      return undefined;
-    }
-  }
-  return sid;
-}
-
 function deliveryIdFromDetails(details: unknown): string | undefined {
   if (!details || typeof details !== "object") return undefined;
   const deliveryId = (details as { deliveryId?: unknown }).deliveryId;
@@ -86,7 +40,7 @@ function deliveryIdFromDetails(details: unknown): string | undefined {
 }
 
 /** Whether the session's current branch holds this delivery and the session file has it on disk. */
-function sessionHasDelivery(session: StealCandidate, deliveryId: string): boolean | undefined {
+function sessionHasDelivery(session: HostSession, deliveryId: string): boolean | undefined {
   const sm = session.sessionManager;
   if (typeof sm?.getBranch !== "function" || typeof sm.getSessionFile !== "function") return undefined;
   try {
@@ -109,17 +63,15 @@ function sessionHasDelivery(session: StealCandidate, deliveryId: string): boolea
 }
 
 /**
- * Register a confirming send for a host session. The wrapper waits until the
- * host is idle before sending, so a result never sits in the host's
- * unobservable follow-up queue, and resolves only once the result is persisted
- * in the session file.
+ * A confirming send for the host session `sid`. It waits until the host is idle
+ * before sending, so a result never sits in the host's unobservable follow-up
+ * queue, and resolves only once the result is persisted in the session file.
  */
-export function captureHostSessionSend(session: StealCandidate, probe?: boolean): void {
-  const sid = hostSessionIdToSteal(session, probe);
+export function confirmedSessionSend(session: HostSession, sid: string): DeliverySend | undefined {
   const send = session.sendCustomMessage;
-  if (!sid || typeof send !== "function") return;
+  if (typeof send !== "function") return undefined;
 
-  boundSessionSends.set(sid, (message, options) => {
+  return (message, options) => {
     const deliveryId = deliveryIdFromDetails(message.details);
     if (deliveryId && sessionHasDelivery(session, deliveryId) === true) return Promise.resolve();
 
@@ -236,7 +188,7 @@ export function captureHostSessionSend(session: StealCandidate, probe?: boolean)
       }
       startWhenIdle();
     });
-  });
+  };
 }
 
 /**
@@ -255,12 +207,11 @@ export function _setStreamingAckTimeoutForTests(timeoutMs: number): void {
   streamingAckTimeoutMs = timeoutMs;
 }
 
-/** @internal test helper — cancel every wait and forget captured sends. */
-export function _resetHostSendCaptureForTests(): void {
+/** @internal test helper — cancel every wait and restore the default timeout. */
+export function _resetConfirmedSendsForTests(): void {
   for (const waiter of activeStreamingWaiters) {
     waiter.cancel(new Error("test reset"));
   }
   activeStreamingWaiters.clear();
   streamingAckTimeoutMs = DEFAULT_STREAMING_ACK_TIMEOUT_MS;
-  boundSessionSends.clear();
 }
