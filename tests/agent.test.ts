@@ -32,6 +32,7 @@ import {
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
 import { withFakeHome, withFakeHomeAsync } from "./helpers/fake-home.js";
 import { fauxRegistry, fauxRegistryFor } from "./helpers/faux-registry.js";
+import { catalogModel, catalogRegistry } from "./helpers/model-catalog.js";
 import { readProviderSystemPrompt } from "./helpers/pi-context.js";
 
 // Private methods used for testing - cast to this type to access them without `any`
@@ -1315,11 +1316,7 @@ test("WorkflowAgent.run() rejects a non-object top-level schema before touching 
 // ═══════════════════════════════════════════════════════════════════════════
 
 test("WorkflowAgent.run() throws MODEL_NOT_FOUND for an unresolvable model spec instead of silently using the session default", async () => {
-  const registry = {
-    getAll: () => [{ provider: "openrouter", id: "anthropic/claude-opus-4-8", name: "Claude" } as any],
-    getAvailable: () => [],
-    find: () => undefined,
-  } as any;
+  const registry = catalogRegistry([catalogModel("openrouter", "anthropic/claude-opus-4-8", "Claude")]);
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: registry });
   await assert.rejects(
@@ -1374,6 +1371,60 @@ test("WorkflowAgent.run() still resolves a known model spec normally (no regress
   }
 });
 
+test("WorkflowAgent.run() runs a bare model id shared by two providers on the only authenticated one", async () => {
+  const home = mkdtempSync(join(tmpdir(), "pi-dw-shared-id-home-"));
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dw-shared-id-cwd-"));
+  // The unauthenticated provider is registered first, so catalog order alone would pick it.
+  const providers = [
+    { provider: "fauxtest-shared-noauth", apiKey: undefined },
+    { provider: "fauxtest-shared-auth", apiKey: "faux-dummy-key-not-used" },
+  ].map((entry) => ({
+    ...entry,
+    core: createFauxCore({
+      provider: entry.provider,
+      models: [{ id: "shared-model", name: "Shared Model", contextWindow: 128000, maxTokens: 4096 }],
+    }),
+  }));
+  try {
+    await withFakeHomeAsync(home, async () => {
+      const runtime = await ModelRuntime.create({ authPath: join(home, "auth.json"), modelsPath: null });
+      for (const { provider, apiKey, core } of providers) {
+        runtime.registerProvider(provider, {
+          baseUrl: "http://127.0.0.1:9/faux",
+          ...(apiKey ? { apiKey } : {}),
+          api: core.api,
+          streamSimple: core.streamSimple as never,
+          models: [
+            {
+              id: "shared-model",
+              name: "Shared Model",
+              reasoning: true,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 128000,
+              maxTokens: 4096,
+            },
+          ],
+        });
+        core.setResponses([fauxAssistantMessage(`answered-by-${provider}`, { stopReason: "stop" })]);
+      }
+
+      const agent = new WorkflowAgent({ cwd, modelRegistry: new ModelRegistry(runtime) });
+      const resolvedSpecs: string[] = [];
+      const text = await agent.run("task", {
+        model: "shared-model:high",
+        label: "shared-id",
+        onModelResolved: (spec) => resolvedSpecs.push(spec),
+      });
+      assert.deepEqual(resolvedSpecs, ["fauxtest-shared-auth/shared-model:high"]);
+      assert.ok(text.includes("answered-by-fauxtest-shared-auth"));
+    });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // WorkflowAgent.run(): asymmetric fail-loud behavior for a tier that resolves
 // to an unavailable model (#131 follow-up) —
@@ -1396,9 +1447,7 @@ test("WorkflowAgent.run() throws MODEL_NOT_FOUND naming the tier when an EXPLICI
       mkdirSync(tiersDir, { recursive: true });
       writeFileSync(join(tiersDir, "model-tiers.json"), JSON.stringify({ tiers: { big: "deadprov/ghost-model" } }));
 
-      const registry = {
-        getAll: () => [{ provider: "fauxtest", id: "faux-model", name: "faux-model" } as any],
-      } as any;
+      const registry = catalogRegistry([catalogModel("fauxtest", "faux-model")]);
 
       const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
       await assert.rejects(agent.run("task", { tier: "big", label: "explicit-tier" }), (error: unknown) => {
@@ -2365,17 +2414,13 @@ test("lastAssistantText stays lenient for schema prose extraction (unchanged by 
 });
 
 test("WorkflowAgent reuses an injected ModelRegistry instead of building its own", async () => {
-  const mockModel = { provider: "mock", id: "shared" } as any;
-  const registry = {
-    find: (provider: string, id: string) => (provider === "mock" && id === "shared" ? mockModel : undefined),
-    getAvailable: () => [mockModel],
-    getAll: () => [mockModel],
-  } as any;
+  const mockModel = catalogModel("mock", "shared");
+  const registry = catalogRegistry([mockModel]);
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: registry });
   const resolvedRegistry = await (agent as any).getRegistry();
   assert.equal(resolvedRegistry, registry, "should hand back the injected registry");
-  const resolved = resolveModelSpecWithThinking("mock/shared", resolvedRegistry);
+  const resolved = resolveModelSpecWithThinking("mock/shared", runtimeOf(resolvedRegistry));
   assert.equal(resolved.model, mockModel, "should resolve via the injected registry");
 });
 
@@ -2390,42 +2435,33 @@ test("WorkflowAgent.resolveModel resolves via a per-run registry when the constr
   // Regression test for the per-run `modelRegistry` AgentRunOptions field: a
   // model present only in a registry passed to run() (not the constructor)
   // must still resolve.
-  const perRunModel = { provider: "router", id: "per-run-only" } as any;
-  const perRunRegistry = {
-    find: (provider: string, id: string) => (provider === "router" && id === "per-run-only" ? perRunModel : undefined),
-    getAvailable: () => [perRunModel],
-    getAll: () => [perRunModel],
-  } as any;
+  const perRunModel = catalogModel("router", "per-run-only");
+  const perRunRegistry = catalogRegistry([perRunModel]);
 
   const agent = new WorkflowAgent({ cwd: "/tmp" });
   const resolved = resolveModelSpecWithThinking(
     "router/per-run-only",
-    await (agent as any).getRegistry(perRunRegistry),
+    runtimeOf(await (agent as any).getRegistry(perRunRegistry)),
   );
   assert.equal(resolved.model, perRunModel, "should resolve via the per-run registry, not a disk registry");
 });
 
 test("WorkflowAgent.resolveModel: per-run registry takes precedence over the constructor's shared registry", async () => {
-  const constructorModel = { provider: "ctor", id: "shared" } as any;
-  const constructorRegistry = {
-    find: (provider: string, id: string) => (provider === "ctor" && id === "shared" ? constructorModel : undefined),
-    getAvailable: () => [constructorModel],
-    getAll: () => [constructorModel],
-  } as any;
+  const constructorModel = catalogModel("ctor", "shared");
+  const constructorRegistry = catalogRegistry([constructorModel]);
 
-  const perRunModel = { provider: "run", id: "override" } as any;
-  const perRunRegistry = {
-    find: (provider: string, id: string) => (provider === "run" && id === "override" ? perRunModel : undefined),
-    getAvailable: () => [perRunModel],
-    getAll: () => [perRunModel],
-  } as any;
+  const perRunModel = catalogModel("run", "override");
+  const perRunRegistry = catalogRegistry([perRunModel]);
 
   const agent = new WorkflowAgent({ cwd: "/tmp", modelRegistry: constructorRegistry });
   // The per-run registry, not the constructor's, is consulted when both are set.
-  const resolved = resolveModelSpecWithThinking("run/override", await (agent as any).getRegistry(perRunRegistry));
+  const resolved = resolveModelSpecWithThinking(
+    "run/override",
+    runtimeOf(await (agent as any).getRegistry(perRunRegistry)),
+  );
   assert.equal(resolved.model, perRunModel, "per-run registry should win over the constructor's shared registry");
   // And the constructor registry is still used when no per-run registry is given.
-  const fallback = resolveModelSpecWithThinking("ctor/shared", await (agent as any).getRegistry());
+  const fallback = resolveModelSpecWithThinking("ctor/shared", runtimeOf(await (agent as any).getRegistry()));
   assert.equal(fallback.model, constructorModel, "constructor registry should still apply without a per-run override");
 });
 

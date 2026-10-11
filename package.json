@@ -64,7 +64,7 @@
     "acorn": "^8.16.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.80.8",
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
     "@earendil-works/pi-tui": ">=0.80.6",
     "typebox": "*"
   },
