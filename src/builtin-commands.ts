@@ -12,23 +12,10 @@
 import type { ExtensionAPI, ExtensionCommandContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BuiltinWorkflowInvocation } from "./builtin-workflows.js";
 import { findBuiltinWorkflow } from "./builtin-workflows.js";
-import { type CommandDeps, claimCommand, isCommandRegistered } from "./command-registry.js";
+import { type CommandDeps, claimCommand, isCommandTaken } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
 import { parseCommandArgs } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
-
-function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
-  return isCommandRegistered(pi, name);
-}
-
-/** Split a command argument string into tokens, respecting single/double quotes. */
-function tokenizeArgs(input: string): string[] {
-  const tokens: string[] = [];
-  for (const m of input.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
-    tokens.push(m[1] ?? m[2] ?? m[3] ?? "");
-  }
-  return tokens;
-}
 
 /**
  * Start a built-in workflow through the manager's background path and tell the
@@ -106,7 +93,6 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, { getManager, getCwd,
   const SHADOW_WHOLE_STRING_PRIMARY: Record<string, string> = {
     "deep-research": "question",
   };
-  const SHADOW_TOKENIZED_PRIMARY: Record<string, { primary: string; rest: string }> = {};
 
   function runSavedShadowIfPresent(name: string, rawArgs: string, ctx: ExtensionCommandContext): boolean {
     const saved = getStorage().load(name);
@@ -121,23 +107,11 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, { getManager, getCwd,
       // args.trim(), including "="-containing topics (r2 NIT).
       parsed[wholeKey] = raw;
     }
-    const tokenized = SHADOW_TOKENIZED_PRIMARY[name];
-    if (tokenized && !new RegExp(`(?:^|\\s)${tokenized.primary}=`).test(rawArgs) && raw) {
-      // Quote-aware tokenization, mirroring the builtin handler's own
-      // Quote-aware tokenization of the raw argument string.
-      const tokens = tokenizeArgs(raw);
-      // A leading key=value token means a named-arg-style invocation —
-      // mirror how any saved workflow parses it (no positional mapping).
-      if (tokens.length && !tokens[0].includes("=")) {
-        parsed[tokenized.primary] = tokens[0];
-        if (tokens.length > 1 && parsed[tokenized.rest] === undefined) parsed[tokenized.rest] = tokens.slice(1);
-      }
-    }
     startBackground(getManager(), ctx, name, saved.script, parsed);
     return true;
   }
 
-  if (!alreadyRegistered(pi, "deep-research")) {
+  if (!isCommandTaken(pi, "deep-research")) {
     pi.registerCommand("deep-research", {
       description: "Research a question across the web and return sourced claims",
       async handler(args: string, ctx: ExtensionCommandContext) {

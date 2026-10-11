@@ -4,8 +4,9 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { claimCommand, commandOwner, isCommandRegistered } from "./command-registry.js";
+import { claimCommand, commandOwner, isCommandTaken } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
+import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 
@@ -18,14 +19,16 @@ function savedCommandOwnedByExtension(pi: ExtensionAPI, name: string): boolean {
 }
 
 /**
- * Pi cannot unregister a slash command. Distinguish commands this extension
- * owns from built-ins/other extensions before a save or rename reaches disk.
+ * Pi cannot unregister a slash command and never reports a name clash. Refuse a
+ * name Pi or another extension answers before a save or rename reaches disk;
+ * Pi's own commands go first because its editor runs them whoever registered.
  */
 export function savedWorkflowCommandAvailability(
   pi: ExtensionAPI,
   name: string,
 ): { ok: true } | { ok: false; message: string } {
-  if (!isCommandRegistered(pi, name) || savedCommandOwnedByExtension(pi, name)) return { ok: true };
+  if (PI_RESERVED_COMMANDS.has(name)) return { ok: false, message: `/${name} is a built-in Pi command.` };
+  if (!isCommandTaken(pi, name) || savedCommandOwnedByExtension(pi, name)) return { ok: true };
   return { ok: false, message: `/${name} is already provided by Pi or another extension.` };
 }
 
@@ -58,7 +61,7 @@ export function registerSavedWorkflow(
 ): { ok: true } | { ok: false; message: string } {
   const availability = savedWorkflowCommandAvailability(pi, wf.name);
   if (!availability.ok) return availability;
-  if (isCommandRegistered(pi, wf.name)) return { ok: true };
+  if (isCommandTaken(pi, wf.name)) return { ok: true };
   try {
     pi.registerCommand(wf.name, {
       description: wf.description || `Saved workflow: ${wf.name}`,
