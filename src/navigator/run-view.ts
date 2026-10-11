@@ -5,7 +5,7 @@ import type { ThemeLike } from "../display.js";
 import { fmtCompact, fmtTokenSegment } from "../display.js";
 import type { NavigatorModel, NavigatorState } from "../workflow-ui.js";
 import { BX, renderTwoPaneFrame, topTitleSegment } from "./box-frame.js";
-import { ELLIPSIS, pluralize } from "./format.js";
+import { ELLIPSIS, phaseLabel, pluralize } from "./format.js";
 import {
   computeLeftWidth,
   computeModelColStart,
@@ -28,7 +28,9 @@ export function renderRunView(
   viewportRows: number,
 ): string[] {
   const phases = model.phases(runId);
-  state.clamp(state.kind === "agents" && state.phase ? model.agents(runId, state.phase).length : phases.length);
+  state.clamp(
+    state.kind === "agents" && state.phase !== undefined ? model.agents(runId, state.phase).length : phases.length,
+  );
   // Body cap: total height minus 2 header + 2 frame rules + blank + footer.
   const bodyCap = Math.max(1, viewportRows - 2 /*header*/ - 2 /*rules*/ - 2 /*blank+footer*/);
   return [
@@ -89,7 +91,7 @@ function runHeader(
 }
 
 function agentsTitle(phase: PhaseRow | undefined, agentCount: number): string {
-  return `${phase ? phase.title : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
+  return `${phase ? phaseLabel(phase.title) : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
 }
 
 /** The combined Phases | agents frame. The selected phase drives the right pane. */

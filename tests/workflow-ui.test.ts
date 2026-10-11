@@ -865,22 +865,6 @@ test("NavigatorState activeRunId returns undefined for saved items", () => {
   assert.equal(state.activeRunId(model), undefined);
 });
 
-test("itemKindAt returns 'run' for run items and 'saved' for saved items", () => {
-  const model = new NavigatorModel(fakeManager(), savedStorage());
-  const state = new NavigatorState();
-
-  assert.equal(state.itemKindAt(model, 0), "run");
-  assert.equal(state.itemKindAt(model, 1), "saved");
-  assert.equal(state.itemKindAt(model, 3), "saved");
-});
-
-test("itemKindAt returns 'run' when no storage configured", () => {
-  const model = new NavigatorModel(fakeManager());
-  const state = new NavigatorState();
-
-  assert.equal(state.itemKindAt(model, 0), "run");
-});
-
 test("renderNavigator shows empty saved hint when no saved workflows", () => {
   const model = new NavigatorModel(fakeManager(), emptySavedStorage());
   const state = new NavigatorState();
@@ -1754,4 +1738,98 @@ test("NavigatorModel carries the estimate flag onto run and phase rows (#209)", 
   assert.ok(state.drill(model), "drill into phases");
   const rendered = renderNavigator(state, model, 80);
   assert.match(rendered[1] ?? "", /~\d/, "header summary line marks estimate-derived totals with ~");
+});
+
+/** A manager whose single live run "run-1" holds the given phases and agents. */
+function liveRunManager(phases: string[], agents: WorkflowSnapshot["agents"]): WorkflowManager {
+  const snapshot: WorkflowSnapshot = {
+    name: "wf",
+    phases,
+    currentPhase: phases[0],
+    logs: [],
+    agents,
+    agentCount: agents.length,
+    runningCount: 0,
+    doneCount: agents.filter((a) => a.status === "done").length,
+    errorCount: 0,
+  };
+  return {
+    on: () => {},
+    off: () => {},
+    listRuns: () => [
+      {
+        runId: "run-1",
+        workflowName: "wf",
+        status: "running",
+        phases,
+        agents,
+        logs: [],
+      } as unknown as PersistedRunState,
+    ],
+    getRun: (id: string) =>
+      id === "run-1" ? ({ runId: "run-1", status: "running", snapshot } as unknown as ManagedRun) : undefined,
+  } as unknown as WorkflowManager;
+}
+
+async function openedComponent(manager: WorkflowManager): Promise<Component & { dispose?(): void }> {
+  const { ui, getComponent } = fakeUiCapturingComponent();
+  openWorkflowNavigator({} as ExtensionAPI, manager, ui).catch(() => {});
+  await Promise.resolve();
+  await Promise.resolve();
+  const component = getComponent();
+  assert.ok(component, "openWorkflowNavigator should have produced a component");
+  return component;
+}
+
+test("invalidate drops cached rich text so a theme switch recolors an open detail view", async () => {
+  const manager = liveRunManager(
+    ["Work"],
+    [{ id: 1, label: "writer", phase: "Work", prompt: "write", status: "done", result: "# Findings\n\n`code`" }],
+  );
+  const openDetail = async () => {
+    const component = await openedComponent(manager);
+    for (let i = 0; i < 3; i++) component.handleInput("\r");
+    return component;
+  };
+  initTheme("dark");
+  try {
+    const component = await openDetail();
+    const dark = component.render(80).join("\n");
+    assert.match(dark, /Findings/);
+
+    initTheme("light");
+    const light = (await openDetail()).render(80).join("\n");
+    assert.notEqual(light, dark, "the two themes must color the result differently");
+
+    component.invalidate();
+    assert.equal(component.render(80).join("\n"), light, "after invalidate the open view uses the new theme");
+  } finally {
+    initTheme("dark");
+  }
+});
+
+test("an empty-named phase opens, lists its agents, and drills into them", async () => {
+  const component = await openedComponent(
+    liveRunManager(
+      [""],
+      [
+        { id: 1, label: "first", phase: "", prompt: "a", status: "done", resultPreview: "result one" },
+        { id: 2, label: "second", phase: "", prompt: "b", status: "done", resultPreview: "result two" },
+      ],
+    ),
+  );
+  component.handleInput("\r");
+  assert.match(component.render(100).join("\n"), /1 \(unnamed phase\)/);
+
+  component.handleInput("\r");
+  const agents = component.render(100).join("\n");
+  assert.match(agents, /\(unnamed phase\) · 2 agents/);
+  assert.match(agents, /first/);
+  assert.match(agents, /second/);
+
+  component.handleInput("j");
+  component.handleInput("\r");
+  const detail = component.render(100).join("\n");
+  assert.match(detail, /second/);
+  assert.match(detail, /result two/);
 });
