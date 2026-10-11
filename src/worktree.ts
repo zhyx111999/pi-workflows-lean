@@ -5,10 +5,11 @@
  * and kept by default (`keepWorktree: false` deletes after the call).
  */
 
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, type ExecFileOptions, execFile, type SpawnOptions, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 /**
  * Bound every git invocation: a hung git (network FS, credential
@@ -20,86 +21,163 @@ const GIT_TIMEOUT_MS = 30_000;
 const CLEANUP_TIMEOUT_MS = 5_000;
 /** Keep at most this much of each git output stream (caps a noisy stderr). */
 const GIT_OUTPUT_LIMIT = 1024 * 1024;
+/**
+ * Time a timed-out git's process group gets to exit on SIGTERM before SIGKILL:
+ * long enough for git to drop its lock files, short enough not to stall spawn.
+ */
+const KILL_GRACE_MS = 2_000;
+/** How often the grace period checks whether the process group has exited. */
+const GROUP_POLL_MS = 50;
+
+/** The process primitives git runs on; tests substitute them to drive either platform's timeout path. */
+export interface ProcessHost {
+  readonly platform: NodeJS.Platform;
+  spawn(command: string, args: string[], options: SpawnOptions): ChildProcess;
+  /** `process.kill`: a negative pid signals a whole process group, and signal 0 only probes it. */
+  kill(pid: number, signal: NodeJS.Signals | 0): void;
+  /** Run a helper program; `done` fires once it exits, fails, or hits `options.timeout`. */
+  execFile(file: string, args: string[], options: ExecFileOptions, done: () => void): void;
+}
+
+const nodeProcessHost: ProcessHost = {
+  platform: process.platform,
+  spawn: (command, args, options) => spawn(command, args, options),
+  kill: (pid, signal) => {
+    process.kill(pid, signal);
+  },
+  execFile: (file, args, options, done) => {
+    execFile(file, args, options, () => done());
+  },
+};
 
 /** Options for the git invocations behind worktree creation/removal. */
 export interface WorktreeExecOptions {
   /** Per-invocation timeout; defaults to 30s (see GIT_TIMEOUT_MS). 0 disables. */
   timeoutMs?: number;
+  /** POSIX: how long a timed-out git's process group may react to SIGTERM before SIGKILL. */
+  killGraceMs?: number;
+  host?: ProcessHost;
 }
 
-const timeoutOf = (opts?: WorktreeExecOptions) => opts?.timeoutMs ?? GIT_TIMEOUT_MS;
+type GitExec = Required<WorktreeExecOptions>;
+
+const gitExec = (opts?: WorktreeExecOptions): GitExec => ({
+  timeoutMs: opts?.timeoutMs ?? GIT_TIMEOUT_MS,
+  killGraceMs: opts?.killGraceMs ?? KILL_GRACE_MS,
+  host: opts?.host ?? nodeProcessHost,
+});
 
 class GitTimeoutError extends Error {}
 
 /**
  * Run git and resolve with its stdout. A timeout ends git's whole process
- * tree before rejecting: killing git alone leaves its hooks running, and on
- * Windows a hook whose cwd is the new worktree keeps that directory busy.
+ * tree, then rejects without waiting for git to exit: a git stuck in the
+ * kernel (hung network filesystem) outlives even SIGKILL until its I/O
+ * returns, and its hooks keep the new worktree busy unless they end too.
  */
-function git(args: string[], timeoutMs: number): Promise<string> {
+function git(args: string[], exec: GitExec): Promise<string> {
   return new Promise((resolve, reject) => {
     // On POSIX git leads its own process group, so one signal reaches its hooks too.
-    const child = spawn("git", args, {
-      detached: process.platform !== "win32",
+    const child = exec.host.spawn("git", args, {
+      detached: exec.host.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       if (stdout.length < GIT_OUTPUT_LIMIT) stdout += chunk;
     });
-    child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+    child.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
       if (stderr.length < GIT_OUTPUT_LIMIT) stderr += chunk;
     });
-    let treeEnded: Promise<void> | undefined;
+    // The first outcome wins; a timeout claims it before the tree is ended, so
+    // the exit that the kill causes is not reported as an ordinary failure.
+    let decided = false;
+    const decide = (settle: () => void) => {
+      if (decided) return;
+      decided = true;
+      clearTimeout(timer);
+      settle();
+    };
     const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            treeEnded = endProcessTree(child);
-          }, timeoutMs)
+      exec.timeoutMs > 0
+        ? setTimeout(
+            () =>
+              decide(() => {
+                const timedOut = () =>
+                  reject(new GitTimeoutError(`git ${args.join(" ")} timed out after ${exec.timeoutMs}ms`));
+                void endProcessTree(child, exec).then(timedOut, timedOut);
+              }),
+            exec.timeoutMs,
+          )
         : undefined;
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      if (treeEnded) {
-        void treeEnded.then(() => reject(new GitTimeoutError(`git ${args.join(" ")} timed out after ${timeoutMs}ms`)));
-      } else if (code === 0) {
-        resolve(stdout);
-      } else {
-        const status = signal ? `signal ${signal}` : `exit code ${code}`;
-        reject(new Error(`git ${args.join(" ")} failed (${status}): ${stderr.trim()}`));
-      }
-    });
+    child.on("error", (error) => decide(() => reject(error)));
+    child.on("close", (code, signal) =>
+      decide(() => {
+        if (code === 0) {
+          resolve(stdout);
+        } else {
+          const status = signal ? `signal ${signal}` : `exit code ${code}`;
+          reject(new Error(`git ${args.join(" ")} failed (${status}): ${stderr.trim()}`));
+        }
+      }),
+    );
   });
 }
 
-/** End a running child and every process it started; resolves once the kill was delivered. */
-function endProcessTree(child: ChildProcess): Promise<void> {
-  // A descendant that inherited git's output pipes must not hold "close" open.
+/** End git and every process it started; resolves within a bounded time whether or not they exit. */
+async function endProcessTree(child: ChildProcess, exec: GitExec): Promise<void> {
+  // A descendant that inherited git's output pipes must not keep them open.
   child.stdout?.destroy();
   child.stderr?.destroy();
   const pid = child.pid;
-  if (pid === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
-      child.kill("SIGTERM");
-    }
-    return Promise.resolve();
-  }
-  // TerminateProcess (child.kill) would end git.exe alone. taskkill /T finds
-  // the descendants through their parent, so it must run while git is alive.
-  return new Promise((resolve) => {
-    execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { timeout: CLEANUP_TIMEOUT_MS, windowsHide: true }, () => {
+  if (pid === undefined) return;
+  if (exec.host.platform !== "win32") return endProcessGroup(pid, exec);
+  // taskkill /T finds the descendants through their parent, so it needs git alive.
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  // TerminateProcess (child.kill) would end git.exe alone; it remains the
+  // fallback when taskkill fails. taskkill's own timeout bounds the wait.
+  await new Promise<void>((resolve) => {
+    const finish = () => {
       child.kill();
       resolve();
-    });
+    };
+    try {
+      exec.host.execFile(
+        "taskkill",
+        ["/pid", String(pid), "/T", "/F"],
+        { timeout: CLEANUP_TIMEOUT_MS, windowsHide: true },
+        finish,
+      );
+    } catch {
+      finish();
+    }
   });
+}
+
+/**
+ * SIGTERM git's process group, then SIGKILL whatever is left after the grace
+ * period. The group is probed rather than git itself: git may exit while a
+ * hook that ignores SIGTERM keeps running. SIGKILL is not awaited, because a
+ * process blocked in the kernel only dies once its I/O returns.
+ */
+async function endProcessGroup(pid: number, exec: GitExec): Promise<void> {
+  const signalGroup = (signal: NodeJS.Signals | 0) => {
+    try {
+      exec.host.kill(-pid, signal);
+      return true;
+    } catch {
+      return false; // ESRCH: no process is left in the group.
+    }
+  };
+  if (!signalGroup("SIGTERM")) return;
+  const deadline = Date.now() + exec.killGraceMs;
+  while (Date.now() < deadline) {
+    await delay(Math.min(GROUP_POLL_MS, deadline - Date.now()));
+    if (!signalGroup(0)) return;
+  }
+  signalGroup("SIGKILL");
 }
 
 export interface Worktree {
@@ -135,10 +213,10 @@ export async function createWorktree(
   name: string,
   execOptions?: WorktreeExecOptions,
 ): Promise<Worktree> {
-  const timeoutMs = timeoutOf(execOptions);
+  const exec = gitExec(execOptions);
   let repoRoot: string;
   try {
-    repoRoot = (await git(["-C", baseCwd, "rev-parse", "--show-toplevel"], timeoutMs)).trim();
+    repoRoot = (await git(["-C", baseCwd, "rev-parse", "--show-toplevel"], exec)).trim();
   } catch (error) {
     return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, "not a git repository") };
   }
@@ -146,18 +224,18 @@ export async function createWorktree(
   let path: string;
   let branch: string;
   try {
-    ({ path, branch } = await reserveWorktree(repoRoot, name, timeoutMs));
+    ({ path, branch } = await reserveWorktree(repoRoot, name, exec));
   } catch (error) {
     return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
   }
   try {
-    await git(["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"], timeoutMs);
+    await git(["-C", repoRoot, "worktree", "add", "-b", branch, path, "HEAD"], exec);
     return { isolated: true, cwd: path, branch, repoRoot };
   } catch (error) {
     // A timed-out/failed `worktree add` can leave a created branch and a
     // partially checked-out tree behind: git rolls back its
     // registration but never deletes the `-b` branch or the directory.
-    await cleanupFailedWorktreeAdd(repoRoot, path, branch);
+    await cleanupFailedWorktreeAdd(repoRoot, path, branch, { ...exec, timeoutMs: CLEANUP_TIMEOUT_MS });
     return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
   }
 }
@@ -178,7 +256,7 @@ const WORKTREE_ID_ATTEMPTS = 8;
 async function reserveWorktree(
   repoRoot: string,
   name: string,
-  timeoutMs: number,
+  exec: GitExec,
 ): Promise<{ path: string; branch: string }> {
   const parent = join(repoRoot, ".pi", "worktrees");
   await mkdir(parent, { recursive: true });
@@ -194,9 +272,7 @@ async function reserveWorktree(
     const branch = `pi/wf/${slug(name)}-${id}`;
     let free = false;
     try {
-      free = !(
-        await git(["-C", repoRoot, "for-each-ref", "--format=%(refname)", `refs/heads/${branch}`], timeoutMs)
-      ).trim();
+      free = !(await git(["-C", repoRoot, "for-each-ref", "--format=%(refname)", `refs/heads/${branch}`], exec)).trim();
     } finally {
       if (!free) await rmdir(path);
     }
@@ -214,13 +290,13 @@ function describeGitFailure(error: unknown, fallback: string): string {
 /** Best-effort cleanup after a failed `worktree add`: drop the half-created
  * branch and any partial checkout left by a killed git. All steps short-timeout
  * and failure-tolerant — the spawn path must not hang on cleanup. */
-async function cleanupFailedWorktreeAdd(repoRoot: string, path: string, branch: string): Promise<void> {
+async function cleanupFailedWorktreeAdd(repoRoot: string, path: string, branch: string, exec: GitExec): Promise<void> {
   // Order matters (r3 MAJOR): if the killed `worktree add` had already
   // REGISTERED the worktree, `branch -D` is refused ("used by worktree")
   // until the registration is gone. Deregister first, then delete the branch.
   try {
     // Registered case: removes the tree AND the registration in one step.
-    await git(["-C", repoRoot, "worktree", "remove", "--force", path], CLEANUP_TIMEOUT_MS);
+    await git(["-C", repoRoot, "worktree", "remove", "--force", path], exec);
   } catch {
     // best-effort — unregistered partial tree falls through to rm + targeted retry
   }
@@ -235,12 +311,12 @@ async function cleanupFailedWorktreeAdd(repoRoot: string, path: string, branch: 
     // If manual removal left THIS tree registered, retry its removal now that
     // the path is gone. Do not run `git worktree prune`: that mutates unrelated
     // stale registrations elsewhere in the repository.
-    await git(["-C", repoRoot, "worktree", "remove", "--force", path], CLEANUP_TIMEOUT_MS);
+    await git(["-C", repoRoot, "worktree", "remove", "--force", path], exec);
   } catch {
     // best-effort
   }
   try {
-    await git(["-C", repoRoot, "branch", "-D", branch], CLEANUP_TIMEOUT_MS);
+    await git(["-C", repoRoot, "branch", "-D", branch], exec);
   } catch {
     // best-effort
   }
@@ -249,15 +325,16 @@ async function cleanupFailedWorktreeAdd(repoRoot: string, path: string, branch: 
 /** Remove a worktree and its branch. Best-effort; safe to call on a no-op Worktree. */
 export async function removeWorktree(wt: Worktree, execOptions?: WorktreeExecOptions): Promise<void> {
   if (!wt.isolated || !wt.repoRoot) return;
+  const exec = gitExec(execOptions);
   try {
-    await git(["-C", wt.repoRoot, "worktree", "remove", "--force", wt.cwd], timeoutOf(execOptions));
+    await git(["-C", wt.repoRoot, "worktree", "remove", "--force", wt.cwd], exec);
   } catch {
     // A failed removal (e.g. a locked tree) does not authorize deleting its branch.
     return;
   }
   if (wt.branch) {
     try {
-      await git(["-C", wt.repoRoot, "branch", "-D", wt.branch], timeoutOf(execOptions));
+      await git(["-C", wt.repoRoot, "branch", "-D", wt.branch], exec);
     } catch {
       // branch already deleted
     }

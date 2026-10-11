@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { type ChildProcess, type ExecFileOptions, execFileSync, type SpawnOptions } from "node:child_process";
+import { EventEmitter } from "node:events";
 import {
   existsSync,
   mkdirSync,
@@ -13,8 +14,9 @@ import {
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
-import { createWorktree as createWorktreeLive, removeWorktree } from "../src/worktree.js";
+import { createWorktree as createWorktreeLive, type ProcessHost, removeWorktree } from "../src/worktree.js";
 
 test("createWorktree no-ops (not isolated) outside a git repo", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-wt-nogit-"));
@@ -429,4 +431,138 @@ test("a timed-out worktree add ends the hook processes git started, so cleanup i
     rmSync(fixtureDir, { recursive: true, force: true });
     rmSync(repo, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
+});
+
+/** A git child that never exits on its own, like one blocked on a hung filesystem. */
+class HungGit extends EventEmitter {
+  readonly pid = 4242;
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
+  /** Signals sent through ChildProcess.kill (TerminateProcess on Windows). */
+  readonly kills: (NodeJS.Signals | undefined)[] = [];
+  kill(signal?: NodeJS.Signals): boolean {
+    this.kills.push(signal);
+    return true;
+  }
+  /** Report an exit as node does: "exit", then "close" once its pipes end. */
+  exitOn(signal: NodeJS.Signals): void {
+    this.signalCode = signal;
+    this.emit("exit", null, signal);
+    this.emit("close", null, signal);
+  }
+}
+
+/**
+ * A process host on `platform` where every git hangs. `react` models how the
+ * git's process group responds to a signal and returns whether any of it
+ * survives; once nothing does, signalling the group fails with ESRCH.
+ */
+function hungGitHost(platform: NodeJS.Platform, react: (git: HungGit, signal: NodeJS.Signals) => boolean) {
+  const git = new HungGit();
+  const spawns: SpawnOptions[] = [];
+  const signals: { pid: number; signal: NodeJS.Signals | 0; at: number }[] = [];
+  const helpers: { file: string; args: string[]; options: ExecFileOptions }[] = [];
+  let groupAlive = true;
+  const host: ProcessHost = {
+    platform,
+    spawn: (_command, _args, options) => {
+      spawns.push(options);
+      return git as unknown as ChildProcess;
+    },
+    kill: (pid, signal) => {
+      signals.push({ pid, signal, at: Date.now() });
+      if (!groupAlive) throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" });
+      if (signal !== 0) groupAlive = react(git, signal);
+    },
+    execFile: (file, args, options, done) => {
+      helpers.push({ file, args, options });
+      setImmediate(done);
+    },
+  };
+  return { git, host, spawns, signals, helpers };
+}
+
+/** Never a repository: the first git call (rev-parse) is the one that hangs. */
+const fakeBase = join(tmpdir(), "pi-wt-fake-host");
+
+test("a timed-out git that survives SIGTERM gets SIGKILL after the grace period, and the call fails without waiting for it to exit", async () => {
+  // Stuck in the kernel: neither signal ends it, so "close" never comes.
+  const { host, spawns, signals } = hungGitHost("linux", () => true);
+  const killGraceMs = 200;
+  const started = Date.now();
+  const wt = await createWorktreeLive(fakeBase, "run-stuck-0-task", { timeoutMs: 20, killGraceMs, host });
+  const elapsed = Date.now() - started;
+
+  assert.equal(wt.isolated, false);
+  assert.match(wt.reason ?? "", /timed out/);
+  assert.equal(spawns[0]?.detached, true, "git leads its own process group");
+  assert.ok(
+    signals.every(({ pid }) => pid === -4242),
+    "every signal addresses git's process group",
+  );
+  const first = signals[0];
+  const last = signals.at(-1);
+  assert.ok(first && last, "the timeout signalled the group");
+  assert.equal(first.signal, "SIGTERM");
+  assert.equal(last.signal, "SIGKILL");
+  assert.ok(
+    signals.slice(1, -1).every(({ signal }) => signal === 0),
+    "the grace period only probes the group",
+  );
+  assert.ok(last.at - first.at >= killGraceMs, `SIGKILL waited for the grace period (${last.at - first.at}ms)`);
+  assert.ok(elapsed < 5_000, `the call failed in bounded time (took ${elapsed}ms)`);
+});
+
+test("a hook that outlives git on SIGTERM is SIGKILLed with the rest of git's process group", async () => {
+  // git exits on SIGTERM; a hook in its group ignores SIGTERM until SIGKILL.
+  const { host, signals } = hungGitHost("linux", (git, signal) => {
+    if (signal === "SIGTERM") git.exitOn("SIGTERM");
+    return signal !== "SIGKILL";
+  });
+  const wt = await createWorktreeLive(fakeBase, "run-hook-0-task", { timeoutMs: 20, killGraceMs: 200, host });
+
+  assert.match(wt.reason ?? "", /timed out/, "the exit caused by the kill is still reported as the timeout");
+  assert.deepEqual(
+    signals.filter(({ signal }) => signal !== 0).map(({ pid, signal }) => [pid, signal]),
+    [
+      [-4242, "SIGTERM"],
+      [-4242, "SIGKILL"],
+    ],
+  );
+});
+
+test("a process group that exits on SIGTERM is neither SIGKILLed nor waited on for the full grace period", async () => {
+  const { host, signals } = hungGitHost("linux", (git) => {
+    git.exitOn("SIGTERM");
+    return false;
+  });
+  const started = Date.now();
+  const wt = await createWorktreeLive(fakeBase, "run-term-0-task", { timeoutMs: 20, killGraceMs: 30_000, host });
+  const elapsed = Date.now() - started;
+
+  assert.match(wt.reason ?? "", /timed out/);
+  assert.deepEqual(
+    signals.filter(({ signal }) => signal !== 0).map(({ pid, signal }) => [pid, signal]),
+    [[-4242, "SIGTERM"]],
+    "SIGTERM alone ended the group; no SIGKILL follows",
+  );
+  assert.ok(elapsed < 5_000, `the call did not sit out the grace period (took ${elapsed}ms)`);
+});
+
+test("on Windows a timed-out git's tree is ended by taskkill /T /F, and the call fails even if git never exits", async () => {
+  const { git, host, spawns, signals, helpers } = hungGitHost("win32", () => true);
+  const wt = await createWorktreeLive(fakeBase, "run-win-0-task", { timeoutMs: 20, host });
+
+  assert.equal(wt.isolated, false);
+  assert.match(wt.reason ?? "", /timed out/);
+  assert.equal(spawns[0]?.detached, false, "Windows has no process groups to lead");
+  assert.deepEqual(
+    helpers.map(({ file, args, options }) => [file, args, options.timeout]),
+    [["taskkill", ["/pid", "4242", "/T", "/F"], 5_000]],
+    "taskkill ends the whole tree, bounded by its own timeout",
+  );
+  assert.equal(git.kills.length, 1, "TerminateProcess follows as the fallback for a failed taskkill");
+  assert.deepEqual(signals, [], "no POSIX process-group signals on Windows");
 });
