@@ -27,7 +27,6 @@ import { parseModelRoutingFromMeta } from "./model-routing.js";
 import type { ModelThinkingLevel } from "./model-spec.js";
 import { createAgent } from "./runtime/agent-call.js";
 import { createCheckpoint } from "./runtime/checkpoint.js";
-import { assertDeterministicSource } from "./runtime/determinism.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
 import { createRunContext, createRuntimeState } from "./runtime/run-context.js";
 import { resolveAgentTimeoutMs, resolveConcurrency } from "./runtime/run-limits.js";
@@ -388,7 +387,6 @@ export async function runWorkflow<T = unknown>(
 
 /** Split a script into its validated literal `meta` and the body that runs in the vm. */
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
-  assertDeterministicSource(script);
   const { meta, start, end } = readMetaExport(script);
   return { meta, body: script.slice(0, start) + script.slice(end) };
 }
