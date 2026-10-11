@@ -11,13 +11,14 @@ npm test
 
 `npm test` runs exactly what CI runs:
 
-1. `npm run check`: Biome lint and format check, then a type check of `scripts/` and `src/`.
-2. `npm run build`: compiles `src/` to `dist/`, which the Pi extension entry loads.
-3. `npm run docs:check`: fails when generated capability docs are stale.
-4. `npm run context:check`: fails when the context-size measurement is stale.
-5. `npm run test:unit`: unit tests with fake agents.
+1. `npm run check`: Biome lint and format check, then a type check of `scripts/`, `src/` and `tests/`.
+2. `npm run docs:check`: fails when generated capability docs are stale.
+3. `npm run context:check`: fails when the context-size measurement is stale.
+4. `npm run test:unit`: compiles `src/` to `dist/` (the published extension tests load it), then runs the unit tests.
 
-Run one test file with `npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`; the import keeps the test off your real home directory. After changing `src/`, run `npm run build` and `/reload` in Pi to load the new `dist/`.
+CI also runs `npm run check:dist`, which fails when the committed `dist/` differs from a fresh build.
+
+Run one test file with `npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`; the import keeps the test off your real home directory. `tests/extension-host-modules.test.ts` loads the built extension, so run `npm run build` before running it alone. After changing `src/`, run `npm run build` and `/reload` in Pi to load the new `dist/`.
 
 ## Generated files
 

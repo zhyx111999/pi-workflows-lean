@@ -5,8 +5,8 @@
   "description": "Lean fork of pi-dynamic-workflows 3.13.0. The parent model dispatches subagents; cross-check helpers and foreground runs are removed.",
   "type": "module",
   "scripts": {
-    "test": "npm run check && npm run build && npm run docs:check && npm run context:check && npm run test:unit",
-    "test:unit": "tsx --test --import ./tests/helpers/isolated-home.ts tests/**/*.test.ts",
+    "test": "npm run check && npm run docs:check && npm run context:check && npm run test:unit",
+    "test:unit": "npm run build && tsx --test --import ./tests/helpers/isolated-home.ts tests/**/*.test.ts",
     "check": "biome check . && npm run check:types",
     "check:types": "tsc -p tsconfig.check.json",
     "format": "biome format --write .",

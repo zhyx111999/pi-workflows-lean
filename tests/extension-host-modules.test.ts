@@ -7,6 +7,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import * as hostSdk from "@earendil-works/pi-coding-agent";
 import packageJson from "../package.json" with { type: "json" };
 
+// These tests load the published entry, which imports the built dist/;
+// npm run test:unit builds it first.
 // A native path: URL.pathname would yield "/C:/..." on Windows.
 const extensionEntry = fileURLToPath(new URL(`../${packageJson.pi.extensions[0]}`, import.meta.url));
 
