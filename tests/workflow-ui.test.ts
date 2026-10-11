@@ -1291,9 +1291,12 @@ test("navigator save registers via manager + live loadWorkflow so a same-name ov
   assert.equal(commands.filter((c) => c.name === "scan").length, 1);
   assert.equal(store.get("scan")?.script, "export SCRIPT_V1");
 
-  // Overwrite the same name with a new script; registration is idempotent but
-  // the live loader must pick up storage's latest value.
+  // Overwrite the same name with a new script (the second s confirms the
+  // replace); registration is idempotent but the live loader must pick up
+  // storage's latest value.
   run.script = "export SCRIPT_V2";
+  component?.handleInput("s");
+  assert.equal(store.get("scan")?.script, "export SCRIPT_V1", "a replace waits for confirmation");
   component?.handleInput("s");
   assert.equal(store.get("scan")?.script, "export SCRIPT_V2");
   assert.equal(commands.filter((c) => c.name === "scan").length, 1, "must not double-register the command");

@@ -88,6 +88,7 @@ WorkflowAgent.run()                          agent.ts
 | `session-owner.ts` | 会话归属：结果投递给哪个会话；会话切换时接管、恢复时认领、投递前以记录为准 |
 | `resume-state.ts` | 从磁盘记录重建运行，以便恢复 |
 | `agent-rows.ts` | 一个调用一行：重跑的调用接管原来那一行，被取代的执行作为历史留在该行 |
+| `run-restart.ts` | 从运行记录得出重启（另起一个新运行）所需的脚本、参数和执行选项（如 toolset）；所有重启入口都用它 |
 | `task-list-reuse.ts` | 修改后的任务列表：把没变的任务映射到原来的调用 |
 | `checkpoint-response.ts` | 暂停点：附加回应，恢复时校验 |
 | `abort-control.ts` / `execution-settlement.ts` | 记录用户的暂停或停止造成的中止，并有界地等待执行收尾 |
@@ -139,6 +140,7 @@ WorkflowAgent.run()                          agent.ts
 | `fs-persistence.ts` | 原子写入、备份等文件系统基础操作 |
 | `workflow-paths.ts` | 目录布局：`~/.pi/workflows/projects/<项目键>/`；Windows 上同一目录的不同写法共用一个项目键 |
 | `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`）：项目级和用户级两层，项目级优先 |
+| `run-save.ts` | 把运行的脚本存为工作流：判断新建、内容相同（跳过，不冲掉备份）或替换同名的不同工作流（调用方先确认，写入前再核对目标未变） |
 | `shared-store.ts` / `logger.ts` | 运行内的键值存储；运行日志 `<runId>.log` |
 
 ### 投递与界面层

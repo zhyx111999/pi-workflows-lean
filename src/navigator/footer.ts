@@ -2,6 +2,7 @@
 
 import type { ThemeLike } from "../display.js";
 import type { NavigatorModel, NavigatorState } from "../workflow-ui.js";
+import { confirmationPrompt } from "./confirmation.js";
 import type { NavigatorSnapshot } from "./items.js";
 
 export function footerLines(
@@ -11,11 +12,9 @@ export function footerLines(
   snapshot: NavigatorSnapshot | undefined,
 ): string[] {
   const lines: string[] = [];
-  if (state.mode === "confirm") {
-    const verb =
-      state.confirmationAction === "pause" ? "pause" : state.confirmationAction === "stop" ? "stop" : "delete";
-    const key = state.confirmationAction === "pause" ? "p" : "x";
-    lines.push(theme.fg("warning", `  Press ${key} again to confirm ${verb}, or Esc to cancel.`));
+  const confirmation = state.confirmation;
+  if (state.mode === "confirm" && confirmation) {
+    lines.push(theme.fg("warning", `  ${confirmationPrompt(confirmation)}`));
   } else if (state.mode === "rename") {
     lines.push(theme.fg("accent", `  Rename: ${state.draft}`));
   }

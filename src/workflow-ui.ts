@@ -32,6 +32,7 @@ import { asText } from "./navigator/as-text.js";
 import {
   type ConfirmationContext,
   type ConfirmKind,
+  type ConfirmRequest,
   type PendingConfirmation,
   sameConfirmationContext,
 } from "./navigator/confirmation.js";
@@ -226,8 +227,8 @@ export class NavigatorState {
   get savedName(): string | undefined {
     return this.top().savedName;
   }
-  get confirmationAction(): ConfirmKind | undefined {
-    return this.pending?.action;
+  get confirmation(): ConfirmRequest | undefined {
+    return this.pending?.request;
   }
 
   /** Reconcile selection after any list/filter/manager change without drifting. */
@@ -491,11 +492,10 @@ export class NavigatorState {
       savedIdentity: frame.savedIdentity,
     };
   }
-  beginConfirmation(action: ConfirmKind, target: ItemIdentity, snapshot: NavigatorSnapshot): boolean {
+  beginConfirmation(request: ConfirmRequest, snapshot: NavigatorSnapshot): boolean {
     if (this.mode !== "browse") return false;
     this.pending = {
-      action,
-      target,
+      request,
       cursor: this.cursor,
       filter: snapshot.filter,
       context: this.confirmationContext(),
@@ -503,27 +503,28 @@ export class NavigatorState {
     this.mode = "confirm";
     return true;
   }
-  confirm(action: ConfirmKind, snapshot: NavigatorSnapshot): ItemIdentity | undefined {
+  confirm(action: ConfirmKind, snapshot: NavigatorSnapshot): ConfirmRequest | undefined {
     const pending = this.pending;
     this.pending = undefined;
     this.mode = "browse";
     if (
       !pending ||
-      pending.action !== action ||
+      pending.request.action !== action ||
       pending.cursor !== this.cursor ||
       pending.filter !== snapshot.filter ||
       !sameConfirmationContext(this.confirmationContext(), pending.context)
     )
       return undefined;
+    const { request } = pending;
     if (this.kind === "savedDetail") {
-      return sameIdentity(this.top().savedIdentity, pending.target) ? pending.target : undefined;
+      return sameIdentity(this.top().savedIdentity, request.target) ? request : undefined;
     }
     if (this.kind === "runs") {
       const current = this.currentItem(snapshot);
-      return sameIdentity(current?.identity, pending.target) ? pending.target : undefined;
+      return sameIdentity(current?.identity, request.target) ? request : undefined;
     }
     // Drilled views are bound to the immutable frame runId, not runs selection.
-    return pending.target.kind === "run" && pending.target.runId === this.runId ? pending.target : undefined;
+    return request.target.kind === "run" && request.target.runId === this.runId ? request : undefined;
   }
   cancelConfirmation(): void {
     if (this.mode === "confirm") this.mode = "browse";

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { SUBAGENTS_TOOL_NAME } from "../src/subagents-tool.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
 import { buildForcedWorkflowPrompt } from "../src/workflow-editor.js";
 import type { WorkflowManager } from "../src/workflow-manager.js";
+import { createWorkflowStorage } from "../src/workflow-saved.js";
 import { commandDeps } from "./helpers/command-deps.js";
 
 type Handler = (args: string, ctx: any) => Promise<void>;
@@ -516,6 +520,7 @@ test("/workflows save <name> <runId> saves the specified run", async () => {
       saved.push(w);
       return { ...w, id: "saved-2" };
     },
+    load: () => null,
   };
 
   const runs = [
@@ -603,6 +608,94 @@ test("/workflows save <name> <runId> warns when run has no script", async () => 
   }
   assert.equal(notified.length, 1);
   assert.match(notified[0].message, /No run/, "should warn no script");
+});
+
+const OLD_SCRIPT = "export const meta = { name: 'scan', description: 'old' }\nreturn 'old'";
+const NEW_SCRIPT = "export const meta = { name: 'scan', description: 'new' }\nreturn 'new'";
+
+/** `/workflows save scan` over a real project storage that already holds OLD_SCRIPT, with a run of NEW_SCRIPT. */
+function replaceSaveHarness() {
+  const cwd = mkdtempSync(join(tmpdir(), "pwl-save-cmd-"));
+  const storage = createWorkflowStorage(cwd);
+  const { path } = storage.save({ name: "scan", description: "scan", script: OLD_SCRIPT, location: "project" });
+  const run = { runId: "run-new", workflowName: "scan", status: "completed", script: NEW_SCRIPT, agents: [], logs: [] };
+  const commands: string[] = [];
+  let workflowsHandler: Handler | undefined;
+  registerWorkflowCommands(
+    {
+      getCommands: () => commands.map((name) => ({ name })),
+      registerCommand: (name: string, opts: { handler: Handler }) => {
+        commands.push(name);
+        if (name === "workflows") workflowsHandler = opts.handler;
+      },
+      sendMessage: async () => {},
+    } as unknown as ExtensionAPI,
+    commandDeps({ manager: { listRuns: () => [run] }, storage, cwd }),
+  );
+  const notified: Array<{ message: string; type?: string }> = [];
+  const questions: string[] = [];
+  /** Run the save; `answer` is the confirm dialog's reply, or undefined for a host without UI. */
+  const save = async (answer: boolean | undefined) => {
+    assert.ok(workflowsHandler);
+    await workflowsHandler("save scan", {
+      hasUI: answer !== undefined,
+      ui: {
+        notify: (message: string, type?: string) => notified.push({ message, type }),
+        confirm: async (title: string, message: string) => {
+          questions.push(`${title} ${message}`);
+          return answer ?? false;
+        },
+      },
+    });
+  };
+  const files = () => {
+    const read = (file: string) => (JSON.parse(readFileSync(file, "utf8")) as { script: string }).script;
+    return { primary: read(path), backup: read(`${path}.bak`) };
+  };
+  return { path, notified, questions, save, files, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
+}
+
+test("/workflows save asks before replacing a different same-name workflow and keeps it when declined", async () => {
+  const h = replaceSaveHarness();
+  try {
+    await h.save(false);
+    assert.equal(h.questions.length, 1);
+    assert.ok(h.questions[0].includes(h.path), "the question names the exact file being replaced");
+    assert.equal(h.files().primary, OLD_SCRIPT);
+    assert.deepEqual(h.notified.at(-1), { message: "Kept the existing /scan", type: "info" });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("/workflows save replaces after confirmation and skips a repeated identical save, keeping the backup", async () => {
+  const h = replaceSaveHarness();
+  try {
+    await h.save(true);
+    assert.deepEqual(h.files(), { primary: NEW_SCRIPT, backup: OLD_SCRIPT });
+    assert.match(h.notified.at(-1)?.message ?? "", /^Saved \/scan \(from run-new\)/);
+
+    await h.save(true);
+    assert.equal(h.questions.length, 1, "identical content needs no question");
+    assert.deepEqual(h.files(), { primary: NEW_SCRIPT, backup: OLD_SCRIPT }, "the backup still holds the old script");
+    assert.match(h.notified.at(-1)?.message ?? "", /already saved with this script/);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("/workflows save refuses to replace a workflow without a UI to confirm", async () => {
+  const h = replaceSaveHarness();
+  try {
+    await h.save(undefined);
+    assert.equal(h.questions.length, 0);
+    assert.equal(h.files().primary, OLD_SCRIPT);
+    assert.equal(h.notified.at(-1)?.type, "warning");
+    assert.match(h.notified.at(-1)?.message ?? "", /^Not saved: the project workflow \/scan .* needs confirmation/);
+    assert.ok(h.notified.at(-1)?.message.includes(h.path));
+  } finally {
+    h.cleanup();
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -16,11 +16,12 @@ import {
 } from "./display.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
+import { commitRunSave, planRunSave, type RunSaveReplace, replacedWorkflowLabel } from "./run-save.js";
 import { registerSavedWorkflow } from "./saved-commands.js";
 import { SUBAGENTS_TOOL_NAME } from "./subagents-tool.js";
 import { buildForcedWorkflowPrompt } from "./workflow-editor.js";
 import type { WorkflowManager } from "./workflow-manager.js";
-import type { WorkflowStorage } from "./workflow-saved.js";
+import type { SavedWorkflow } from "./workflow-saved.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
 
 const USAGE =
@@ -108,8 +109,86 @@ function renderPersistedStatus(run: PersistedRunState): string {
   return lines.join("\n");
 }
 
+/**
+ * Ask before a save replaces a different workflow of the same name. Without a
+ * UI to ask, the save is refused rather than overwriting silently.
+ */
+async function confirmReplace(ctx: ExtensionCommandContext, plan: RunSaveReplace, runId: string): Promise<boolean> {
+  const { name } = plan.draft;
+  const target = `${replacedWorkflowLabel(plan.existing)} (${plan.existing.path})`;
+  if (!ctx.hasUI) {
+    ctx.ui.notify(
+      `Not saved: the ${target} already exists. Replacing it needs confirmation in an interactive session; choose another name to save here.`,
+      "warning",
+    );
+    return false;
+  }
+  const shadowed =
+    plan.existing.location === "user" ? " The user file stays; the new project workflow takes precedence." : "";
+  if (await ctx.ui.confirm(`Replace /${name}?`, `Replace the ${target} with the script of run ${runId}?${shadowed}`)) {
+    return true;
+  }
+  ctx.ui.notify(`Kept the existing /${name}`, "info");
+  return false;
+}
+
+/**
+ * `/workflows save <name> [runId]`: save the named run's script, else the most
+ * recent one that kept its script, as a project workflow and register `/name`.
+ * Saving the content `/name` already has writes nothing, so its backup keeps
+ * the version before it.
+ */
+async function saveRunCommand(
+  pi: ExtensionAPI,
+  { getManager, getStorage }: CommandDeps,
+  ctx: ExtensionCommandContext,
+  name: string,
+  runIdArg: string | undefined,
+): Promise<void> {
+  const storage = getStorage();
+  const runs = getManager().listRuns();
+  const run = runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.script);
+  if (!run?.script) {
+    ctx.ui.notify(runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save", "error");
+    return;
+  }
+  const plan = planRunSave(storage, { name, description: run.workflowName, script: run.script });
+  let saved: SavedWorkflow;
+  if (plan.kind === "unchanged") {
+    saved = plan.existing;
+  } else {
+    if (plan.kind === "replace" && !(await confirmReplace(ctx, plan, run.runId))) return;
+    const result = commitRunSave(storage, plan);
+    if (!result.ok) {
+      ctx.ui.notify(result.message, result.code === "stale" ? "warning" : "error");
+      return;
+    }
+    saved = result.workflow;
+  }
+  // Always re-resolve storage at invocation — do not close over the
+  // instance from this save call, or a later project switch leaves
+  // the loader pointed at the source project's store.
+  const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage().load(name));
+  const unchanged = plan.kind === "unchanged";
+  // Surface a refused registration: the file persisted,
+  // but a host/extension-owned name never becomes a slash command —
+  // reporting plain success would silently mislead.
+  if (registration.ok) {
+    ctx.ui.notify(
+      `${unchanged ? `/${name} is already saved with this script` : `Saved /${name}`} (from ${run.runId})`,
+      "info",
+    );
+  } else {
+    ctx.ui.notify(
+      `${unchanged ? `"${name}" is already in the library` : `Saved "${name}" to the library`}, but it cannot be registered as a slash command: ${registration.message}`,
+      "warning",
+    );
+  }
+}
+
 /** Register the `/workflows` command against the shared manager. Idempotent. */
-export function registerWorkflowCommands(pi: ExtensionAPI, { getManager, getStorage }: CommandDeps): void {
+export function registerWorkflowCommands(pi: ExtensionAPI, deps: CommandDeps): void {
+  const { getManager, getStorage } = deps;
   try {
     const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflows");
     if (taken) return;
@@ -243,44 +322,8 @@ export function registerWorkflowCommands(pi: ExtensionAPI, { getManager, getStor
           return;
         }
         case "save": {
-          const name = id;
-          if (!name) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
-          const storage = getStorage();
-          const runs = manager.listRuns();
-          const runIdArg = parts[2];
-          // Pick the named run, else the most recent run that still has its script.
-          const run = runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.script);
-          if (!run?.script) {
-            ctx.ui.notify(runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save", "error");
-            return;
-          }
-          let saved: ReturnType<WorkflowStorage["save"]>;
-          try {
-            saved = storage.save({
-              name,
-              description: run.workflowName,
-              script: run.script,
-              location: "project",
-            });
-          } catch (error) {
-            ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-            return;
-          }
-          // Always re-resolve storage at invocation — do not close over the
-          // instance from this save call, or a later project switch leaves
-          // the loader pointed at the source project's store.
-          const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage().load(name));
-          // Surface a refused registration: the file persisted,
-          // but a host/extension-owned name never becomes a slash command —
-          // reporting plain success would silently mislead.
-          if (registration.ok) {
-            ctx.ui.notify(`Saved /${name} (from ${run.runId})`, "info");
-          } else {
-            ctx.ui.notify(
-              `Saved "${name}" to the library, but it cannot be registered as a slash command: ${registration.message}`,
-              "warning",
-            );
-          }
+          if (!id) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
+          await saveRunCommand(pi, deps, ctx, id, parts[2]);
           return;
         }
         default:
