@@ -164,18 +164,18 @@ export type PendingDeliveryMarker =
 
 export interface RunPersistence {
   /** Immutable, directly readable result artifact for conversation delivery. */
-  exportResult?(runId: string, result: unknown): string;
+  exportResult(runId: string, result: unknown): string;
   /** Read routing metadata without hydrating history; detail fields are lazy. */
-  loadPreview?(runId: string): PersistedRunState | null;
+  loadPreview(runId: string): PersistedRunState | null;
   /** Under the caller's run lease, settle orphaned agents using a log delta. */
-  recoverInterrupted?(runId: string): boolean;
+  recoverInterrupted(runId: string): boolean;
   /**
    * Save current run state. Throws RunRecordDeletedError instead of recreating a
    * run this instance has written or read after another writer deleted it.
    */
   save(state: PersistedRunState): void;
   /** Merge small delivery/ownership fields without hydrating the run history. */
-  updateMetadata?(
+  updateMetadata(
     runId: string,
     patch: Partial<Pick<PersistedRunState, "sessionId" | "pendingDelivery" | "autoResumeAttempts">>,
     expectedDeliveryId?: string,

@@ -62,6 +62,7 @@ function harness(
     }),
     getSnapshot: () => null,
     getRun: () => undefined,
+    getPersistence: () => ({ loadPreview: () => null }),
     stop: (id: string) => {
       calls.push(`stop:${id}`);
       return true;

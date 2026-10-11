@@ -1,6 +1,5 @@
 /** Wording and size limits for the messages delivered when a background run finishes, fails, or pauses. */
 
-import { join } from "node:path";
 import type { WorkflowManager } from "../workflow-manager.js";
 import type { WorkflowSettings } from "../workflow-settings.js";
 import { formatBytes } from "./compact-format.js";
@@ -37,14 +36,11 @@ export function summarizeResult(result: unknown, maxChars: number = DEFAULT_DELI
   return `${kept}\n…(truncated ${formatBytes(droppedBytes)})`;
 }
 
-/** Absolute path to a run's persisted result JSON. Undefined if the persistence
- *  layer can't be resolved — delivery must never throw in the complete handler. */
+/** Absolute path to a run's exported result JSON. Undefined if the export
+ *  fails — delivery must never throw in the complete handler. */
 export function persistedResultPath(manager: WorkflowManager, runId: string, result?: unknown): string | undefined {
   try {
-    const persistence = manager.getPersistence();
-    return persistence.exportResult
-      ? persistence.exportResult(runId, result)
-      : join(persistence.getRunsDir(), `${runId}.json`);
+    return manager.getPersistence().exportResult(runId, result);
   } catch {
     return undefined;
   }

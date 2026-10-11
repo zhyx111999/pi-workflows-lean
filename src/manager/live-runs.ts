@@ -5,7 +5,6 @@ import { RunRecordDeletedError } from "../errors.js";
 import type { RunPersistence } from "../run-persistence.js";
 import type { ManagedRun } from "../workflow-manager.js";
 import { PersistThrottle } from "./persist-throttle.js";
-import { readRecordPreview } from "./record-ops.js";
 import { runRecord, settleAgentsForTerminalRun } from "./run-record.js";
 import { TerminalRunRetention } from "./terminal-retention.js";
 
@@ -145,7 +144,7 @@ export class LiveRuns {
   dropIfDeleted(cached: ManagedRun | undefined): void {
     if (!cached || cached.lease) return;
     try {
-      if (readRecordPreview(this.persistence, cached.runId)) return;
+      if (this.persistence.loadPreview(cached.runId)) return;
     } catch {
       return;
     }

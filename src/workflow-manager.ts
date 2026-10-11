@@ -19,10 +19,8 @@ import { LiveRuns } from "./manager/live-runs.js";
 import { newManagedRun } from "./manager/new-run.js";
 import {
   abortRecord,
-  readRecordPreview,
   recoverStaleRuns,
   rehomePendingRecords,
-  rehomeRecord,
   tryAcquireRunLease,
   writeAutoResumeAttempts,
 } from "./manager/record-ops.js";
@@ -324,7 +322,7 @@ export class WorkflowManager extends EventEmitter {
       return this.live.isCurrent(managed);
     }
     try {
-      if (!rehomeRecord(this.persistence, managed.runId, sessionId)) {
+      if (!this.persistence.updateMetadata(managed.runId, { sessionId })) {
         this.live.dropIfDeleted(managed);
         return false;
       }
@@ -604,7 +602,7 @@ export class WorkflowManager extends EventEmitter {
   findRun(runId: string): PersistedRunState | undefined {
     let run: PersistedRunState | null;
     try {
-      run = readRecordPreview(this.persistence, runId);
+      run = this.persistence.loadPreview(runId);
     } catch {
       // A damaged record is unreadable, not deleted; list() skips it as well.
       return undefined;

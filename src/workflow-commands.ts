@@ -271,7 +271,7 @@ export function registerWorkflowCommands(
           // but be leased by a live process
           // (resumed/running in another session) — saying "No run" would lie
           // while that process burns tokens.
-          const known = manager.getRun(id) ?? manager.getPersistence?.().load(id);
+          const known = manager.getRun(id) ?? manager.getPersistence().loadPreview(id);
           ctx.ui.notify(
             known ? `Cannot remove ${id}: it is active in another live session` : `No run ${id}`,
             known ? "warning" : "info",

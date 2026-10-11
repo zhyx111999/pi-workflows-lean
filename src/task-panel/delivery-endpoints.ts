@@ -61,5 +61,5 @@ export function warnDelivery(sessionId: string | undefined, message: string): vo
 export function resolveDeliverySessionId(run: ManagedRun, manager: WorkflowManager): string | undefined {
   // The originating run wins; the manager binding covers runs that predate a
   // per-run sessionId.
-  return run.sessionId ?? manager.getSessionId?.();
+  return run.sessionId ?? manager.getSessionId();
 }

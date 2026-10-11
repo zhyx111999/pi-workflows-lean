@@ -245,10 +245,13 @@ describe("installResultDelivery", () => {
 
     const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
       getRun: (id: string) => unknown;
-      getPersistence?: () => {
+      getPersistence: () => {
         getRunsDir: () => string;
         load: (id: string) => Record<string, unknown> | null;
+        loadPreview: (id: string) => Record<string, unknown> | null;
         save: (state: Record<string, unknown>) => void;
+        updateMetadata: (id: string, patch: Record<string, unknown>, expectedDeliveryId?: string) => boolean;
+        exportResult: (id: string) => string;
         list: () => Record<string, unknown>[];
       };
       getSessionId: () => string | undefined;
@@ -292,13 +295,23 @@ describe("installResultDelivery", () => {
     manager.getPersistence = () => ({
       getRunsDir: () => runsDir ?? "/runs",
       load: (id: string) => disk.get(id) ?? null,
+      loadPreview: (id: string) => disk.get(id) ?? null,
       save: (state: Record<string, unknown>) => {
         disk.set(String(state.runId), { ...state });
-        const live = runs.get(String(state.runId));
-        if (live && "pendingDelivery" in state) {
-          live.pendingDelivery = state.pendingDelivery;
-        }
       },
+      // Like the real store: merge into an existing record, never create one,
+      // and refuse when the record's marker belongs to another delivery.
+      updateMetadata: (id: string, patch: Record<string, unknown>, expectedDeliveryId?: string) => {
+        const current = disk.get(id);
+        if (!current) return false;
+        const marker = current.pendingDelivery as { deliveryId?: string } | undefined;
+        if (expectedDeliveryId && marker?.deliveryId && marker.deliveryId !== expectedDeliveryId) return false;
+        const next = { ...current, ...patch };
+        for (const key of Object.keys(patch)) if (patch[key] === undefined) delete next[key];
+        disk.set(id, next);
+        return true;
+      },
+      exportResult: (id: string) => join(runsDir ?? "/runs", `${id}.json.result`),
       list: () => [...disk.values()],
     });
     return manager;

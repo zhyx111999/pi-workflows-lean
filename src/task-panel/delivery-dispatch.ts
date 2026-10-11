@@ -121,7 +121,7 @@ function deliverAndAck(
     delivered.sessionId === sessionId &&
     delivered.generation === endpoint.generation
   ) {
-    const clear = clearRunPending(manager, runId, deliveryId, run ?? manager.getRun?.(runId));
+    const clear = clearRunPending(manager, runId, deliveryId, run ?? manager.getRun(runId));
     if (clear !== "failed") {
       deliveredAwaitingClear.delete(runId);
       cancelDeliveryRetry(runId);
@@ -153,7 +153,7 @@ function deliverAndAck(
         if (!current || current.suspended || current.generation !== startedGeneration || current !== endpoint) {
           return;
         }
-        const clear = clearRunPending(manager, runId, deliveryId, run ?? manager.getRun?.(runId));
+        const clear = clearRunPending(manager, runId, deliveryId, run ?? manager.getRun(runId));
         if (clear === "failed") {
           deliveredAwaitingClear.set(runId, { deliveryId, sessionId, generation: startedGeneration });
           retryLater(manager, runId, sessionId, startedGeneration);
@@ -181,12 +181,10 @@ function deliverAndAck(
     })
     .finally(() => {
       releaseDelivery(runId, token);
-      const liveRun = manager.getRun?.(runId);
-      const persistence = manager.getPersistence?.();
+      const liveRun = manager.getRun(runId);
       const owner = liveRun
         ? resolveDeliverySessionId(liveRun, manager)
-        : ((persistence?.loadPreview ? persistence.loadPreview(runId) : persistence?.load(runId))?.sessionId ??
-          sessionId);
+        : (manager.getPersistence().loadPreview(runId)?.sessionId ?? sessionId);
       const current = owner ? sessionEndpoints.get(owner) : undefined;
       // A rebind may have tried to flush while this send still owned the lock.
       // Hand off after either settlement, including a successful stale ACK.
@@ -244,7 +242,7 @@ export function flushSessionDiskPending(
       ? persistRunPending(manager, run)
       : identified === marker
         ? "saved"
-        : persistDiskMarker(manager, runId, identified, persisted);
+        : persistDiskMarker(manager, runId, identified);
     if (saved === "deleted") {
       abandonDeletedDelivery(runId, run);
       return;
@@ -265,7 +263,7 @@ export function flushSessionDiskPending(
   // this manager's own live runs (completions before the first bind), never
   // from a foreign manager.
   try {
-    for (const run of manager.listLiveRuns?.() ?? []) {
+    for (const run of manager.listLiveRuns()) {
       if (!run.pendingDelivery) continue;
       if (run.sessionId != null && run.sessionId !== sessionId) continue;
       if (run.sessionId == null) run.sessionId = sessionId;
@@ -279,13 +277,11 @@ export function flushSessionDiskPending(
   // exact sessionId match: claiming null-sessionId rows would race a second
   // manager on the same cwd. Session handoff re-homes earlier pendings first.
   try {
-    const persistence = manager.getPersistence?.();
-    if (!persistence) return;
-    for (const state of persistence.list()) {
+    for (const state of manager.getPersistence().list()) {
       if (!state.pendingDelivery) continue;
       if (state.sessionId !== sessionId) continue;
       // Skip if the live copy still carries the marker — the loop above owns it.
-      const live = manager.getRun?.(state.runId);
+      const live = manager.getRun(state.runId);
       if (live?.pendingDelivery) continue;
       try {
         tryOne(state.runId, state.pendingDelivery, live, state);

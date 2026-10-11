@@ -161,7 +161,7 @@ export default function extension(pi: ExtensionAPI) {
     // lost). Replacement reasons stage the runtime for the next generation
     // only when the destination is the same project; quit/unknown/cross-project
     // pause in-flight runs onto the journal path.
-    const outgoingSessionId = manager.getSessionId?.();
+    const outgoingSessionId = manager.getSessionId();
     suspendResultDelivery(manager);
 
     const reason = event?.reason;

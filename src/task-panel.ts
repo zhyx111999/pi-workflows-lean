@@ -350,7 +350,7 @@ export function resumeSessionDelivery(sessionId: string | undefined, manager?: W
  * the teardown cannot deliver into the outgoing session.
  */
 export function suspendResultDelivery(manager: WorkflowManager): void {
-  suspendSessionDelivery(manager.getSessionId?.());
+  suspendSessionDelivery(manager.getSessionId());
 }
 
 /**
@@ -359,7 +359,7 @@ export function suspendResultDelivery(manager: WorkflowManager): void {
  * Prefer {@link bindSessionDelivery} which also captures a fresh stable send.
  */
 export function resumeResultDelivery(manager: WorkflowManager): void {
-  resumeSessionDelivery(manager.getSessionId?.(), manager);
+  resumeSessionDelivery(manager.getSessionId(), manager);
 }
 
 // ─── Result delivery ───────────────────────────────────────────────────────────
@@ -444,7 +444,7 @@ export function installResultDelivery(
   // A newly-created manager can replace the current project while this pi and
   // session endpoint remain live. Refresh only the routing pointers; preserve
   // the session transport, generation, and suspension state until bindCore.
-  const sid = manager.getSessionId?.();
+  const sid = manager.getSessionId();
   if (sid) {
     const endpoint = sessionEndpoints.get(sid);
     if (endpoint) {

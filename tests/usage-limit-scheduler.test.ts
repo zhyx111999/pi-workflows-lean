@@ -72,6 +72,15 @@ class FakePersistence {
         this.runs.set(state.runId, { ...state, updatedAt: new Date().toISOString() });
       },
       load: (runId: string) => this.runs.get(runId) ?? null,
+      loadPreview: (runId: string) => this.runs.get(runId) ?? null,
+      updateMetadata: (runId, patch) => {
+        const current = this.runs.get(runId);
+        if (!current) return false;
+        this.runs.set(runId, { ...current, ...patch });
+        return true;
+      },
+      recoverInterrupted: () => false,
+      exportResult: (runId: string) => `/fake-runs/${runId}.json.result`,
       list: () => [...this.runs.values()],
       delete: (runId: string) => this.runs.delete(runId),
       acquireRunLease: () => null,
