@@ -10,7 +10,6 @@ import {
   wrapError,
 } from "../errors.js";
 import type { RunContext } from "./run-context.js";
-import { resolveDrainAbortGraceMs } from "./run-limits.js";
 import { unobservedFailures } from "./script-calls.js";
 
 /** How the script body ended: the value it returned, or the error that escaped it. */
@@ -128,7 +127,7 @@ async function drainScriptCalls(ctx: RunContext): Promise<void> {
   // their results are wanted. Once the run is aborted the wait is bounded,
   // because abort is cooperative and a runner that ignores its signal (with no
   // agent timeout configured) would otherwise block the run from ending forever.
-  const graceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
+  const graceMs = ctx.drainAbortGraceMs;
   // Wakes the wait as soon as either abort source fires, so the grace clock starts.
   let wakeAbort: () => void = () => {};
   const abortWake = new Promise<void>((resolve) => {

@@ -19,7 +19,7 @@ interface AgentCallIdentity {
 export function hashAgentCall(call: AgentCallIdentity): string {
   const { options } = call;
   // Spread-in fields are omitted when unset instead of written as null, so a
-  // call that does not use them keeps the hash an older journal recorded.
+  // call that does not use them keeps the same hash as one written before they existed.
   const identity = JSON.stringify({
     prompt: call.prompt,
     model: call.model ?? null,

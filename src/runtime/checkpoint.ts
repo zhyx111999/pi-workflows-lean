@@ -38,20 +38,10 @@ export function createCheckpoint(ctx: RunContext) {
     // whose persisted response this execution is consuming right now.
     const activeResponse = state.activeCheckpointResponse;
     const callHash = hashCheckpointCall(durableInput);
-    const cached = options.resumeJournal?.get(callIndex);
-    if (
-      !state.resumeBarrierReached &&
-      cached != null &&
-      cached.hash === callHash &&
-      !state.journalMissed &&
-      activeResponse?.checkpointId !== checkpointId
-    ) {
-      state.agentCount++;
-      ctx.noteReplayed(callIndex);
-      return cached.result;
-    }
-    if (cached == null || cached.hash !== callHash) ctx.noteJournalMiss();
+    // The checkpoint whose persisted response this execution consumes takes it from the response.
+    const cached = ctx.replayable(callIndex, callHash, () => activeResponse?.checkpointId === checkpointId);
     state.agentCount++;
+    if (cached) return cached.result;
 
     if (activeResponse) {
       if (state.activeCheckpointId !== checkpointId) {

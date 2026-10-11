@@ -9,7 +9,7 @@ import { createWorktree, removeWorktree, type Worktree } from "../worktree.js";
 import { type AttemptUsage, awaitRunnerStop, dispatchAttempt, openAttemptScope, withTimeout } from "./agent-attempt.js";
 import type { FanoutBatch } from "./fanout.js";
 import type { RunContext } from "./run-context.js";
-import { normalizeAgentRetries, resolveDrainAbortGraceMs, retryBackoffMs } from "./run-limits.js";
+import { normalizeAgentRetries, retryBackoffMs } from "./run-limits.js";
 
 /** A validated agent() call with its reserved slot, resume identity and display state. */
 export interface AgentCall {
@@ -115,7 +115,7 @@ async function runAttempts(ctx: RunContext, call: AgentCall, worktreePath: strin
   const { id, label, phase, prompt } = call;
   const maxAttempts = normalizeAgentRetries(options.agentRetries ?? 0) + 1;
   // The same grace bounds an aborted run's final drain.
-  const graceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
+  const graceMs = ctx.drainAbortGraceMs;
 
   // Keeps provisional estimates apart from committed usage, sums retries, and
   // ignores callbacks from attempts that already settled.

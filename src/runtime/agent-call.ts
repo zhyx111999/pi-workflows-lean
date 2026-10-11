@@ -4,7 +4,7 @@ import { agentDefinitionKey, resolveAgentType } from "../agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { resolveModelForPhase } from "../model-routing.js";
 import type { AgentOptions, JournalEntry } from "../workflow.js";
-import { type AgentCall, isEmptyTextAgentResult, runLiveAgent } from "./agent-execution.js";
+import { type AgentCall, runLiveAgent } from "./agent-execution.js";
 import { parseAgentCall, resolveIsolation } from "./agent-options.js";
 import { agentCallId, hashAgentCall } from "./call-identity.js";
 import { currentCallSequence, currentFanoutBatch } from "./fanout.js";
@@ -116,22 +116,9 @@ export function createAgent(ctx: RunContext) {
       displayModel: modelSpec ?? ctx.options.mainModel,
     };
 
-    // Longest-unchanged-prefix resume: replay only while no earlier call has
-    // missed, so an edited upstream call never leaves stale downstream results.
-    // Independent calls have no downstream, so each replays on its own match.
-    // A thread's conversation cannot be replayed, so it ends replay for the run.
     if (agentOptions.thread) state.resumeBarrierReached = true;
-    const cached = agentOptions.thread ? undefined : ctx.options.resumeJournal?.get(index);
-    const hashMatches = cached != null && cached.hash === hash;
-    const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-    const withinReplay = ctx.options.independentCalls || !state.journalMissed;
-    if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && withinReplay) {
-      ctx.noteReplayed(index);
-      return replayFromJournal(ctx, call, cached);
-    }
-    // A genuine miss marks where the unchanged prefix ends.
-    if (!hashMatches || cachedEmptyOutput) ctx.noteJournalMiss();
-    return runLiveAgent(ctx, call);
+    const cached = ctx.replayable(index, hash);
+    return cached ? replayFromJournal(ctx, call, cached) : runLiveAgent(ctx, call);
   };
 
   // runWorkflow exposes this through trackScriptCalls, which also turns a synchronous validation throw into a rejection.

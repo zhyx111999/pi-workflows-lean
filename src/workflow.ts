@@ -33,7 +33,7 @@ import { cloneDurableJsonValue } from "./runtime/durable-json.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
 import { createLoopGuard, guardLoops } from "./runtime/loop-guard.js";
 import { createRunContext, createRuntimeState, type RunContext } from "./runtime/run-context.js";
-import { resolveAgentTimeoutMs, resolveConcurrency } from "./runtime/run-limits.js";
+import { resolveAgentTimeoutMs, resolveConcurrency, resolveDrainAbortGraceMs } from "./runtime/run-limits.js";
 import { finishRun, type ScriptOutcome } from "./runtime/run-teardown.js";
 import { trackScriptCalls } from "./runtime/script-calls.js";
 import { readMetaExport } from "./runtime/script-meta.js";
@@ -70,13 +70,13 @@ export interface JournalEntry {
   /**
    * Keys this agent set in the shared store. Resume applies the deltas in call
    * order, which rebuilds every agent's writes no matter which parallel agent
-   * finished first. Absent on older journal entries.
+   * finished first. Absent when the agent wrote nothing.
    */
   storeDelta?: Record<string, unknown>;
   /**
    * The model this call actually ran on, so a replayed row shows what really
    * ran instead of the pre-resolution guess. Absent on checkpoints, which run
-   * no model, and on older journal entries.
+   * no model.
    */
   model?: string;
 }
@@ -322,6 +322,7 @@ export async function runWorkflow<T = unknown>(
   const routingConfig = parseModelRoutingFromMeta(meta.phases, meta.model);
   const maxAgents = options.maxAgents ?? DEFAULT_MAX_AGENTS;
   const agentTimeoutMs = resolveAgentTimeoutMs(options);
+  const drainAbortGraceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
   const runId = options.runId ?? `run-${started.toString(36)}`;
   const baseCwd = options.cwd ?? process.cwd();
   // Read once per run so agent() calls never see a mid-run edit; a resume reads it again.
@@ -338,6 +339,7 @@ export async function runWorkflow<T = unknown>(
     baseCwd,
     maxAgents,
     agentTimeoutMs,
+    drainAbortGraceMs,
     routingConfig,
     agentRegistry,
     logger,

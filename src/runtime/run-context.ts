@@ -11,7 +11,13 @@ import {
 import type { WorkflowLogger } from "../logger.js";
 import type { ModelRoutingConfig } from "../model-routing.js";
 import type { SharedStore } from "../shared-store.js";
-import type { WorkflowAgentRunner, WorkflowCheckpoint, WorkflowMeta, WorkflowRunOptions } from "../workflow.js";
+import type {
+  JournalEntry,
+  WorkflowAgentRunner,
+  WorkflowCheckpoint,
+  WorkflowMeta,
+  WorkflowRunOptions,
+} from "../workflow.js";
 import { CallSequence } from "./call-position.js";
 import { createLimiter } from "./run-limits.js";
 import { createScriptCalls, type ScriptCalls } from "./script-calls.js";
@@ -35,7 +41,10 @@ export interface RuntimeState {
   /** Logical agent()/checkpoint() slots reserved so far; capped by maxAgents. */
   agentCount: number;
   tokenUsage: AgentUsage;
-  /** Set after the terminal drain, so abandoned agents can no longer report. */
+  /**
+   * Set after the terminal drain: abandoned agents can no longer report, and an
+   * agent() call that reaches the runtime after the run ended is rejected.
+   */
   agentCallbacksClosed: boolean;
   /** Active attempts whose usage must be finalized when an abort drain abandons them. */
   pendingUsageFinalizers: Set<() => void>;
@@ -76,6 +85,8 @@ interface RunSetup {
   readonly baseCwd: string;
   readonly maxAgents: number;
   readonly agentTimeoutMs: number | null;
+  /** How long an agent told to stop (by an abort or its timeout) may take to settle. Infinity waits. */
+  readonly drainAbortGraceMs: number;
   readonly routingConfig: ModelRoutingConfig;
   /** Snapshotted once per run so two agent() calls never observe a mid-run edit. */
   readonly agentRegistry: AgentRegistry;
@@ -96,15 +107,19 @@ export interface RunContext extends RunSetup {
   readonly agentLimitError: () => WorkflowError;
   /** Every logical agent() call and checkpoint consumes one slot of the run's maxAgents cap. */
   readonly ensureAgentCapacity: () => void;
-  /** Record that the call at `index` replayed its journaled result. */
-  readonly noteReplayed: (index: number) => void;
   /**
-   * Record that a call missed the journal. In a script run the first miss ends
-   * the unchanged prefix: entries this execution has not replayed by then
-   * describe calls that now run after a changed one, so the caller drops them
-   * instead of keeping them for a later resume to replay.
+   * The journaled entry the call at `index` replays, or undefined to run it
+   * live. Longest-unchanged-prefix resume: an entry replays only while no
+   * earlier call has missed (independent calls replay on their own match), so
+   * an edited upstream call never leaves stale downstream results. A missing
+   * or different entry is a miss; one `passOver` names is neither replayed
+   * nor a miss.
    */
-  readonly noteJournalMiss: () => void;
+  readonly replayable: (
+    index: number,
+    hash: string,
+    passOver?: (entry: JournalEntry) => boolean,
+  ) => JournalEntry | undefined;
 }
 
 export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptions, concurrency: number): RuntimeState {
@@ -160,15 +175,32 @@ export function createRunContext(setup: RunSetup): RunContext {
   const ensureAgentCapacity = () => {
     if (state.agentCount >= maxAgents) throw agentLimitError();
   };
-  const noteReplayed = (index: number) => {
-    state.replayedIndices.add(index);
-  };
+  // In a script run the first miss ends the unchanged prefix: entries not
+  // replayed by then describe calls that now run after a changed one, so the
+  // caller drops them instead of keeping them for a later resume to replay.
   const noteJournalMiss = () => {
     if (state.journalMissed) return;
     state.journalMissed = true;
     if (!options.independentCalls && options.resumeJournal?.size) {
       options.onJournalPrefixEnd?.([...state.replayedIndices]);
     }
+  };
+  const replayable = (
+    index: number,
+    hash: string,
+    passOver?: (entry: JournalEntry) => boolean,
+  ): JournalEntry | undefined => {
+    // A thread's conversation cannot be replayed, so a thread call ends replay for the run.
+    if (state.resumeBarrierReached) return undefined;
+    const entry = options.resumeJournal?.get(index);
+    if (entry?.hash !== hash) {
+      noteJournalMiss();
+      return undefined;
+    }
+    if (passOver?.(entry)) return undefined;
+    if (state.journalMissed && !options.independentCalls) return undefined;
+    state.replayedIndices.add(index);
+    return entry;
   };
   return {
     ...setup,
@@ -177,7 +209,6 @@ export function createRunContext(setup: RunSetup): RunContext {
     throwIfAborted,
     agentLimitError,
     ensureAgentCapacity,
-    noteReplayed,
-    noteJournalMiss,
+    replayable,
   };
 }
