@@ -71,16 +71,11 @@ export function classifyFailure(managed: ManagedRun, error: unknown): FailedExec
  * A warning when every agent of this execution returned nothing. agent()
  * resolves an exhausted recoverable failure (e.g. an empty response) to null,
  * so such a run still completes; without the warning it looks successful.
- * Rows seeded from the record at resume are history and do not count.
+ * A call replayed from the journal took part and counts with its result; a
+ * seeded row no call of this execution reused is history and does not.
  */
 export function emptyFleetWarning(managed: ManagedRun): string | undefined {
-  const fleet = emptyFleetSummary(
-    managed.snapshot.agents.filter(
-      (agent) =>
-        agent.id > (managed.seededAgentCount ?? 0) ||
-        (agent.callId !== undefined && managed.replayedAgentCalls.has(agent.callId)),
-    ),
-  );
+  const fleet = emptyFleetSummary(managed.snapshot.agents.filter((agent) => managed.executionAgentRows.has(agent.id)));
   if (!fleet.allEmpty) return undefined;
   const labels = fleet.emptyLabels.join(", ");
   const overflow =

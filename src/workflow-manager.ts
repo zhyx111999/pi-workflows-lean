@@ -101,10 +101,13 @@ export interface ManagedRun {
   replayedAgentStatesByCallId: Map<string, PersistedAgentState>;
   /** Agent timestamps by call id, kept for replayed calls. */
   agentTimestampsByCallId: Map<string, AgentTimestamps>;
-  /** Rows 1..seededAgentCount came from the record at resume; later rows belong to this execution. */
-  seededAgentCount?: number;
-  /** Calls whose start/end events are a journal replay, not a launch. */
-  replayedAgentCalls: Set<string>;
+  /** Calls whose replay from the journal is in progress: added at their start event, removed at their end. */
+  replayingAgentCalls: Set<string>;
+  /**
+   * Snapshot ids of the rows of every call this execution started, live or
+   * replayed. Other rows are history seeded from the record at resume.
+   */
+  executionAgentRows: Set<number>;
   /** Sessions of this execution's running agents, by call id, for steerAgent(). */
   steerable: Map<string, SteerableAgent>;
 }

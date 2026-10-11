@@ -64,7 +64,11 @@ export interface ExecutionSettings {
   toolsets?: Record<string, () => ToolDefinition[]>;
 }
 
-/** Execute `script` for `managed` and record the outcome on the run. Rejects with the run's error. */
+/**
+ * Execute `script` for `managed` and record the outcome on the run. Rejects with the run's error.
+ * Preparing the runtime options happens inside the same failure path as the
+ * script, so a failure there still records the run and releases its lease.
+ */
 export async function executeRun(
   live: LiveRuns,
   managed: ManagedRun,
@@ -73,36 +77,46 @@ export async function executeRun(
   exec: ExecOptions,
   settings: ExecutionSettings,
 ): Promise<WorkflowRunResult> {
-  // Explicit tools win; otherwise re-resolve the run's toolset name (how a
-  // resumed /deep-research keeps its web tools); otherwise the default tools.
-  const resolvedTools = exec.tools ?? (managed.toolset ? settings.toolsets?.[managed.toolset]?.() : undefined);
-  const events = runEventHooks(managed, {
-    emit: (event, payload) => live.emit(managed, event, payload),
-    persist: (required) => live.persistRun(managed, required),
-    schedulePersist: () => live.schedulePersist(managed),
-  });
   try {
-    const result = await runWorkflow(script, {
-      ...settings.runtime,
-      args,
-      // The run's own id, so result.runId is the id listRuns() and resume() use.
-      runId: managed.runId,
-      parentSessionFile: managed.parentSessionFile,
-      signal: managed.controller.signal,
-      drainAbortGraceMs: exec.drainAbortGraceMs,
-      tools: resolvedTools,
-      resumeJournal: exec.resumeJournal,
-      independentCalls: isTaskListScript(script),
-      resumeCheckpoint: exec.resumeCheckpoint,
-      initialTokenUsage: exec.initialTokenUsage,
-      ...events,
-    });
+    const result = await runWorkflow(script, runOptions(live, managed, script, args, exec, settings));
     return settleCompleted(live, managed, result);
   } catch (error) {
     throw settleFailure(live, managed, error);
   } finally {
     live.deleteLeftovers(managed);
   }
+}
+
+/** The runWorkflow options for this execution. Throws when a toolset factory does. */
+function runOptions(
+  live: LiveRuns,
+  managed: ManagedRun,
+  script: string,
+  args: unknown,
+  exec: ExecOptions,
+  settings: ExecutionSettings,
+): WorkflowRunOptions {
+  return {
+    ...settings.runtime,
+    args,
+    // The run's own id, so result.runId is the id listRuns() and resume() use.
+    runId: managed.runId,
+    parentSessionFile: managed.parentSessionFile,
+    signal: managed.controller.signal,
+    drainAbortGraceMs: exec.drainAbortGraceMs,
+    // Explicit tools win; otherwise re-resolve the run's toolset name (how a
+    // resumed /deep-research keeps its web tools); otherwise the default tools.
+    tools: exec.tools ?? (managed.toolset ? settings.toolsets?.[managed.toolset]?.() : undefined),
+    resumeJournal: exec.resumeJournal,
+    independentCalls: isTaskListScript(script),
+    resumeCheckpoint: exec.resumeCheckpoint,
+    initialTokenUsage: exec.initialTokenUsage,
+    ...runEventHooks(managed, {
+      emit: (event, payload) => live.emit(managed, event, payload),
+      persist: (required) => live.persistRun(managed, required),
+      schedulePersist: () => live.schedulePersist(managed),
+    }),
+  };
 }
 
 /** Record a returned script. A pause() that arrived during the final drain keeps the run paused. */

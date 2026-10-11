@@ -104,8 +104,8 @@ export function resumedRun(input: ResumeInput): ResumedRun {
         .map((agent) => [agent.callId as string, agent] as const),
     ),
     agentTimestampsByCallId: seeded.timestampsByCallId,
-    seededAgentCount: seeded.agents.length,
-    replayedAgentCalls: new Set(),
+    replayingAgentCalls: new Set(),
+    executionAgentRows: new Set(),
     steerable: new Map(),
   };
   return { managed, journal, priorTokenUsage };

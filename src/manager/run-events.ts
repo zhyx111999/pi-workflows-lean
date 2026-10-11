@@ -80,13 +80,14 @@ export function runEventHooks(managed: ManagedRun, sink: RunEventSink): RunEvent
     onAgentStart: (event) => {
       const row = (event.replayed ? replayedRow(managed, event) : undefined) ?? newRow(managed, event);
       managed.agentsById.set(event.id, row);
+      managed.executionAgentRows.add(row.id);
       // A replayed call launched no child, so it keeps its original timestamps.
       const priorTimestamp = event.replayed ? managed.agentTimestampsByCallId.get(event.id) : undefined;
       const timestamp = priorTimestamp ?? { startedAt: new Date().toISOString() };
       managed.agentTimestamps.set(row.id, { ...timestamp });
       // Mark every replay, even one without a recorded timestamp, so onAgentEnd
       // never treats it as live and overwrites its recorded end time and tokens.
-      if (event.replayed) managed.replayedAgentCalls.add(event.id);
+      if (event.replayed) managed.replayingAgentCalls.add(event.id);
       managed.agentTimestampsByCallId.set(event.id, { ...timestamp });
       sink.emit("agentStart", { runId: managed.runId, ...event });
     },
@@ -138,7 +139,7 @@ export function runEventHooks(managed: ManagedRun, sink: RunEventSink): RunEvent
         agent.error = event.error;
         agent.errorCode = event.errorCode;
         agent.recoverable = event.recoverable;
-        const replayed = managed.replayedAgentCalls.has(event.id);
+        const replayed = managed.replayingAgentCalls.has(event.id);
         if (!replayed) {
           if (event.tokenUsage) {
             agent.tokenUsage = event.tokenUsage;
@@ -154,7 +155,7 @@ export function runEventHooks(managed: ManagedRun, sink: RunEventSink): RunEvent
           ts.endedAt = new Date().toISOString();
           managed.agentTimestampsByCallId.set(event.id, { ...ts });
         }
-        managed.replayedAgentCalls.delete(event.id);
+        managed.replayingAgentCalls.delete(event.id);
         managed.agentsById.delete(event.id);
       }
       sink.emit("agentEnd", { runId: managed.runId, ...event });
