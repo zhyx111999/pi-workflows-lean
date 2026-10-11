@@ -796,7 +796,7 @@ test(
   }),
 );
 
-// ─── P1-1: crash-safe durable resume ────────────────────────────────────────────
+// ─── Crash-safe durable resume ────────────────────────────────────────────
 
 test(
   "save writes the primary plus a .bak (atomic temp+rename leaves no .tmp)",

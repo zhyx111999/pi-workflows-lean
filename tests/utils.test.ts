@@ -189,7 +189,7 @@ describe("logger", () => {
     assert.equal(result, null);
   });
 
-  it("persist appends only pending lines and a resumed logger never wipes earlier lines (audit2 #39)", async () => {
+  it("persist appends only pending lines and a resumed logger never wipes earlier lines", async () => {
     const { createWorkflowLogger } = await loadLogger();
     const cwd = mkdtempSync(join(tmpdir(), "pi-wf-log-"));
     try {
@@ -216,7 +216,7 @@ describe("logger", () => {
     }
   });
 
-  it("persist re-appends lines whose write-through append failed transiently (audit2 #39 r1)", async () => {
+  it("persist re-appends lines whose write-through append failed transiently", async () => {
     const { createWorkflowLogger } = await loadLogger();
     const cwd = mkdtempSync(join(tmpdir(), "pi-wf-log-"));
     try {

@@ -131,7 +131,7 @@ test("agent usage equality compares every accounting field", () => {
   assert.equal(agentUsageEquals(FIRST_USAGE, { ...FIRST_USAGE, cacheRead: 3 }), false);
 });
 
-test("commitWithFallback tags a fabricated total as estimated (#209)", () => {
+test("commitWithFallback tags a fabricated total as estimated", () => {
   const updates: Array<{ tokenUsage: AgentUsage; committedUsage?: AgentUsage }> = [];
   const tracker = createAgentCallUsageTracker((update) => updates.push(update));
   const attempt = tracker.startAttempt();
@@ -144,13 +144,13 @@ test("commitWithFallback tags a fabricated total as estimated (#209)", () => {
   assert.equal(updates.at(-1)?.committedUsage?.estimated, true);
 });
 
-test("sumAgentUsage propagates the estimate flag from any addend (#209)", () => {
+test("sumAgentUsage propagates the estimate flag from any addend", () => {
   const estimated = { ...createEmptyAgentUsage(), total: 12, estimated: true };
   assert.equal(sumAgentUsage(FIRST_USAGE, estimated).estimated, true);
   assert.equal(sumAgentUsage(FIRST_USAGE, SECOND_USAGE).estimated, undefined, "exact + exact stays unflagged");
 });
 
-test("agentUsageEquals treats the estimate flag as part of the value (#209)", () => {
+test("agentUsageEquals treats the estimate flag as part of the value", () => {
   // Same figures, one an estimate: NOT equal — a later exact reading at the
   // same numbers must still emit an update so the stale flag clears.
   assert.equal(agentUsageEquals(FIRST_USAGE, { ...FIRST_USAGE, estimated: true }), false);

@@ -121,14 +121,14 @@ test("workflow-patterns skill documents exactly the args the deep-research scrip
   assert.deepEqual(read, documented);
 });
 
-test("generateDeepResearchWorkflow guards the planner result before reading queries (#86)", () => {
+test("generateDeepResearchWorkflow guards the planner result before reading queries", () => {
   const body = generateDeepResearchWorkflow();
   assert.match(body, /Array\.isArray\(plan\.queries\)/);
   assert.match(body, /\[question\]/); // falls back to the question when the planner yields nothing
 });
 
-test("deep_research tolerates a null query planner and falls back to the question (#86)", async () => {
-  // Regression for #86: the planner agent() can return null (e.g. a subagent that
+test("deep_research tolerates a null query planner and falls back to the question", async () => {
+  // The planner agent() can return null (e.g. a subagent that
   // died on a terminal provider error). The Queries phase must not crash on
   // plan.queries — it should fall back to the original question so research proceeds.
   const gatherPrompts: string[] = [];

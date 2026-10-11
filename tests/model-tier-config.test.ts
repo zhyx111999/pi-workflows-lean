@@ -284,7 +284,7 @@ describe("model-tier-config", () => {
       assert.equal(cfg.tiers.big, "model-c");
     });
 
-    // Collapse / inversion regressions (#38, PR #44 review defects).
+    // Collapse / inversion regressions.
 
     it("does not collapse tiers when a model matches both small and big hints (small hint wins)", async () => {
       const { buildDefaultTierConfig } = await loadModule();
@@ -389,7 +389,7 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("refuses to save a degenerate config (all-empty tiers) instead of writing what the loader would reject (#330 audit follow-up)", async () => {
+    it("refuses to save a degenerate config (all-empty tiers) instead of writing what the loader would reject", async () => {
       const { saveModelTierConfig, loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
@@ -460,7 +460,7 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("returns null when tiers is an empty array (#330 audit)", async () => {
+    it("returns null when tiers is an empty array", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
@@ -469,7 +469,7 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("returns null when tiers is a non-empty array (#330 audit)", async () => {
+    it("returns null when tiers is a non-empty array", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
@@ -478,7 +478,7 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("returns null when tiers is an empty object (#330 audit)", async () => {
+    it("returns null when tiers is an empty object", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");
@@ -487,7 +487,7 @@ describe("model-tier-config", () => {
       rmSync(tmpDir, { recursive: true, force: true });
     });
 
-    it("returns null when a tier value is an empty string (#330 audit)", async () => {
+    it("returns null when a tier value is an empty string", async () => {
       const { loadModelTierConfig } = await loadModule();
       const tmpDir = mkdtempSync(join(tmpdir(), "mtc-test-"));
       const cfgPath = join(tmpDir, "model-tiers.json");

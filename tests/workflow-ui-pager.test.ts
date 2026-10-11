@@ -178,7 +178,7 @@ test("escape closes the pager before leaving agent detail", () => {
   assert.equal(state.kind, "agents");
 });
 
-test("pager footer labels escape as back instead of duplicating the summary hint (#130)", () => {
+test("pager footer labels escape as back instead of duplicating the summary hint", () => {
   const model = modelForAgent({ id: 1, label: "worker", phase: "Work", prompt: "work", status: "running" });
   const state = enterAgentDetail(model);
   state.togglePager();

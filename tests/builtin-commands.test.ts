@@ -42,7 +42,7 @@ function makeFakeStorage(saved: Record<string, Pick<SavedWorkflow, "script" | "p
 /**
  * Fake manager that records startInBackground calls. The returned promise never
  * resolves — so any handler that (incorrectly) awaited it would hang its test,
- * which is exactly the #104 regression this guards against.
+ * which is how a handler that blocks the session would show up.
  */
 function makeFakeManager() {
   const started: Array<{ script: string; args: unknown; exec: { tools?: unknown[] } }> = [];
@@ -136,7 +136,7 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
   assert.ok(notified[0].message.includes("Usage"), "should tell the user how to use it");
 });
 
-test("built-in handlers start a background run and return immediately (#104)", async () => {
+test("built-in handlers start a background run and return immediately", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage: makeFakeStorage({}) }));
@@ -296,7 +296,7 @@ test("deep-research still runs the built-in when no saved workflow shadows it", 
   assert.equal(meta.name, "deep_research", "the built-in should run when nothing shadows it");
 });
 
-test("a saved shadow of a builtin receives the builtin's positional argument (audit2 #43)", async () => {
+test("a saved shadow of a builtin receives the builtin's positional argument", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(
@@ -318,7 +318,7 @@ test("a saved shadow of a builtin receives the builtin's positional argument (au
   assert.equal(args.question, "quantum computing advances", "bare positional maps to the builtin's question contract");
 });
 
-test("a saved shadow does not override an explicitly named argument (audit2 #43)", async () => {
+test("a saved shadow does not override an explicitly named argument", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(
@@ -339,7 +339,7 @@ test("a saved shadow does not override an explicitly named argument (audit2 #43)
   assert.equal(args.question, "explicit-topic", "the named arg wins; positionals stay in _");
 });
 
-test("shadow positional mapping: equals-only topics and declared defaults (audit2 #43 r1)", async () => {
+test("shadow positional mapping: equals-only topics and declared defaults", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(
@@ -368,7 +368,7 @@ test("shadow positional mapping: equals-only topics and declared defaults (audit
   assert.equal((started[1].args as Record<string, unknown>).question, "explicit topic");
 });
 
-test("shadow whole-string mapping keeps equals-containing topics whole (audit2 #43 r2)", async () => {
+test("shadow whole-string mapping keeps equals-containing topics whole", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   registerBuiltinWorkflows(

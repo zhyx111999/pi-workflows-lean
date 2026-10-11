@@ -176,7 +176,7 @@ test("parseBingResults strips inner HTML from titles", () => {
   assert.equal(results[0].title, "Bold Title", "HTML tags should be stripped from title");
 });
 
-test("readBodyCapped stops reading at the byte cap (audit2 #42)", async () => {
+test("readBodyCapped stops reading at the byte cap", async () => {
   const { readBodyCapped } = await import("../src/web-tools.js");
   // 5MB body: only ~2MB may be buffered (htmlToText regex passes never see more).
   const big = "x".repeat(5 * 1024 * 1024);

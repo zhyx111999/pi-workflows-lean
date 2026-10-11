@@ -386,7 +386,7 @@ test("/workflows rm <id> warns when deleteRun returns false", async () => {
   );
 });
 
-test("/workflows rm <id> distinguishes a lease refusal from 'no such run' (audit2 #16 r1)", async () => {
+test("/workflows rm <id> distinguishes a lease refusal from 'no such run'", async () => {
   const h = harness({
     deleteRun: () => false,
     getRun: () => ({ runId: "run-busy", status: "running" }),
@@ -656,7 +656,7 @@ test("/workflows <unknown> warns usage", async () => {
   assert.match(h.notified[0].message, /Unknown subcommand/);
 });
 
-test("/workflows status watch ends when the run is deleted (audit2 #34)", async () => {
+test("/workflows status watch ends when the run is deleted", async () => {
   const snapshot = {
     name: "demo",
     phases: [],
@@ -704,7 +704,7 @@ function progressAndFinalListenerCount(manager: EventEmitter): number {
     .reduce((a, b) => a + b, 0);
 }
 
-test("/workflows status watch survives a throwing sendMessage/setStatus (audit2 #37)", async () => {
+test("/workflows status watch survives a throwing sendMessage/setStatus", async () => {
   const snapshot = {
     name: "demo",
     phases: [],
@@ -717,7 +717,7 @@ test("/workflows status watch survives a throwing sendMessage/setStatus (audit2 
   };
   const manager: any = new EventEmitter();
   // "running" — with a terminal status watchRun returns early and zero
-  // listeners exist, making this test vacuous (r2).
+  // listeners exist, making this test vacuous.
   manager.getRun = (id: string) => (id === "run-1" ? { runId: "run-1", status: "running", snapshot } : undefined);
   manager.getSnapshot = () => null;
   manager.listRuns = () => [];

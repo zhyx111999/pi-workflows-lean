@@ -152,7 +152,7 @@ test("parseResetHintMs: hours", () => {
   assert.equal(parseResetHintMs("Resets in 3h"), 3 * 3_600_000);
 });
 
-test("parseResetHintMs: day and week units (audit2 #14)", () => {
+test("parseResetHintMs: day and week units", () => {
   assert.equal(parseResetHintMs("Resets in 2d"), 2 * 86_400_000);
   assert.equal(parseResetHintMs("Resets in 1 week"), 7 * 86_400_000);
   assert.equal(parseResetHintMs("resets in 3 days"), 3 * 86_400_000);
@@ -164,7 +164,7 @@ test("parseResetHintMs: invalid clock hints do not normalize into a different re
   }
 });
 
-test("parseResetHintMs: absolute ISO reset timestamp (audit2 #10)", () => {
+test("parseResetHintMs: absolute ISO reset timestamp", () => {
   const now = Date.parse("2026-09-17T13:00:00+08:00");
   // The verbatim Ark/Codex quota message shape.
   assert.equal(
@@ -175,7 +175,7 @@ test("parseResetHintMs: absolute ISO reset timestamp (audit2 #10)", () => {
   assert.equal(parseResetHintMs("It will reset at 2026-09-17 12:00:00 +0800", now), 0);
 });
 
-test("parseResetHintMs: absolute clock time rolls over to tomorrow (audit2 #10)", () => {
+test("parseResetHintMs: absolute clock time rolls over to tomorrow", () => {
   const now = Date.parse("2026-09-17T15:00:00"); // 3:00 PM local
   const expected = new Date(now);
   expected.setHours(15, 20, 0, 0);
@@ -242,7 +242,7 @@ test("jitter never breaches the maxDelayMs ceiling (and ceiling-hit delays sprea
 test("cold start with an ABSOLUTE reset hint arms the true remaining, not the floor", async () => {
   // Paused at t=0 with a reset at t+20m54s; the process restarts 10m in.
   // The re-arm must be ~10.9m (reset - now), not the 60s floor from
-  // double-subtracting elapsed (audit2 r1 B1).
+  // double-subtracting elapsed.
   const manager = new FakeManager();
   const clock = createFakeClock(0);
   manager.persistence.seed(
@@ -267,7 +267,7 @@ test("cold start with an ABSOLUTE reset hint arms the true remaining, not the fl
   scheduler.dispose();
 });
 
-test("cold start with an absent counter WRITES the armed attempt through the non-live path (audit2 r1 m5)", async () => {
+test("cold start with an absent counter WRITES the armed attempt through the non-live path", async () => {
   const manager = new FakeManager();
   const clock = createFakeClock();
   manager.persistence.seed(
@@ -275,7 +275,7 @@ test("cold start with an absent counter WRITES the armed attempt through the non
       status: "paused",
       pauseReason: "usage_limit",
       resetHint: "resets in 10m",
-      // autoResumeAttempts deliberately absent (pre-#207 record)
+      // autoResumeAttempts deliberately absent, as in a record written before the field existed
     }),
   );
   const scheduler = new UsageLimitScheduler(manager, {
@@ -341,7 +341,7 @@ test("jitter: a backoff exactly AT the cap still spreads (no point mass at maxDe
   );
 });
 
-test("jitter spreads identical arms deterministically with an injected random (audit2 #13)", () => {
+test("jitter spreads identical arms deterministically with an injected random", () => {
   const manager = new FakeManager();
   manager.persistence.seed(makeRun({ resetHint: "resets in 10m" }));
   const clock = createFakeClock();
@@ -553,7 +553,7 @@ test("attempt cap reached: gives up, arms no further timers", async () => {
   scheduler.dispose();
 });
 
-test("cold start past the cap: no growth, no timer, no repeated give-up log (#106)", async () => {
+test("cold start past the cap: no growth, no timer, no repeated give-up log", async () => {
   const manager = new FakeManager();
   manager.persistence.seed(
     makeRun({
@@ -594,7 +594,7 @@ test("cold start past the cap: no growth, no timer, no repeated give-up log (#10
   );
 });
 
-test("cold start crossing the cap logs give-up exactly once, then freezes (#106, audit2 #11)", async () => {
+test("cold start crossing the cap logs give-up exactly once, then freezes", async () => {
   const manager = new FakeManager();
   manager.persistence.seed(
     makeRun({
@@ -618,8 +618,8 @@ test("cold start crossing the cap logs give-up exactly once, then freezes (#106,
     return { clock, scheduler };
   };
 
-  // The re-armed attempt is NOT a cap crossing (audit2 #11: the restart doesn't
-  // consume a fresh attempt) — it arms a timer for the already-counted attempt.
+  // The re-armed attempt is NOT a cap crossing (the restart doesn't consume a
+  // fresh attempt) — it arms a timer for the already-counted attempt.
   const first = await boot();
   assert.equal(first.clock.pendingCount(), 1, "re-arms the armed-but-unfired attempt, no give-up yet");
   assert.equal(manager.persistence.get("run-1")?.autoResumeAttempts, 3, "rearm does not burn a fresh attempt");
@@ -914,7 +914,7 @@ test("the attempt count is persisted (best-effort) for a future cold start", asy
   scheduler.dispose();
 });
 
-// ---- real WorkflowManager wiring (#207 regression) -----------------------------
+// ---- real WorkflowManager wiring -----------------------------
 //
 // The fake manager above can't catch a scheduler that bypasses
 // recordAutoResumeAttempts (the fake reimplements the same merge), and never
@@ -951,7 +951,7 @@ async function withRealManagerCwd(fn: (cwd: string) => Promise<void>): Promise<v
   }
 }
 
-test("real manager: scheduler-recorded attempts survive later manager persists (#207)", async () => {
+test("real manager: scheduler-recorded attempts survive later manager persists", async () => {
   await withRealManagerCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: quotaAgent() });
     manager.on("error", () => {});
@@ -973,7 +973,7 @@ test("real manager: scheduler-recorded attempts survive later manager persists (
     );
     assert.equal(clock.pendingCount(), 1, "auto-resume timer armed");
 
-    // The #207 erasure: any later manager persist rebuilt the record from a
+    // The erasure this guards against: a later manager persist rebuilding the record from a
     // literal without the field. adoptLiveRunsToSession forces exactly such a
     // persist on the live run.
     manager.adoptLiveRunsToSession("some-other-session");
@@ -986,7 +986,7 @@ test("real manager: scheduler-recorded attempts survive later manager persists (
   });
 });
 
-test("real manager restart: cold-start rearm continues the backoff via the non-live path (#207)", async () => {
+test("real manager restart: cold-start rearm continues the backoff via the non-live path", async () => {
   await withRealManagerCwd(async (cwd) => {
     const managerA = new WorkflowManager({ cwd, agent: quotaAgent() });
     managerA.on("error", () => {});
@@ -1028,19 +1028,19 @@ test("real manager restart: cold-start rearm continues the backoff via the non-l
     assert.equal(
       persistedAfter?.autoResumeAttempts,
       1,
-      "a restart re-arms the already-counted attempt — it does not burn the give-up budget (audit2 #11)",
+      "a restart re-arms the already-counted attempt — it does not burn the give-up budget",
     );
     assert.equal(
       persistedAfter?.updatedAt,
       updatedAtBeforeRestart,
-      "the equal-value re-persist is skipped by the real manager's non-live guard (audit2 #15, r2 R5)",
+      "the equal-value re-persist is skipped by the real manager's non-live guard",
     );
     assert.equal(clockB.pendingCount(), 1, "auto-resume re-armed after restart");
     schedulerB.dispose();
   });
 });
 
-test("recordAutoResumeAttempts skips equal-value writes (audit2 #15)", async () => {
+test("recordAutoResumeAttempts skips equal-value writes", async () => {
   await withRealManagerCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: quotaAgent() });
     manager.on("error", () => {});
@@ -1061,7 +1061,7 @@ test("recordAutoResumeAttempts skips equal-value writes (audit2 #15)", async () 
   });
 });
 
-test("cold-start rearm sanitizes a corrupt persisted attempt counter (#207)", () => {
+test("cold-start rearm sanitizes a corrupt persisted attempt counter", () => {
   const manager = new FakeManager();
   manager.persistence.seed(
     makeRun({
@@ -1088,7 +1088,7 @@ test("cold-start rearm sanitizes a corrupt persisted attempt counter (#207)", ()
   scheduler.dispose();
 });
 
-test("a live pause sanitizes a corrupt disk counter (#207)", () => {
+test("a live pause sanitizes a corrupt disk counter", () => {
   const manager = new FakeManager();
   manager.persistence.seed(makeRun({ runId: "run-1", autoResumeAttempts: -2 as unknown as number }));
   const clock = createFakeClock();

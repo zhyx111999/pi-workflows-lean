@@ -391,7 +391,7 @@ test(
 );
 
 test(
-  "resume seeds the snapshot from persisted agents — no wiped fleet, no replay duplicates (#206)",
+  "resume seeds the snapshot from persisted agents — no wiped fleet, no replay duplicates",
   withTempCwd(async (cwd) => {
     let bAttempts = 0;
     let markBStarted: () => void = () => {};
@@ -467,7 +467,7 @@ test(
 );
 
 test(
-  "resume keeps historical agent session metadata when the edited script fails to parse (#206)",
+  "resume keeps historical agent session metadata when the edited script fails to parse",
   withTempCwd(async (cwd) => {
     const agent = fakeAgent();
     const runMock = test.mock.method(agent, "run");
@@ -517,7 +517,7 @@ const = ;`;
 );
 
 test(
-  "resume maps persisted ghost (queued/running) agents to interrupted-skipped (#206)",
+  "resume maps persisted ghost (queued/running) agents to interrupted-skipped",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
     // A legacy/dead-process record recovery never settled: one done agent and
@@ -657,7 +657,7 @@ test(
 );
 
 test(
-  "autoResumeAttempts recorded through the manager survives its later persists (#207)",
+  "autoResumeAttempts recorded through the manager survives its later persists",
   withTempCwd(async (cwd) => {
     // The scheduler's backoff counter used to be merge-saved straight into
     // persistence, so the next writeRunToDisk (a literal without the field)
@@ -802,7 +802,7 @@ test(
 );
 
 test(
-  "an agent timeout aborts the subagent so its session can be released (#109)",
+  "an agent timeout aborts the subagent so its session can be released",
   withTempCwd(async (cwd) => {
     // A subagent whose run() never resolves on its own — only an abort ends it.
     // Before the fix, a timeout rejected the race but left this running in the
@@ -837,14 +837,14 @@ test(
     const agent = manager.listRuns()[0]?.agents[0];
     assert.equal(agent?.status, "error");
     assert.match(agent?.error ?? "", /timed out/);
-    // The key #109 property: the timeout aborted the subagent, so run()'s finally
+    // The key property: the timeout aborted the subagent, so run()'s finally
     // disposes its session instead of leaking it while it streams on.
     assert.equal(sawAbort, true, "the timing-out subagent must receive an abort");
   }),
 );
 
 test(
-  "the estimate flag survives accumulation across commits and a pause/resume cycle (#209)",
+  "the estimate flag survives accumulation across commits and a pause/resume cycle",
   withTempCwd(async (cwd) => {
     // 'first' reports nothing (its committed total is a fabricated estimate);
     // 'second' reports exact usage. The run-level aggregate must stay flagged
@@ -895,7 +895,7 @@ test(
 );
 
 test(
-  "fabricated fallback usage persists with the estimate flag, exact usage without it (#209)",
+  "fabricated fallback usage persists with the estimate flag, exact usage without it",
   withTempCwd(async (cwd) => {
     // fakeAgent() reports all-zero usage, so the commit falls back to the
     // character-heuristic total — that figure is an estimate and must be
@@ -1460,7 +1460,7 @@ test(
 );
 
 test(
-  "deleteRun refuses while another live process holds the run lease (audit2 #16)",
+  "deleteRun refuses while another live process holds the run lease",
   withTempCwd(async (cwd) => {
     const owner = new WorkflowManager({ cwd, agent: fakeAgent() });
     const deleter = new WorkflowManager({ cwd });
@@ -1482,9 +1482,9 @@ test(
 );
 
 test(
-  "deleteRun refuses for a terminal in-memory run leased by a foreign process (audit2 #16 r1)",
+  "deleteRun refuses for a terminal in-memory run leased by a foreign process",
   withTempCwd(async (cwd) => {
-    // r1 MAJOR 1: a PAUSED run stays in this.runs but its lease was released
+    // A PAUSED run stays in this.runs but its lease was released
     // at pause settle — the managed branch must not bypass the lease gate.
     const owner = new WorkflowManager({ cwd, agent: fakeAgent() });
     const { runId } = owner.startInBackground(oneAgentScript);
@@ -1506,7 +1506,7 @@ test(
 );
 
 test(
-  "deleteRun keeps its no-throw contract when the lease probe fails (audit2 #16 r1)",
+  "deleteRun keeps its no-throw contract when the lease probe fails",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd });
     // A runId containing a path separator makes the lock-file probe throw
@@ -1938,7 +1938,7 @@ return { a, b }`;
       // Resume
       const resumed = await manager.resume(runId);
       assert.equal(resumed, true);
-      // resume() seeds the snapshot from the persisted agents (#206): the
+      // resume() seeds the snapshot from the persisted agents: the
       // pre-pause pair (done + skipped) is present immediately, so wait for
       // the LIVE re-execution of agent 2 to take over its row.
       const second = () => manager.getRun(runId)?.snapshot.agents.find((a) => a.label === "second");
@@ -3418,7 +3418,7 @@ test(
 );
 
 test(
-  "resume() superseding a run-fatal-aborted failed run never delivers a stray sibling agent's agentEnd event (#1)",
+  "resume() superseding a run-fatal-aborted failed run never delivers a stray sibling agent's agentEnd event",
   withTempCwd(async (cwd) => {
     // Historical note: this test used to document a genuine gap — a run that
     // reached "failed" WITHOUT managed.controller ever aborting (a parallel()
@@ -3506,7 +3506,7 @@ return xs`;
 );
 
 test(
-  "writeRunToDisk's isCurrent guard is unreachable defense-in-depth: run-fatal abort now stops a stale straggler from ever journaling (#2)",
+  "writeRunToDisk's isCurrent guard is unreachable defense-in-depth: run-fatal abort now stops a stale straggler from ever journaling",
   withTempCwd(async (cwd) => {
     // HISTORY: this test used to drive a stale schedulePersist() deferred
     // timer (the one path into writeRunToDisk() that skips persistRun()'s own
@@ -4402,8 +4402,8 @@ test(
 // resume(runId, { script }) lets the orchestrating model re-run with an EDITED
 // script: the unchanged agent() prefix replays from the journal (cache hit), and
 // the first edited/new call — plus everything after — re-runs live. resume(runId)
-// with NO opts stays backward-compatible (uses the persisted script) so #78's
-// auto-resume (UsageLimitScheduler calls resume(runId)) is unaffected.
+// with NO opts uses the persisted script, which is what the usage-limit
+// auto-resume (UsageLimitScheduler calls resume(runId)) relies on.
 
 const editResumeScriptV1 = `export const meta = { name: 'edit_resume', description: 'two agents' }
 const a = await agent('FIRST', { label: 'first' })
@@ -4975,7 +4975,7 @@ test(
 );
 
 test(
-  "an exact commit merging onto an estimated aggregate keeps the run flagged — no pause involved (#209)",
+  "an exact commit merging onto an estimated aggregate keeps the run flagged — no pause involved",
   withTempCwd(async (cwd) => {
     // The terminal onTokenUsage flush also carries the flag, so this test pins
     // the END-TO-END invariant; the manager-side merge (commitFinalizedAgentUsage)
@@ -5008,7 +5008,7 @@ test(
 );
 
 test(
-  "a pause after an exact commit lands keeps the run flagged in the paused record (#209)",
+  "a pause after an exact commit lands keeps the run flagged in the paused record",
   withTempCwd(async (cwd) => {
     // commitFinalizedAgentUsage is the ONLY writer of snapshot.tokenUsage on the
     // pause path (the terminal onTokenUsage flush never runs), so this pins its
@@ -5214,7 +5214,7 @@ return 'script-done'`;
 );
 
 test(
-  "pause() during the terminal drain keeps the run paused (not overwritten to completed) (audit2 r1 m7)",
+  "pause() during the terminal drain keeps the run paused (not overwritten to completed)",
   withTempCwd(async (cwd) => {
     let releaseSibling!: () => void;
     const siblingGate = new Promise<void>((resolve) => (releaseSibling = resolve));
@@ -5258,7 +5258,7 @@ return 'script-done'`;
 );
 
 test(
-  "a durable checkpoint suspension waits out in-flight siblings instead of aborting them (audit2 #2)",
+  "a durable checkpoint suspension waits out in-flight siblings instead of aborting them",
   withTempCwd(async (cwd) => {
     let slowReleased: () => void = () => {};
     const slowCanFinish = new Promise<void>((resolve) => {
@@ -5459,7 +5459,7 @@ await checkpoint({ kind: 'hold', checkpointId: 'hold-1', payload: {} })`;
 );
 
 test(
-  "a usage-limit pause AFTER a consumed checkpoint persists pauseReason usage_limit (r3 MAJOR)",
+  "a usage-limit pause AFTER a consumed checkpoint persists pauseReason usage_limit",
   withTempCwd(async (cwd) => {
     const limitActive = true;
     const manager = new WorkflowManager({
@@ -5506,7 +5506,7 @@ return { a, b }`;
 );
 
 test(
-  "a usage-limit pause while a checkpoint is still RESUMING persists pauseReason usage_limit (r4 MAJOR)",
+  "a usage-limit pause while a checkpoint is still RESUMING persists pauseReason usage_limit",
   withTempCwd(async (cwd) => {
     let limitActive = false;
     const manager = new WorkflowManager({
@@ -5561,7 +5561,7 @@ return { a }`;
 );
 
 test(
-  "recordAutoResumeAttempts skips the disk merge when a live foreign lease holds the run (#207)",
+  "recordAutoResumeAttempts skips the disk merge when a live foreign lease holds the run",
   withTempCwd(async (cwd) => {
     let attempts = 0;
     let markStarted: () => void = () => {};
@@ -5626,7 +5626,7 @@ test(
 );
 
 test(
-  "recordAutoResumeAttempts never writes a stale managed snapshot after it released its lease (#207)",
+  "recordAutoResumeAttempts never writes a stale managed snapshot after it released its lease",
   withTempCwd(async (cwd) => {
     let markStarted: () => void = () => {};
     const started = new Promise<void>((resolve) => {
@@ -5703,7 +5703,7 @@ test(
 );
 
 test(
-  "recordAutoResumeAttempts rejects corrupt counter values (#207)",
+  "recordAutoResumeAttempts rejects corrupt counter values",
   withTempCwd(async (cwd) => {
     let markStarted: () => void = () => {};
     const started = new Promise<void>((resolve) => {
@@ -5741,7 +5741,7 @@ test(
 );
 
 test(
-  "a human resume resets the persisted auto-resume counter through the real manager+scheduler (#207)",
+  "a human resume resets the persisted auto-resume counter through the real manager+scheduler",
   withTempCwd(async (cwd) => {
     let attempts = 0;
     let markStarted: () => void = () => {};
@@ -5791,7 +5791,7 @@ test(
 );
 
 test(
-  "resume drops corrupt persisted agent entries instead of seeding garbage rows (#206)",
+  "resume drops corrupt persisted agent entries instead of seeding garbage rows",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
     manager.on("error", () => {});
@@ -5882,7 +5882,7 @@ test(
 );
 
 test(
-  "resume replay updates its call's row and refreshes its label, keeping the killed execution as history (#206)",
+  "resume replay updates its call's row and refreshes its label, keeping the killed execution as history",
   withTempCwd(async (cwd) => {
     // Shape: a killed execution of call 0, then a live re-run that completed.
     // The re-run takes over the call's row with the killed execution as its
@@ -5976,7 +5976,7 @@ return { a, b }`;
 );
 
 test(
-  "resume tolerates element-level corrupt journal/phases/logs without a lease leak (#206)",
+  "resume tolerates element-level corrupt journal/phases/logs without a lease leak",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
     manager.on("error", () => {});
@@ -6010,7 +6010,7 @@ test(
 );
 
 test(
-  "a replayed call on a startedAt-less ghost row keeps its settle timestamps and tokens (#206)",
+  "a replayed call on a startedAt-less ghost row keeps its settle timestamps and tokens",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
     manager.on("error", () => {});
@@ -6068,7 +6068,7 @@ test(
 );
 
 test(
-  "a ghost's settle timestamp never precedes the record's last write, even with a future updatedAt (#206)",
+  "a ghost's settle timestamp never precedes the record's last write, even with a future updatedAt",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
     manager.on("error", () => {});
@@ -6110,7 +6110,7 @@ test(
 );
 
 test(
-  "a replayed call on a terminal row with no timestamps still keeps its seeded tokens (#206)",
+  "a replayed call on a terminal row with no timestamps still keeps its seeded tokens",
   withTempCwd(async (cwd) => {
     // Pins the UNCONDITIONAL replay arm: with no seeded timestamp for the call,
     // a conditional (`priorTimestamp`-gated) arm would let onAgentEnd take the
@@ -6171,7 +6171,7 @@ test(
 );
 
 test(
-  "the empty-fleet warning considers only the current execution, not seeded history (#206)",
+  "the empty-fleet warning considers only the current execution, not seeded history",
   withTempCwd(async (cwd) => {
     // Paused record whose done row belongs to a call the EDITED script no
     // longer makes (no journal hit): every live call returns empty → the
@@ -6278,7 +6278,7 @@ test(
 );
 
 test(
-  'deleteRun emits "deleted" so watchers can tear down (audit2 #34)',
+  'deleteRun emits "deleted" so watchers can tear down',
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent({}) });
     manager.on("error", () => {});
@@ -6295,7 +6295,7 @@ return await agent('x')`;
 );
 
 test(
-  'deleteRun emits "deleted" for an in-memory run whose file vanished out-of-band (audit2 #34 r2)',
+  'deleteRun emits "deleted" for an in-memory run whose file vanished out-of-band',
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent({}) });
     manager.on("error", () => {});

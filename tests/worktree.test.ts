@@ -230,7 +230,7 @@ test("removeWorktree preserves the branch when a locked worktree cannot be remov
   }
 });
 
-test("a hung git is bounded by the exec timeout (audit2 #21)", {
+test("a hung git is bounded by the exec timeout", {
   // execFile resolves only .exe/.com files on Windows PATH, so the shell-script
   // shim below would never run there: the real git would fail fast instead.
   skip: process.platform === "win32" && "a shell-script git shim on PATH is never executed on Windows",
@@ -266,10 +266,10 @@ const listedWorktrees = (porcelain: string) =>
     .filter((line) => line.startsWith("worktree "))
     .map((line) => resolve(line.slice("worktree ".length)));
 
-test("a timed-out worktree add cleans up only its half-created branch, tree, and registration (audit2 #21 r1)", async () => {
+test("a timed-out worktree add cleans up only its half-created branch, tree, and registration", async () => {
   // A post-checkout hook runs after `worktree add` has created the branch,
   // checked out the tree and registered it, so hanging there leaves REAL
-  // residue when the timeout kills git (r2: a pure-sleep fake made the cleanup
+  // residue when the timeout kills git (a pure-sleep fake would make the cleanup
   // assertions vacuous). Git runs hooks through its own shell on every
   // platform, so this needs no PATH shim and uses the real git end to end.
   // Before hanging, the hook also creates an unrelated missing worktree
@@ -317,8 +317,8 @@ test("a timed-out worktree add cleans up only its half-created branch, tree, and
     process.env.GIT_TRACE = commandLog;
     const started = Date.now();
     // 2s is comfortably above the tiny repo's real `worktree add` plus the
-    // hook's fixture commands (r3: 200ms raced it — under load the add was
-    // killed before registering, making the cleanup assertions vacuous again).
+    // hook's fixture commands (a shorter timeout can kill the add under load
+    // before it registers, which makes the cleanup assertions vacuous).
     const wt = await createWorktreeLive(repo, "run-addhang-0-task", { timeoutMs: 2_000 }).finally(() => {
       delete process.env.GIT_TRACE;
     });

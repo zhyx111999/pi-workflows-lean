@@ -1,5 +1,5 @@
 /**
- * Real-session integration test for issue #26 — provider usage-limit handling.
+ * Real-session integration test for provider usage-limit handling.
  *
  * Every other test injects a fake agent runner; this one drives the REAL
  * `WorkflowAgent.run` → `createAgentSession` path and uses the pi SDK's built-in

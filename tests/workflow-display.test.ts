@@ -227,7 +227,7 @@ describe("renderWorkflowText", () => {
     assert.deepEqual(tokenFigures(undefined), { fresh: 0, cacheRead: 0, estimated: false });
   });
 
-  it("header falls back to the estimated total when the provider reported no usage (#57 regression)", async () => {
+  it("header falls back to the estimated total when the provider reported no usage", async () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     // onUsage never fired: breakdown is all-zero, total carries the estimate.
@@ -237,7 +237,7 @@ describe("renderWorkflowText", () => {
     assert.ok(!/\b0 tok/.test(text), `must not render a zero breakdown; got: ${text}`);
   });
 
-  it("keeps the scalar estimate for a cost-only agent row (#57 regression)", async () => {
+  it("keeps the scalar estimate for a cost-only agent row", async () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.agents = [
@@ -250,7 +250,7 @@ describe("renderWorkflowText", () => {
     assert.ok(/\[384 tok\]/.test(text), `cost-only agent should show its scalar estimate; got: ${text}`);
   });
 
-  it("suppresses the header token segment for an all-zero usage aggregate (#57 regression)", async () => {
+  it("suppresses the header token segment for an all-zero usage aggregate", async () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     // e.g. a fully journal-replayed resume, or a run whose agents were all skipped.
@@ -627,7 +627,7 @@ describe("renderWorkflowText has no markdown syntax", () => {
   });
 });
 
-describe("fmtTokenSegment estimate marking (#209)", () => {
+describe("fmtTokenSegment estimate marking", () => {
   it("prefixes character-heuristic figures with ~ so an estimate never reads as metered", () => {
     assert.equal(fmtTokenSegment({ fresh: 1200, cacheRead: 0, estimated: true }, fmtFull), "~1,200 tok");
     assert.equal(fmtTokenSegment({ fresh: 1200, cacheRead: 300, estimated: true }, fmtFull), "~1,200 tok · 300 cached");

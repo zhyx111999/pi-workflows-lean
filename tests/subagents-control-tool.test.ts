@@ -279,7 +279,7 @@ test("status uses agent usage when the live run aggregate is lagging", async () 
   assert.match(status.text, /\n- estimated: running\n- reported: done$/, "live agents win over the persisted rows");
 });
 
-test("status marks heuristic-estimated token totals with ~ (#209)", async () => {
+test("status marks heuristic-estimated token totals with ~", async () => {
   const persisted = await execute(
     fakeManager([{ ...run("completed"), tokenUsage: { input: 0, output: 0, total: 200, estimated: true } }]).manager,
     { action: "status", runId: "audit-abc123" },

@@ -153,7 +153,7 @@ test("SharedStore.discardDelta must not clobber a concurrent sibling's legitimat
   );
 });
 
-test("SharedStore.discardDelta must not roll back a sibling's Object.is-EQUAL overwrite (#208)", () => {
+test("SharedStore.discardDelta must not roll back a sibling's Object.is-EQUAL overwrite", () => {
   // Value comparison cannot distinguish "the store still holds my write" from
   // "a sibling rewrote my key with an equal value". The sibling's write is a
   // real, journaled write: rolling it back would erase it from the live store
@@ -171,7 +171,7 @@ test("SharedStore.discardDelta must not roll back a sibling's Object.is-EQUAL ov
   assert.equal(store.get("k"), "pre", "B's rollback cascades past the discarded window to the pre-window value");
 });
 
-test("SharedStore.discardDelta cascades past a discarded window (both-fail, distinct values) (#208)", () => {
+test("SharedStore.discardDelta cascades past a discarded window (both-fail, distinct values)", () => {
   // Both parallel writers fail: A's write was never journaled, so B's rollback
   // must reach the pre-window value, not A's dead write — replay applies
   // neither delta and would otherwise diverge from the live store.
@@ -185,7 +185,7 @@ test("SharedStore.discardDelta cascades past a discarded window (both-fail, dist
   assert.equal(store.get("k"), "pre", "B's rollback cascades past A's discarded write");
 });
 
-test("SharedStore.applyDelta writes are discard-proof — a failed window must not roll back a replay write (#208)", () => {
+test("SharedStore.applyDelta writes are discard-proof — a failed window must not roll back a replay write", () => {
   // Resume replay applies journaled deltas additively while a live window can
   // hold an in-progress write to the same key. The replay write belongs to no
   // live window: the live window's later rollback must leave it untouched.
@@ -196,7 +196,7 @@ test("SharedStore.applyDelta writes are discard-proof — a failed window must n
   assert.equal(store.get("k"), "replayed", "the journaled replay write survives the failed window's rollback");
 });
 
-test("SharedStore.discardDelta leaves earlier windows rollback-capable (#208)", () => {
+test("SharedStore.discardDelta leaves earlier windows rollback-capable", () => {
   // Window A writes, window B overwrites, B fails and rolls back — the value
   // returns to A's write AND A remains the recognized owner, so A's own
   // later discard still rolls back to the pre-window state.
@@ -507,7 +507,7 @@ test("resume replays parallel-agent deltas additively so no writes are lost", as
   assert.equal(writeCalls.beta, "world", "resume: beta delta must survive replay");
 });
 
-test("SharedStore matches an event-log undo model under randomized interleavings (#208)", () => {
+test("SharedStore matches an event-log undo model under randomized interleavings", () => {
   // Differential fuzz: the store's visible state after every op must equal a
   // reference model where a discard removes exactly the discarded (and never
   // committed) window's writes and the visible value is the last surviving
@@ -521,7 +521,7 @@ test("SharedStore matches an event-log undo model under randomized interleavings
   const KEYS = ["x", "y"];
   const WINDOWS = ["run-1:0", "run-1:1", "run-1:2"];
   // Small value pool so writes frequently repeat an Object.is-equal value
-  // across windows — the exact sibling-overwrite shape issue #208 describes.
+  // across windows — the sibling-overwrite shape that rolled back a committed write.
   // Frozen: the model holds pool references, so a store that aliased or
   // mutated them would be caught (mutation would throw in strict mode).
   const POOL: unknown[] = ["shared-a", "shared-b", Object.freeze({ pooled: true })];
@@ -592,7 +592,7 @@ test("SharedStore matches an event-log undo model under randomized interleavings
   }
 });
 
-test("SharedStore isolates values from live-reference aliasing (#208)", () => {
+test("SharedStore isolates values from live-reference aliasing", () => {
   const store = new SharedStore();
   const original = { n: 1 };
   store.trackPut("k", original, "run-1:0");
@@ -609,7 +609,7 @@ test("SharedStore isolates values from live-reference aliasing (#208)", () => {
   assert.deepEqual(store.get("k"), { n: 5 }, "rollback resurrects the permanent write's value");
 });
 
-test("SharedStore registers __proto__ keys as own properties so deltas commit and discard them (#208)", () => {
+test("SharedStore registers __proto__ keys as own properties so deltas commit and discard them", () => {
   const store = new SharedStore();
   store.trackPut("__proto__", "leaked", "run-1:0");
   const delta = store.commitDelta("run-1:0");
@@ -621,7 +621,7 @@ test("SharedStore registers __proto__ keys as own properties so deltas commit an
   assert.equal(store.get("__proto__"), "leaked", "the discard removed only the failed window's write");
 });
 
-test("SharedStore.restore clears pending window deltas (#208)", () => {
+test("SharedStore.restore clears pending window deltas", () => {
   const store = new SharedStore();
   store.trackPut("stale", "pre-restore", "run-1:0");
   store.restore({});
@@ -692,7 +692,7 @@ test("SharedStore trackPut clones before mutating (uncloneable value safety)", (
   assert.deepEqual(store.commitDelta("run-1:0"), {}, "no half-recorded delta entry");
 });
 
-test("sibling COMMITS, then the failed window discards: the committed write survives (#208 r1 m1)", () => {
+test("sibling COMMITS, then the failed window discards: the committed write survives", () => {
   // The deterministic shape the fuzz only covers probabilistically: window A
   // and sibling B write the SAME key; B's write COMMITS (journaled); then A's
   // attempt fails and discards. A's rollback must not touch B's committed
@@ -712,7 +712,7 @@ test("sibling COMMITS, then the failed window discards: the committed write surv
   }
 });
 
-test("an untracked put with an Object.is-equal value still supersedes a discarded window's write (#208 r1 n4)", () => {
+test("an untracked put with an Object.is-equal value still supersedes a discarded window's write", () => {
   const store = new SharedStore();
   store.put("k", "pre");
   store.trackPut("k", "same", "run-1:0");

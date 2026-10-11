@@ -2298,7 +2298,7 @@ return { status: 'done', release, settled }`,
   assert.deepEqual(events, [], "a finished run reports no further agents");
 });
 
-test("agent() retries back off between attempts (audit2 #7)", async () => {
+test("agent() retries back off between attempts", async () => {
   const script = `export const meta = { name: 'retry_bo', description: 'retry backoff' }
 const r = await agent('flaky', { label: 'flaky' })
 return r`;
@@ -2370,7 +2370,7 @@ return await agent('x')`;
   );
 });
 
-test("the usage fallback estimate is LAZY when the provider reported terminal usage (audit2 #9)", async () => {
+test("the usage fallback estimate is LAZY when the provider reported terminal usage", async () => {
   // A result whose JSON.stringify throws: if the fallback estimate were
   // computed eagerly, the run would crash even though real usage exists.
   const script = `export const meta = { name: 'lazy_est', description: 'lazy estimate' }
@@ -2443,7 +2443,7 @@ return await agent('flaky')`;
   }
 });
 
-test("an aborted run's drain abandons signal-ignoring agents after drainAbortGraceMs (audit2 #3)", async () => {
+test("an aborted run's drain abandons signal-ignoring agents after drainAbortGraceMs", async () => {
   // Un-awaited agent whose runner NEVER settles and ignores its abort signal:
   // without the grace the drain (and the run) would wedge forever.
   const script = `export const meta = { name: 'hung_drain', description: 'hung drain' }
@@ -2491,7 +2491,7 @@ return 'script-done'`;
   }
 });
 
-test("drainAbortGraceMs: Infinity restores unbounded waiting (no busy-spin) (audit2 #3)", async () => {
+test("drainAbortGraceMs: Infinity restores unbounded waiting (no busy-spin)", async () => {
   const script = `export const meta = { name: 'hung_inf', description: 'hung inf' }
 void agent('wedged', { label: 'wedged' })
 return 'script-done'`;
@@ -2529,7 +2529,7 @@ return 'script-done'`;
   // handle).
 });
 
-test("a NON-abort (success) drain still waits without a bound for a slow un-awaited agent (audit2 #3)", async () => {
+test("a NON-abort (success) drain still waits without a bound for a slow un-awaited agent", async () => {
   // The success-path drain must not be grace-limited: the slow sibling's
   // result is still wanted (it journals when it completes).
   const script = `export const meta = { name: 'slow_drain', description: 'slow drain' }
@@ -2580,7 +2580,7 @@ return 'script-done'`,
   assert.deepEqual(totals, [42]);
 });
 
-test("runWorkflow's final onTokenUsage flush includes agents that settle during the drain (audit2 #5)", async () => {
+test("runWorkflow's final onTokenUsage flush includes agents that settle during the drain", async () => {
   // The script returns while an un-awaited sibling is still running; the drain
   // waits it out, and the final flush must carry the sibling's spend.
   const script = `export const meta = { name: 'drain_flush', description: 'drain flush' }

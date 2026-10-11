@@ -548,7 +548,7 @@ describe("installResultDelivery", () => {
     assert.ok(content.includes("$6.70"), `cost should be shown; got: ${content}`);
   });
 
-  it("falls back to the estimated total when the provider reported no usage (#57 regression)", () => {
+  it("falls back to the estimated total when the provider reported no usage", () => {
     const pi = createMockPi();
     // Estimate-only run: onUsage never fired, so the breakdown is all-zero while
     // run-level `total` carries the scalar estimate.
@@ -571,7 +571,7 @@ describe("installResultDelivery", () => {
     assert.ok(!/\b0 tok/.test(content), `must not render a zero breakdown; got: ${content}`);
   });
 
-  it("suppresses the token segment when the run-level aggregate is all-zero (#57 regression)", () => {
+  it("suppresses the token segment when the run-level aggregate is all-zero", () => {
     const pi = createMockPi();
     // e.g. a fully journal-replayed resume: every agent came from cache, nothing accrued.
     const manager = createMockManager(
@@ -1429,7 +1429,7 @@ describe("installResultDelivery", () => {
     assert.equal(run.pendingDelivery?.deliveryId, deliveryId, "stale generation send cannot ACK");
   });
 
-  it("registers turn_end once per process and dispatches to the CURRENT manager (audit2 #33)", async () => {
+  it("registers turn_end once per process and dispatches to the CURRENT manager", async () => {
     const pi = createMockPi();
     // m1 = the OLD project's manager; m2 = current after a cross-project
     // session_start rebuild. Per-manager registration would stack one handler
@@ -1455,8 +1455,8 @@ describe("installResultDelivery", () => {
     );
   });
 
-  it("registers turn_end per ExtensionAPI generation, not once per process (audit2 #33 r1)", async () => {
-    // r1 MAJOR 2: the built dist module is cached across pi session
+  it("registers turn_end per ExtensionAPI generation, not once per process", async () => {
+    // The built dist module is cached across pi session
     // generations while pi re-runs the factory with a NEW ExtensionAPI — a
     // bare module-level boolean would leave generations 2+ with NO turn_end
     // handler (fail-closed deliveries never re-probed until session_start).
@@ -1901,7 +1901,7 @@ describe("installResultDelivery", () => {
     });
   }
 
-  // ── Session routing (#147) ──
+  // ── Session routing ──
 
   it("session_start shape: a bind without stableSend captures the bound host session and delivers", async () => {
     const pi = createMockPi();
@@ -2362,7 +2362,7 @@ describe("installResultDelivery", () => {
     assert.equal(piCalls(piA).length, 1, "origin A flushes pending");
   });
 
-  it("#143 suspend/resume still delivers after replacement bind", () => {
+  it("suspend/resume still delivers after replacement bind", () => {
     const pi1 = createMockPi();
     const pi2 = createMockPi();
     const manager = createMockManager(makeRun());
@@ -2794,7 +2794,7 @@ describe("renderPanelDetailed", () => {
     );
   });
 
-  it("keeps the scalar estimate for cost-only agents instead of a zero breakdown (#57 regression)", async () => {
+  it("keeps the scalar estimate for cost-only agents instead of a zero breakdown", async () => {
     const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r3");
     const snapshot = {
@@ -3113,7 +3113,7 @@ describe("deliverText", () => {
   });
 });
 
-it("sessionFileContainsEntry finds entries before AND after the incremental scan offset (audit2 #29)", async () => {
+it("sessionFileContainsEntry finds entries before AND after the incremental scan offset", async () => {
   const { sessionFileContainsEntry } = await import("../src/task-panel/session-file-scan.js");
   const dir = mkdtempSync(join(tmpdir(), "pdw-scan-"));
   const file = join(dir, "session.jsonl");
@@ -3132,8 +3132,7 @@ it("sessionFileContainsEntry finds entries before AND after the incremental scan
   assert.equal(sessionFileContainsEntry(file, { id: "never" }), false);
   // REPEAT the same needle with nothing appended (the delivery-ACK poll
   // loop). NOTE: this pins CORRECTNESS only — the head fallback masks the
-  // off-by-one cost regression (r1 M1) at the boolean level; the tail-window
-  // sizing was verified by read-count probe in review.
+  // off-by-one cost of the tail window at the boolean level.
   assert.equal(sessionFileContainsEntry(file, entry2), true, "repeat check of the last entry still finds it");
 });
 

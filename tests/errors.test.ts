@@ -46,7 +46,7 @@ describe("classifyProviderLimit", () => {
     assert.equal(classifyProviderLimit("insufficient_quota").resetHint, undefined);
   });
 
-  it("extracts the pi-ai Codex 'Try again in ~N min' hint (audit2 #10)", () => {
+  it("extracts the pi-ai Codex 'Try again in ~N min' hint", () => {
     assert.equal(
       classifyProviderLimit("You have hit your ChatGPT usage limit (plus plan). Try again in ~299 min.").resetHint,
       "Try again in ~299 min",

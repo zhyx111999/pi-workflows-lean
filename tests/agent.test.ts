@@ -1147,7 +1147,7 @@ test("WorkflowAgent.run() reports per-turn in-flight usage for a named thread", 
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WorkflowAgent.run(): opts.schema must be a top-level JSON object schema
-// (#330 audit) — a non-object schema (e.g. array/primitive) would otherwise
+// — a non-object schema (e.g. array/primitive) would otherwise
 // reach a strict OpenAI-compatible provider (DeepSeek) as an invalid tool
 // parameters schema and fail with an opaque transport-level 400.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1354,7 +1354,7 @@ test("WorkflowAgent.run() rejects a non-object top-level schema before touching 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// WorkflowAgent.run(): an unresolvable `model` spec must fail loud (#131) — no
+// WorkflowAgent.run(): an unresolvable `model` spec must fail loud — no
 // more silent fallback to the session default with only a console.warn.
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1470,7 +1470,7 @@ test("WorkflowAgent.run() runs a bare model id shared by two providers on the on
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WorkflowAgent.run(): asymmetric fail-loud behavior for a tier that resolves
-// to an unavailable model (#131 follow-up) —
+// to an unavailable model —
 //   - an EXPLICIT tier (script wrote `tier: "x"`) is just as loud as an
 //     explicit model pin: MODEL_NOT_FOUND, naming the tier and what it
 //     resolved to.
@@ -2109,7 +2109,7 @@ test("WorkflowAgent constructor accepts all option shapes without throwing", () 
   }
 });
 
-test("DEFAULT_EXCLUDED_SUBAGENT_TOOLS denies the recursive orchestration tools (#107)", () => {
+test("DEFAULT_EXCLUDED_SUBAGENT_TOOLS denies the recursive orchestration tools", () => {
   // Subagents must never see the globally-registered orchestration tools, or they
   // could start or steer independent runs that bypass the parent run's caps.
   // This is the always-on denylist folded into every subagent session; the guard
@@ -2117,7 +2117,7 @@ test("DEFAULT_EXCLUDED_SUBAGENT_TOOLS denies the recursive orchestration tools (
   assert.deepEqual(DEFAULT_EXCLUDED_SUBAGENT_TOOLS, ["subagents", "subagents_control"]);
 });
 
-test("subagentExcludedTools always includes the defaults, plus caller/session names (#107)", () => {
+test("subagentExcludedTools always includes the defaults, plus caller/session names", () => {
   // This is what run() passes to createAgentSession as excludeTools. Fencing the
   // merge here catches a spread-order regression that drops the defaults — which
   // a deepEqual on the constant alone would miss.
@@ -2128,8 +2128,8 @@ test("subagentExcludedTools always includes the defaults, plus caller/session na
   assert.ok(merged.includes("session-denied") && merged.includes("extra"), "both caller lists are folded in");
 });
 
-test("the subagent resource loader is built once per directory and shared across subagents (#109)", async () => {
-  // The #109 mitigation: one filtered loader per directory, reused by every
+test("the subagent resource loader is built once per directory and shared across subagents", async () => {
+  // One filtered loader per directory, reused by every
   // subagent there, instead of createAgentSession re-running every extension factory
   // (and rooting each disposed session) per subagent. Memoization is the invariant.
   const agent = new WorkflowAgent({ cwd: "/tmp" });
@@ -2367,7 +2367,7 @@ test("provider middleware resolves per run cwd using injected project trust sett
   }
 });
 
-test("a failed per-directory resource loader is evicted before the next attempt (#109)", async () => {
+test("a failed per-directory resource loader is evicted before the next attempt", async () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" });
   type Priv = { getSharedResourceLoader(agentDir: string, cwd: string): Promise<unknown> };
   const privateAgent = agent as unknown as Priv;
@@ -2389,7 +2389,7 @@ test("a failed per-directory resource loader is evicted before the next attempt 
   }
 });
 
-test("the shared resource-loader memo is bounded while loaders are still pending (#109)", async () => {
+test("the shared resource-loader memo is bounded while loaders are still pending", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-loader-pending-root-"));
   const agentDir = mkdtempSync(join(root, "agent-"));
   try {
@@ -2411,7 +2411,7 @@ test("the shared resource-loader memo is bounded while loaders are still pending
 
 // ═══════════════════════════════════════════════════════════════════════
 // finalAssistantText — the unstructured result must come AFTER the last tool
-// result, so stale progress text can't be reported as a completed answer (#111)
+// result, so stale progress text can't be reported as a completed answer
 // ═══════════════════════════════════════════════════════════════════════
 
 const progressThenToolResult = [
@@ -2442,7 +2442,7 @@ test("finalAssistantText returns a plain answer when no tools were used", () => 
   assert.equal(text, "Direct answer.");
 });
 
-test("lastAssistantText stays lenient for schema prose extraction (unchanged by #111)", () => {
+test("lastAssistantText stays lenient for schema prose extraction", () => {
   // The schema path's JSON recovery may read the payload from any assistant
   // message, so lastAssistantText must NOT adopt finalAssistantText's stricter
   // "after the last tool result" rule.
@@ -3221,7 +3221,7 @@ test("fallback registry resolves to a real ModelRegistry on stock pi and is cach
   }
 });
 
-test("WorkflowAgent.run bounds the loader memo: one-off cwds are LRU-evicted (audit2 #41)", async () => {
+test("WorkflowAgent.run bounds the loader memo: one-off cwds are LRU-evicted", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-loader-lru-home-"));
   const root = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-loader-lru-root-"));
   const core = createFauxCore({

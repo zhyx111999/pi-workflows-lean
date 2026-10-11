@@ -129,7 +129,7 @@ describe("registerSavedWorkflow", () => {
     );
   });
 
-  it("starts a background run — without blocking or duplicating delivery (#104)", async () => {
+  it("starts a background run — without blocking or duplicating delivery", async () => {
     const { registerSavedWorkflow } = await load();
     // The run never finishes: if the handler awaited it, this test would hang.
     const { started, getManager } = recordingManager("test-run");

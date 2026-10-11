@@ -249,7 +249,7 @@ describe("buildForcedWorkflowPrompt (/workflows run)", () => {
     assert.match(result, /do not answer in prose instead of starting the subagents/i);
   });
 
-  it("says the turn ends and the result is delivered back (#89)", () => {
+  it("says the turn ends and the result is delivered back", () => {
     const result = buildForcedWorkflowPrompt("audit the repo");
     assert.match(result, /always runs in the background/i);
     assert.match(result, /delivered back into the conversation automatically/i);
@@ -257,7 +257,7 @@ describe("buildForcedWorkflowPrompt (/workflows run)", () => {
     assert.doesNotMatch(result, /background:\s*false/i, "blocking runs no longer exist");
   });
 
-  it("does NOT reintroduce the MUST/ONLY forcing language that caused #88/#89", () => {
+  it("does not use MUST/ONLY forcing language", () => {
     const result = buildForcedWorkflowPrompt("audit the repo");
     assert.ok(!/\bMUST\b/.test(result), "no MUST");
     assert.ok(!/ONLY acceptable/i.test(result), "no 'ONLY acceptable'");

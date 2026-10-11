@@ -293,7 +293,7 @@ test("NavigatorState drills runs -> phases -> agents -> detail and back", () => 
   assert.equal(state.back(), false, "back at top returns false (caller closes)");
 });
 
-test("non-string phase titles are coerced, so the navigator never crashes on bad data (#110)", () => {
+test("non-string phase titles are coerced, so the navigator never crashes on bad data", () => {
   // A corrupt persisted run (or a script that passed a non-string to phase())
   // could put a non-string into snapshot.phases. It used to reach the SDK's
   // truncateToWidth(), whose text.slice() threw and crashed the whole overlay.
@@ -336,7 +336,7 @@ test("non-string phase titles are coerced, so the navigator never crashes on bad
   assert.doesNotThrow(() => renderNavigator(state, model, 80), "rendering must not throw on a non-string title");
 });
 
-test("non-string agent labels and run names are coerced too, not just phase titles (#110)", () => {
+test("non-string agent labels and run names are coerced too, not just phase titles", () => {
   // Same corrupt-data root cause reaches truncateToWidth() via the agent row
   // (a.label) and the two-pane header (run name), not only the phase title.
   const snapshot: WorkflowSnapshot = {
@@ -391,8 +391,8 @@ test("non-string agent labels and run names are coerced too, not just phase titl
   assert.doesNotThrow(() => renderNavigator(state, model, 80), "phases + agent row + header must not throw");
 });
 
-test("structurally corrupt persisted runs never crash the navigator (#110)", () => {
-  // A non-string status crashed twoPaneHeader (same text.slice signature as #110);
+test("structurally corrupt persisted runs never crash the navigator", () => {
+  // A non-string status crashed twoPaneHeader (a text.slice on a non-string);
   // non-array agents/phases crashed the runs list itself so /workflows wouldn't
   // even open. getRun() returns undefined to force the persisted path.
   const manager: Pick<WorkflowManager, "listRuns" | "getRun"> = {
@@ -422,7 +422,7 @@ test("structurally corrupt persisted runs never crash the navigator (#110)", () 
   assert.doesNotThrow(() => renderNavigator(state, model, 80), "drilled view must render (non-string status header)");
 });
 
-test("non-string agent prompt in the detail view is coerced, reachable from a live run (#110)", () => {
+test("non-string agent prompt in the detail view is coerced, reachable from a live run", () => {
   // agent(42) in a model-written script is never type-checked, so a non-string
   // prompt reaches the detail view's wrap() and used to crash text.split().
   const snapshot: WorkflowSnapshot = {
@@ -459,7 +459,7 @@ test("non-string agent prompt in the detail view is coerced, reachable from a li
   assert.doesNotThrow(() => renderNavigator(state, model, 80), "detail view must not throw on a non-string prompt");
 });
 
-test("a null/primitive element in a corrupt agent history doesn't crash the detail view (#110)", () => {
+test("a null/primitive element in a corrupt agent history doesn't crash the detail view", () => {
   // historyLabel(entry) reads entry.kind; a null element (valid JSON from a
   // corrupt persisted run) would throw. Live history never emits null entries.
   const snapshot: WorkflowSnapshot = {
@@ -936,11 +936,11 @@ test("navigator shares one persisted run read across a render frame", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// #57 regressions — the split must survive persistence, and mixed or
+// Token split — it must survive persistence, and mixed or
 // estimate-only runs must never under-report vs the pre-split scalar.
 // ═══════════════════════════════════════════════════════════════════════════
 
-test("persisted runs keep the per-agent split across sessions (#57 regression)", () => {
+test("persisted runs keep the per-agent split across sessions", () => {
   const model = new NavigatorModel({
     listRuns: () => [
       {
@@ -979,7 +979,7 @@ test("persisted runs keep the per-agent split across sessions (#57 regression)",
   assert.equal(runs[0].cacheRead, 900);
 });
 
-test("runs list never under-reports mixed runs (reported + estimate-only agents) (#57 regression)", () => {
+test("runs list never under-reports mixed runs (reported + estimate-only agents)", () => {
   const model = new NavigatorModel({
     listRuns: () => [
       {
@@ -1000,7 +1000,7 @@ test("runs list never under-reports mixed runs (reported + estimate-only agents)
   assert.match(lines.join("\n"), /900 tok/);
 });
 
-test("runs list aggregates per-agent figures for live runs whose run-level usage has not landed (#57 regression)", () => {
+test("runs list aggregates per-agent figures for live runs whose run-level usage has not landed", () => {
   const snapshot = {
     name: "live-run",
     phases: ["P"],
@@ -1036,7 +1036,7 @@ test("runs list aggregates per-agent figures for live runs whose run-level usage
   assert.match(lines.join("\n"), /1,200 tok|1[ .\u00a0]200 tok/);
 });
 
-test("restarting a run with a corrupt persisted script notifies an error instead of crashing the overlay (#330 audit)", async () => {
+test("restarting a run with a corrupt persisted script notifies an error instead of crashing the overlay", async () => {
   const notifications: { message: string; type?: string }[] = [];
   const fakeUi = {
     notify: (message: string, type?: string) => {
@@ -1066,8 +1066,7 @@ test("restarting a run with a corrupt persisted script notifies an error instead
   let capturedComponent: (Component & { dispose?(): void }) | undefined;
 
   // A run whose persisted script is missing the required `export const meta`
-  // block \u2014 exactly the kind of corrupt on-disk run-persistence data #330
-  // found no schema validation guards against.
+  // block, the kind of corrupt on-disk run data nothing else validates.
   const corruptScript = "console.log('not a workflow script')";
   const fakeManager = {
     on: () => {},
@@ -1143,7 +1142,7 @@ function fakeUiCapturingComponent(): {
   return { ui, notifications, getComponent: () => capturedComponent };
 }
 
-test("deleting a saved workflow whose storage.delete throws (e.g. EACCES) notifies an error instead of crashing the overlay (#330 audit follow-up)", async () => {
+test("deleting a saved workflow whose storage.delete throws (e.g. EACCES) notifies an error instead of crashing the overlay", async () => {
   const { ui, notifications, getComponent } = fakeUiCapturingComponent();
 
   // No runs, one saved workflow — cursor 0 lands on the saved item (itemKind "saved").
@@ -1175,7 +1174,7 @@ test("deleting a saved workflow whose storage.delete throws (e.g. EACCES) notifi
   assert.match(notifications[0].message, /EACCES/);
 });
 
-test("stopping a run whose manager.stop throws (cold-run lease/persistence failure) notifies an error instead of crashing the overlay (#330 audit follow-up)", async () => {
+test("stopping a run whose manager.stop throws (cold-run lease/persistence failure) notifies an error instead of crashing the overlay", async () => {
   const { ui, notifications, getComponent } = fakeUiCapturingComponent();
 
   const fakeManager = {
@@ -1741,7 +1740,7 @@ test("component saved detail exposes confirmation before delete", async () => {
   assert.equal(deleted, 1);
 });
 
-test("a manager event with the target unchanged does NOT cancel a pending confirmation (audit2 #22)", async () => {
+test("a manager event with the target unchanged does NOT cancel a pending confirmation", async () => {
   const { ui, getComponent } = fakeUiCapturingComponent();
   const run = {
     runId: "run-live",
@@ -1787,7 +1786,7 @@ test("a manager event with the target unchanged does NOT cancel a pending confir
   assert.equal(stopped, 1, "the second x confirms after unrelated manager events");
 });
 
-test("NavigatorModel carries the estimate flag onto run and phase rows (#209)", () => {
+test("NavigatorModel carries the estimate flag onto run and phase rows", () => {
   const base = fakeManager();
   const manager: Pick<WorkflowManager, "listRuns" | "getRun"> = {
     listRuns: base.listRuns,

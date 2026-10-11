@@ -293,7 +293,7 @@ function describeGitFailure(error: unknown, fallback: string): string {
  * branch and any partial checkout left by a killed git. All steps short-timeout
  * and failure-tolerant — the spawn path must not hang on cleanup. */
 async function cleanupFailedWorktreeAdd(repoRoot: string, path: string, branch: string, exec: GitExec): Promise<void> {
-  // Order matters (r3 MAJOR): if the killed `worktree add` had already
+  // Order matters: if the killed `worktree add` had already
   // REGISTERED the worktree, `branch -D` is refused ("used by worktree")
   // until the registration is gone. Deregister first, then delete the branch.
   try {
