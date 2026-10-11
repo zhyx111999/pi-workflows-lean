@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
+import type { PriorAgentExecution } from "./display.js";
 import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import {
   ensureDir as ensureDirFs,
@@ -49,6 +50,8 @@ export interface PersistedAgentState {
   sessionId?: string;
   /** Child session file, absent for in-memory child sessions. */
   sessionFile?: string;
+  /** Earlier executions of this call, oldest first; see WorkflowAgentSnapshot.priorExecutions. */
+  priorExecutions?: PriorAgentExecution[];
 }
 
 /** Serialized journal entry, keyed by the call's lexical index. */

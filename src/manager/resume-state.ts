@@ -1,7 +1,7 @@
 // Rebuilds a managed run from its persisted record so resume() can execute it again.
 
 import type { AgentUsage } from "../agent-usage.js";
-import { recomputeWorkflowSnapshot, type WorkflowAgentSnapshot } from "../display.js";
+import { type PriorAgentExecution, recomputeWorkflowSnapshot, type WorkflowAgentSnapshot } from "../display.js";
 import { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE } from "../run-agent-settlement.js";
 import {
   type PersistedAgentState,
@@ -12,6 +12,7 @@ import {
 } from "../run-persistence.js";
 import type { JournalEntry } from "../workflow.js";
 import type { ManagedRun } from "../workflow-manager.js";
+import { supersedeAgentRow } from "./agent-rows.js";
 import { retargetAgentRow, type TaskListMoves } from "./task-list-reuse.js";
 
 type AgentTimestamps = { startedAt: string; endedAt?: string };
@@ -41,7 +42,8 @@ export interface ResumedRun {
 /**
  * The live run for a resume. The snapshot is seeded with the recorded agents,
  * so the record never loses its earlier agents (an edited script may never
- * replay them); replayed calls update their seeded row instead of adding one.
+ * replay them). Each call keeps one row: a replay updates it, and a re-run
+ * takes it over with the earlier execution kept as history.
  * Rows of agents that were still queued or running settle as interrupted.
  * Every field of the record is shape-checked, because nothing may throw once
  * the lease is held.
@@ -148,10 +150,12 @@ function replayableJournal(
 }
 
 /**
- * Snapshot rows for the recorded agents, with their timestamps by row id and
- * by call id. Only well-formed rows are kept. Interrupted rows settle at the
- * current time, but never before the record's last write, so a clock that
- * moved backwards cannot end an agent before the record was updated.
+ * Snapshot rows for the recorded agents, one per call, with their timestamps
+ * by row id and by call id. Only well-formed rows are kept. A later row of a
+ * call is a later execution of it, so it takes over the call's row and the
+ * earlier one becomes its history. Interrupted rows settle at the current
+ * time, but never before the record's last write, so a clock that moved
+ * backwards cannot end an agent before the record was updated.
  */
 function seedAgents(
   persistedAgents: PersistedAgentState[],
@@ -165,6 +169,7 @@ function seedAgents(
   const agents: WorkflowAgentSnapshot[] = [];
   const timestamps = new Map<number, AgentTimestamps>();
   const timestampsByCallId = new Map<string, AgentTimestamps>();
+  const positionByCallId = new Map<string, number>();
   for (const agent of persistedAgents) {
     if (
       !agent ||
@@ -176,12 +181,20 @@ function seedAgents(
     ) {
       continue;
     }
-    const id = agents.length + 1;
-    const { startedAt: rawStartedAt, endedAt: rawEndedAt, callId: rawCallId, ...snapshotFields } = agent;
+    const {
+      startedAt: rawStartedAt,
+      endedAt: rawEndedAt,
+      callId: rawCallId,
+      priorExecutions: rawPriorExecutions,
+      ...snapshotFields
+    } = agent;
     // Fields of the wrong type are dropped rather than written back.
     const startedAt = typeof rawStartedAt === "string" ? rawStartedAt : undefined;
     const endedAt = typeof rawEndedAt === "string" ? rawEndedAt : undefined;
     const callId = typeof rawCallId === "string" ? rawCallId : undefined;
+    const priorExecutions = validPriorExecutions(rawPriorExecutions);
+    const position = callId === undefined ? undefined : positionByCallId.get(callId);
+    const id = position === undefined ? agents.length + 1 : position + 1;
     const interrupted = agentHasNonTerminalStatus(agent.status);
     const rowTimestamps = startedAt
       ? { startedAt, endedAt: endedAt ?? (interrupted ? settledAt : undefined) }
@@ -192,28 +205,48 @@ function seedAgents(
           ? { startedAt: endedAt, endedAt }
           : undefined;
     if (callId !== undefined) {
-      // The last row of a call is its latest execution, as in onAgentStart. When
-      // that row has no timestamps, a replay must not borrow an older row's.
+      // The last row of a call is its latest execution. When that row has no
+      // timestamps, a replay must not borrow an older row's.
       if (rowTimestamps) timestampsByCallId.set(callId, rowTimestamps);
       else timestampsByCallId.delete(callId);
     }
-    if (rowTimestamps) {
-      timestamps.set(id, rowTimestamps);
-    }
-    agents.push(
-      interrupted
+    const row: WorkflowAgentSnapshot = {
+      ...snapshotFields,
+      id,
+      callId,
+      ...(priorExecutions ? { priorExecutions } : {}),
+      // The interrupt cause replaces any earlier error, as on disk.
+      ...(interrupted
         ? {
-            ...snapshotFields,
-            id,
-            callId,
-            // The interrupt cause replaces any earlier error, as on disk.
             status: "skipped",
             error: INTERRUPTED_AGENT_CAUSE.error,
             errorCode: INTERRUPTED_AGENT_CAUSE.errorCode,
             recoverable: false,
           }
-        : { ...snapshotFields, id, callId },
-    );
+        : {}),
+    };
+    if (position === undefined) {
+      if (callId !== undefined) positionByCallId.set(callId, agents.length);
+      agents.push(row);
+    } else {
+      agents[position] = supersedeAgentRow(agents[position], timestamps.get(id), row);
+    }
+    if (rowTimestamps) timestamps.set(id, rowTimestamps);
+    else timestamps.delete(id);
   }
   return { agents, timestamps, timestampsByCallId };
+}
+
+/** The well-formed entries of a recorded history; anything else is dropped rather than written back. */
+function validPriorExecutions(value: unknown): PriorAgentExecution[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const valid = value.filter(
+    (entry): entry is PriorAgentExecution =>
+      !!entry &&
+      typeof entry === "object" &&
+      !Array.isArray(entry) &&
+      VALID_PERSISTED_AGENT_STATUSES.has(entry.status) &&
+      typeof entry.label === "string",
+  );
+  return valid.length ? valid : undefined;
 }
