@@ -838,6 +838,83 @@ test(
 );
 
 test(
+  "list includes runs only a backup holds or whose head is corrupt, exactly as load() reads them",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    const runsDir = workflowProjectPaths(cwd).runsDir;
+    rp.save(baseRunState("healthy", undefined, "paused"));
+    rp.save({ ...baseRunState("backup-only", undefined, "completed"), pendingDelivery: { kind: "complete" } });
+    rp.save(baseRunState("corrupt-head", undefined, "failed"));
+    unlinkSync(join(runsDir, "backup-only.json"));
+    writeFileSync(join(runsDir, "corrupt-head.json"), "{ truncated", "utf-8");
+    writeFileSync(join(runsDir, "unreadable.json"), "{ truncated", "utf-8");
+
+    const reader = createRunPersistence(cwd);
+    const listed = reader.list();
+    assert.deepEqual(listed.map((run) => run.runId).sort(), ["backup-only", "corrupt-head", "healthy"]);
+    for (const run of listed) {
+      assert.equal(reader.load(run.runId)?.status, run.status, `${run.runId} is listed as load() reads it`);
+    }
+    assert.equal(
+      listed.find((run) => run.runId === "backup-only")?.pendingDelivery?.kind,
+      "complete",
+      "the pending-delivery scan sees a result only the backup holds",
+    );
+  }),
+);
+
+test(
+  "startup recovery pauses a stale run only its backup holds",
+  withTempCwd(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save({
+      ...baseRunState("orphan", undefined, "running"),
+      agents: [{ id: 1, label: "x", prompt: "x", status: "running" }],
+    });
+    unlinkSync(join(workflowProjectPaths(cwd).runsDir, "orphan.json"));
+
+    new WorkflowManager({ cwd });
+    const recovered = rp.load("orphan");
+    assert.equal(recovered?.status, "paused");
+    assert.equal(recovered?.agents[0]?.status, "skipped");
+  }),
+);
+
+test(
+  "list reuses a backup-recovered view until its files change",
+  withTempCwd(async (cwd) => {
+    let readFileCalls = 0;
+    const rp = createRunPersistence(cwd, {
+      readFileSync: ((...args: Parameters<typeof readFileSync>) => {
+        readFileCalls++;
+        return readFileSync(...args);
+      }) as typeof readFileSync,
+    });
+    const writer = createRunPersistence(cwd);
+    writer.save(baseRunState("r", undefined, "paused"));
+    unlinkSync(join(workflowProjectPaths(cwd).runsDir, "r.json"));
+    const originalNow = Date.now;
+    const later = (ms: number) => {
+      Date.now = () => originalNow() + ms;
+    };
+    try {
+      assert.equal(rp.list()[0]?.status, "paused");
+      readFileCalls = 0;
+      later(6000);
+      assert.equal(rp.list()[0]?.status, "paused");
+      assert.equal(readFileCalls, 0, "an unchanged backup is not re-read on reconciliation");
+
+      writer.save(baseRunState("r", undefined, "running"));
+      later(12_000);
+      assert.equal(rp.list()[0]?.status, "running", "a restored head replaces the backup view");
+      assert.equal(readFileCalls, 1, "only the restored head is read");
+    } finally {
+      Date.now = originalNow;
+    }
+  }),
+);
+
+test(
   "delete removes the .bak sidecar too",
   withTempCwd(async (cwd) => {
     const rp = createRunPersistence(cwd);

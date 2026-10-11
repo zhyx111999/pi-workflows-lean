@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { RunRecordDeletedError } from "../src/errors.js";
@@ -185,6 +185,55 @@ test(
     assert.deepEqual(runFiles(owner, "manager-backup"), []);
   }),
 );
+
+// Each file a deletion removes, in a run that has all of them. The backup and
+// the head are the recovery candidates; the rest only matter while a head does.
+const DELETED_FILES = [
+  { file: "backup", matches: (name: string) => name === "doomed.json.bak", committed: false },
+  { file: "head", matches: (name: string) => name === "doomed.json", committed: false },
+  { file: "event log", matches: (name: string) => name === "doomed.json.events.jsonl", committed: true },
+  { file: "temporary head", matches: (name: string) => name === "doomed.json.tmp", committed: true },
+  { file: "result artifact", matches: (name: string) => name.startsWith("doomed.json.result-"), committed: true },
+  { file: "run log", matches: (name: string) => name === "doomed.log", committed: true },
+];
+
+for (const { file, matches, committed } of DELETED_FILES) {
+  test(
+    `a deletion that cannot remove the ${file} leaves a loadable record or none, and deleting again finishes it`,
+    withTempProject(async (cwd) => {
+      let refuse = true;
+      const deleter = createRunPersistence(cwd, {
+        unlinkSync(path) {
+          if (refuse && matches(basename(String(path))))
+            throw Object.assign(new Error("EPERM: operation not permitted, unlink"), { code: "EPERM" });
+          unlinkSync(path);
+        },
+      });
+      const owner = createRunPersistence(cwd);
+      owner.save(record("doomed", "completed"));
+      owner.exportResult("doomed", { answer: 42 });
+      writeFileSync(join(owner.getRunsDir(), "doomed.log"), "[log] entry\n");
+      writeFileSync(join(owner.getRunsDir(), "doomed.json.tmp"), "{}");
+
+      assert.throws(() => deleter.delete("doomed"), /EPERM/, "the failure is reported");
+      const reader = createRunPersistence(cwd);
+      const listed = reader.list().some((run) => run.runId === "doomed");
+      const loaded = reader.load("doomed");
+      assert.equal(listed, !committed, committed ? "the record is gone" : "the record is intact");
+      assert.equal(loaded !== null, listed, "a listed record is loadable and a loadable one is listed");
+      if (committed) {
+        assert.throws(() => owner.save(record("doomed", "completed")), RunRecordDeletedError);
+      } else {
+        assert.equal(reader.loadPreview("doomed")?.status, "completed");
+      }
+
+      refuse = false;
+      assert.equal(deleter.delete("doomed"), true, "deleting again finishes the deletion");
+      assert.deepEqual(runFiles(owner, "doomed"), []);
+      assert.equal(deleter.delete("doomed"), false, "nothing is left to delete");
+    }),
+  );
+}
 
 for (const write of ["updateMetadata", "recoverInterrupted"] as const) {
   test(

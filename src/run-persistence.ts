@@ -9,7 +9,7 @@ import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
 import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import {
   ensureDir as ensureDirFs,
-  listJsonFilesSafe,
+  listFilesSafe,
   type PersistenceFsLayer,
   resolvePersistenceFs,
   unlinkIfExistsSafe,
@@ -167,9 +167,17 @@ export interface RunPersistence {
   ): boolean;
   /** Load a persisted run by ID. */
   load(runId: string): PersistedRunState | null;
-  /** List all persisted runs. */
+  /**
+   * List every run's lightweight view, read through the same head recovery as
+   * load(), so runs only their backup holds are included.
+   */
   list(): PersistedRunState[];
-  /** Delete a persisted run with its sidecars, exported results, and run log. */
+  /**
+   * Delete a persisted run with its sidecars, exported results, and run log.
+   * Returns whether any of its data was removed. Throws when a file could not
+   * be removed; the run is then either intact or already unlistable, and
+   * deleting again finishes the cleanup.
+   */
   delete(runId: string): boolean;
   /**
    * Acquire an exclusive cross-process lease for a run. Returns null when another
@@ -282,6 +290,14 @@ export interface RunPersistenceOptions {
  * lightweight per-file views. Full histories are hydrated only on demand.
  */
 const LIST_CACHE_TTL_MS = 300;
+
+/** A record is its head or its backup: a backup alone still recovers the run. */
+const RECORD_FILE = /^(.+)\.json(\.bak)?$/;
+
+interface RecordFiles {
+  head: boolean;
+  backup: boolean;
+}
 
 export function createRunPersistence(
   cwd: string,
@@ -420,64 +436,67 @@ export function createRunPersistence(
     listCache = undefined;
   };
 
-  // Per-file mtime+size+ino cache, keyed by absolute path: even once the
-  // TTL-level listCache above expires (the active panel polls roughly every
-  // 300ms, i.e. faster than or comparable to the TTL), most run files on
-  // disk haven't changed since the last recompute. Re-stat is cheap; re-read
-  // + re-JSON.parse is not, and scales with total lifetime run history, not
-  // with what actually changed. A file whose (mtimeMs, size, ino) all match
-  // what we last parsed is reused as-is instead of being re-read; entries
-  // for files that vanished between recomputes are pruned so this cache
-  // can't grow unbounded independent of what's actually on disk.
-  //
-  // ino is load-bearing, not redundant with mtime+size: save() writes via
-  // tmp-write + rename (writeJsonAtomicWithBackup), and a rename onto an
-  // existing path allocates a NEW inode for the replacement file. Two
-  // consecutive saves landing in the same mtime tick (400ms-throttled
-  // progress persists vs. 1-2s mtime granularity on HFS+/many network
-  // mounts/some Docker volume drivers is entirely realistic) with
-  // coincidentally equal byte length (e.g. "paused" and "failed" are the
-  // same length) would otherwise be indistinguishable from "unchanged" by
-  // (mtimeMs, size) alone — serving stale, previously-cached content
-  // forever until something ELSE about the file changes. The inode always
-  // changes on such a rename, so adding it closes that hole for free.
-  const fileStateCache = new Map<string, { mtimeMs: number; size: number; ino: number; state: PersistedRunState }>();
+  // Per-run view cache, keyed by runId. Re-stat is cheap; re-reading and
+  // parsing every head is not, and would scale with the lifetime run history
+  // rather than with what changed since the last pass. A view is reused while
+  // the file it is read from keeps its inode, size and mtime. The inode is
+  // load-bearing: heads are replaced by tmp-write + rename, which allocates a
+  // new inode, so two saves landing in the same coarse mtime tick with equal
+  // byte length ("paused" and "failed" are the same length) still differ.
+  // Entries for runs that left the directory are pruned, so the map tracks
+  // what is on disk rather than lifetime history.
+  const listViews = new Map<string, { stamp: string; view: PersistedRunState }>();
+
+  // Only the file a reader starts from is stat'ed. While the head is present
+  // it is that file; writers refresh the backup only together with the head,
+  // so the head's identity also covers a backup it may fall back to. The
+  // backup's presence is part of the stamp, so a backup appearing or vanishing
+  // next to an unreadable head is still noticed.
+  const viewStamp = (runId: string, files: RecordFiles): string => {
+    const path = runPath(runId);
+    const s = _statSync(files.head ? path : `${path}.bak`);
+    return `${files.head}:${files.backup}:${s.ino}:${s.size}:${s.mtimeMs}`;
+  };
+
+  // The run's lightweight view, or undefined when it has no readable record.
+  const listView = (runId: string, files: RecordFiles): PersistedRunState | undefined => {
+    const stamp = viewStamp(runId, files);
+    const cached = listViews.get(runId);
+    if (cached?.stamp === stamp) return cached.view;
+    listViews.delete(runId);
+    // The same recovery entry as load(): a missing or unparsable head falls
+    // back to its backup. A head naming another run is not this run's record,
+    // and load() could not find it under that name.
+    const view = records.peek(runPath(runId));
+    if (view?.runId !== runId) return undefined;
+    knownRunIds.add(runId);
+    listViews.set(runId, { stamp, view });
+    return view;
+  };
 
   const computeList = (): PersistedRunState[] => {
-    const byRunId = new Map<string, PersistedRunState>();
-    const seenPaths = new Set<string>();
-    for (const file of listJsonFilesSafe(fs, runsDir)) {
-      const path = join(runsDir, file);
-      seenPaths.add(path);
+    const candidates = new Map<string, RecordFiles>();
+    for (const name of listFilesSafe(fs, runsDir)) {
+      const match = RECORD_FILE.exec(name);
+      if (!match) continue;
+      const files = candidates.get(match[1]) ?? { head: false, backup: false };
+      if (match[2]) files.backup = true;
+      else files.head = true;
+      candidates.set(match[1], files);
+    }
+    for (const runId of listViews.keys()) if (!candidates.has(runId)) listViews.delete(runId);
+    const views: PersistedRunState[] = [];
+    for (const [runId, files] of candidates) {
       try {
-        const stat = _statSync(path);
-        const cached = fileStateCache.get(path);
-        // Reuse the last parse when the file is byte-identical (same
-        // mtime + size + inode) to what produced it — the dominant case
-        // on every poll tick once a run goes terminal and stops changing.
-        // ino is what actually rules out a false "unchanged" match on a
-        // coarse-mtime filesystem (see the field doc comment above).
-        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.ino === stat.ino) {
-          if (!byRunId.has(cached.state.runId)) byRunId.set(cached.state.runId, cached.state);
-          continue;
-        }
-        const record = JSON.parse(_readFileSync(path, "utf-8"));
-        const state = records.preview(path, record);
-        knownRunIds.add(state.runId);
-        fileStateCache.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, state });
-        if (!byRunId.has(state.runId)) byRunId.set(state.runId, state);
+        const view = listView(runId, files);
+        if (view) views.push(view);
       } catch {
-        // Skip corrupted/unreadable files; don't let a stale cache entry
-        // for a file that's now failing to read linger either.
-        fileStateCache.delete(path);
+        // Skip damaged or vanished records without caching the failure: a
+        // transient read error must not hide a valid record until it changes.
+        listViews.delete(runId);
       }
     }
-    // Prune cache entries for files that no longer exist (deleted runs) so
-    // this map's size tracks what's actually on disk, not lifetime history.
-    for (const path of fileStateCache.keys()) {
-      if (!seenPaths.has(path)) fileStateCache.delete(path);
-    }
-    return [...byRunId.values()].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    return views.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
   };
 
   // Bound the number of terminal (completed/failed/aborted) runs kept on
@@ -506,50 +525,60 @@ export function createRunPersistence(
     invalidateListCache();
   };
 
+  /**
+   * Delete a run's files; the caller holds its writer mutex. The record stays
+   * whole until its last recovery candidate is gone: the backup goes first, so
+   * a stale backup never stands in for a removed head, and removing the head
+   * is the commit point. Only after it do the files the head depends on go, so
+   * a failure at any step leaves either a complete, loadable record or no
+   * record at all, never a listed head whose log is gone. Every step tolerates
+   * an already-missing file, so a retry finishes what a failed deletion left.
+   * Returns whether any of the run's data was removed.
+   */
   const deleteRunFiles = (runId: string): boolean => {
-    let deleted = false;
-    const unlinkData = (path: string): boolean => {
+    const path = runPath(runId);
+    listViews.delete(runId);
+    records.forget(path);
+    // A missing file is already deleted, which keeps every step idempotent.
+    const unlink = (file: string): boolean => {
       try {
-        _unlinkSync(path);
+        _unlinkSync(file);
         return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
         throw error;
       }
     };
-    // Delete every recovery candidate before releasing the lock: a foreign
-    // resume that acquires in between must never find a surviving head or
-    // backup to resurrect. The backup goes before the head so a reader never
-    // recovers from it mid-delete; a backup alone is still a record, so
-    // removing it is a deletion.
-    const path = runPath(runId);
-    const backup = `${path}.bak`;
-    if (unlinkData(backup)) deleted = true;
-    for (const sidecar of [`${path}.tmp`, records.logPath(path)]) {
-      unlinkData(sidecar);
-      fileStateCache.delete(sidecar);
-    }
-    if (unlinkData(path)) deleted = true;
-    fileStateCache.delete(backup);
-    fileStateCache.delete(path);
-    records.forget(path);
-    if (_existsSync(runsDir)) {
-      for (const name of fs.readdirSync(runsDir)) {
-        if (
-          name === `${runId}.log` ||
-          name.startsWith(`${runId}.json.result-`) ||
-          (name.startsWith(`${runId}.json.write-lock.`) && (name.endsWith(".owner") || name.includes(".reap-")))
-        )
-          unlinkData(join(runsDir, name));
+    let removed = false;
+    if (unlink(`${path}.bak`)) removed = true;
+    if (unlink(path)) removed = true;
+    // Committed. Attempt every leftover before reporting the first failure.
+    let failure: { error: unknown } | undefined;
+    const cleanUp = (file: string, isRunData: boolean) => {
+      try {
+        if (unlink(file) && isRunData) removed = true;
+      } catch (error) {
+        failure ??= { error };
       }
+    };
+    cleanUp(`${path}.tmp`, true);
+    cleanUp(records.logPath(path), true);
+    try {
+      for (const name of _existsSync(runsDir) ? fs.readdirSync(runsDir) : []) {
+        if (name === `${runId}.log` || name.startsWith(`${runId}.json.result-`)) cleanUp(join(runsDir, name), true);
+        // Writer-mutex debris of crashed processes is removed but is not run data.
+        else if (name.startsWith(`${runId}.json.write-lock.`) && (name.endsWith(".owner") || name.includes(".reap-")))
+          cleanUp(join(runsDir, name), false);
+      }
+    } catch (error) {
+      failure ??= { error };
     }
-    // The lock goes LAST, after the data and its recovery candidates.
-    // deleteRun() deliberately holds its acquired lease across this sequence,
-    // so releasing it sooner would let another process resume a record that is
-    // about to be deleted.
+    if (failure) throw failure.error;
+    // The lock goes LAST. deleteRun() holds its lease across this sequence;
+    // releasing it sooner would let another process resume a record that is
+    // about to be deleted. After a failure the lease holder releases it.
     unlinkIfExistsSafe(fs, lockPath(runId));
-    fileStateCache.delete(lockPath(runId));
-    return deleted;
+    return removed;
   };
 
   return {
