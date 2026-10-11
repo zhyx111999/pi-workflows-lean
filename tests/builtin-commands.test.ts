@@ -70,11 +70,16 @@ test("saved workflow cannot claim a built-in name occupied by a third-party comm
   const { pi, commands } = makeCommandRegistryPi(["deep-research"]);
   const availability = savedWorkflowCommandAvailability(pi, "deep-research");
   assert.equal(availability.ok, false);
-  const result = registerSavedWorkflow(pi, "/tmp", {
-    name: "deep-research",
-    description: "third-party collision",
-    script: "export THIRD_PARTY_COLLISION",
-  });
+  const result = registerSavedWorkflow(
+    pi,
+    {
+      name: "deep-research",
+      description: "third-party collision",
+      script: "export THIRD_PARTY_COLLISION",
+    },
+    () => makeFakeManager().manager,
+    () => null,
+  );
   assert.equal(result.ok, false);
   assert.equal(commands.length, 0, "the rejected command must not be registered");
 });
@@ -83,22 +88,32 @@ test("saved workflow may shadow a built-in only after this extension owns its ha
   const { pi, commands } = makeCommandRegistryPi();
   registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
   assert.equal(savedWorkflowCommandAvailability(pi, "deep-research").ok, true);
-  const result = registerSavedWorkflow(pi, "/tmp", {
-    name: "deep-research",
-    description: "saved shadow",
-    script: "export SAVED_SHADOW",
-  });
+  const result = registerSavedWorkflow(
+    pi,
+    {
+      name: "deep-research",
+      description: "saved shadow",
+      script: "export SAVED_SHADOW",
+    },
+    () => makeFakeManager().manager,
+    () => null,
+  );
   assert.equal(result.ok, true);
   assert.equal(commands.filter((command) => command.name === "deep-research").length, 1);
 });
 
 test("saved workflow rejects an ordinary third-party command name", () => {
   const { pi, commands } = makeCommandRegistryPi(["ordinary-command"]);
-  const result = registerSavedWorkflow(pi, "/tmp", {
-    name: "ordinary-command",
-    description: "collision",
-    script: "export COLLISION",
-  });
+  const result = registerSavedWorkflow(
+    pi,
+    {
+      name: "ordinary-command",
+      description: "collision",
+      script: "export COLLISION",
+    },
+    () => makeFakeManager().manager,
+    () => null,
+  );
   assert.equal(result.ok, false);
   assert.equal(commands.length, 0);
 });

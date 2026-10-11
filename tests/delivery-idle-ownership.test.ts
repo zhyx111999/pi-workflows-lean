@@ -51,7 +51,7 @@ function host() {
         resolveIdle = resolve;
       }),
     sessionManager: {
-      persist: true,
+      isPersisted: () => true,
       getSessionId: () => "idle-host",
       getBranch: () => branch,
       getEntries: () => [...branch, ...abandonedEntries],

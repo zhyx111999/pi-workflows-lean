@@ -62,11 +62,11 @@ function runtime(cwd: string): WorkflowReloadRuntime {
 test("reload handoff transfers the exact live runtime once", () => {
   const cwd = `/tmp/reload-handoff-${process.pid}-once`;
   const value = runtime(cwd);
-  discardWorkflowRuntime(cwd);
+  discardWorkflowRuntime();
 
   handoffWorkflowRuntime(value);
-  assert.equal(takeWorkflowRuntime(cwd), value);
-  assert.equal(takeWorkflowRuntime(cwd), undefined, "a second extension generation cannot claim it twice");
+  assert.equal(takeWorkflowRuntime(), value);
+  assert.equal(takeWorkflowRuntime(), undefined, "a second extension generation cannot claim it twice");
 });
 
 test("a changed package version is rejected and its live runs are paused for recovery", () => {
@@ -93,10 +93,10 @@ test("a changed package version is rejected and its live runs are paused for rec
       },
     } as unknown as WorkflowReloadRuntime["manager"],
   };
-  discardWorkflowRuntime(cwd);
+  discardWorkflowRuntime();
 
   handoffWorkflowRuntime(value);
-  const claim = claimWorkflowRuntime(cwd);
+  const claim = claimWorkflowRuntime();
 
   assert.equal(claim.compatible, undefined);
   assert.ok(claim.versionMismatch);
@@ -124,14 +124,14 @@ test("a handoff nobody claims before its TTL expires pauses any still-running ru
       },
     } as unknown as WorkflowReloadRuntime["manager"],
   };
-  discardWorkflowRuntime(cwd);
+  discardWorkflowRuntime();
 
   handoffWorkflowRuntime(value, 10);
   // Nobody ever claims it (simulating a reload that failed or never happened).
   await new Promise((resolve) => setTimeout(resolve, 50));
 
   assert.deepEqual(paused, ["running-1"], "the stranded running run must be paused, not left to burn tokens");
-  assert.equal(takeWorkflowRuntime(cwd), undefined, "the expired entry must be gone so it can't be claimed later");
+  assert.equal(takeWorkflowRuntime(), undefined, "the expired entry must be gone so it can't be claimed later");
 });
 
 test("pauseStranded walks live runs even when listRuns is session-filtered empty", () => {
@@ -174,7 +174,7 @@ test(
       extensionVersion: WORKFLOW_EXTENSION_VERSION,
       manager: manager as unknown as WorkflowReloadRuntime["manager"],
     };
-    discardWorkflowRuntime(cwd);
+    discardWorkflowRuntime();
     handoffWorkflowRuntime(value, 10);
 
     // Nobody ever claims it (simulating a reload that failed or never started).
@@ -183,7 +183,7 @@ test(
     assert.equal(manager.getRun(runId)?.status, "paused", "stranded run must be paused, not left running forever");
     const persisted = manager.listRuns().find((r) => r.runId === runId);
     assert.ok(persisted?.journal && persisted.journal.length >= 1, "agent 1's result must be journaled to disk");
-    assert.equal(takeWorkflowRuntime(cwd), undefined, "expired entry must be gone so it can't be claimed later");
+    assert.equal(takeWorkflowRuntime(), undefined, "expired entry must be gone so it can't be claimed later");
   }),
 );
 
@@ -198,13 +198,13 @@ test("reload handoff is a single process-wide slot; last stage wins; stale disca
   handoffWorkflowRuntime(first);
   handoffWorkflowRuntime(replacement);
   // Stale identity discard must not clear the newer slot.
-  discardWorkflowRuntime(cwdA, first);
+  discardWorkflowRuntime(first);
   assert.equal(takeWorkflowRuntime(), replacement, "stale cleanup cannot delete a newer generation");
 
   handoffWorkflowRuntime(other);
   // Claim via process.cwd() (factory path) still gets the staged runtime even
   // when its project cwd differs from the launch directory.
-  assert.equal(claimWorkflowRuntime(process.cwd()).compatible, other);
+  assert.equal(claimWorkflowRuntime().compatible, other);
   assert.equal(takeWorkflowRuntime(), undefined, "slot is empty after claim");
 });
 
@@ -228,7 +228,7 @@ test("handoff staged under a session project cwd is claimable via process.cwd() 
 
   // Factory only knows process.cwd() === launch, which differs from project.
   assert.notEqual(resolve(launch), resolve(project));
-  const claim = claimWorkflowRuntime(launch);
+  const claim = claimWorkflowRuntime();
   assert.equal(claim.compatible, value, "factory must claim the project manager via the process-wide slot");
   assert.equal(resolve(claim.compatible?.manager.getCwd()), resolve(project));
 });

@@ -10,7 +10,6 @@ export type ItemKind = "run" | "saved";
 export type SavedItemIdentity = {
   kind: "saved";
   path: string;
-  source: SavedWorkflow["source"];
   name: string;
   revision: string;
 };
@@ -41,7 +40,6 @@ export function savedIdentity(workflow: SavedWorkflow): SavedItemIdentity {
   return {
     kind: "saved",
     path: workflow.path,
-    source: workflow.source,
     name: workflow.name,
     revision: savedWorkflowRevision(workflow),
   };
@@ -52,12 +50,7 @@ export function sameIdentity(a: ItemIdentity | undefined, b: ItemIdentity | unde
   if (a.kind === "run" && b.kind === "run") return a.runId === b.runId;
   const left = a as SavedItemIdentity;
   const right = b as SavedItemIdentity;
-  return (
-    left.path === right.path &&
-    left.source === right.source &&
-    left.name === right.name &&
-    left.revision === right.revision
-  );
+  return left.path === right.path && left.name === right.name && left.revision === right.revision;
 }
 
 /** Runs first, then saved workflows, keeping those that match `filter` case-insensitively. */

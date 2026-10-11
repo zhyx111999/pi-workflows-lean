@@ -157,12 +157,13 @@ export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
 const probedSessionIds = new Set<string>();
 
 /**
- * Quiet hosts (omp never sends custom messages itself) never trip the
- * AgentSession prototype patch, so no confirming send is captured. One probe
- * through pi.sendMessage forces it: the host's void wrapper calls the live
- * session's sendCustomMessage synchronously, and the patch captures that
- * receiver before this returns. A host whose pi.sendMessage still throws during
- * early startup stays unmarked so the next bind probes again.
+ * A session constructed before the prototype patch (e.g. the one running when
+ * the extension reloads) was never captured at construction, and may not send
+ * a custom message on its own. One probe through pi.sendMessage forces the
+ * capture: the host's void wrapper calls the live session's sendCustomMessage
+ * synchronously, and the patch captures that receiver before this returns. A
+ * pi.sendMessage that still throws during early startup leaves the session
+ * unmarked, so the next bind probes again.
  */
 function probeHostSessionSend(pi: ExtensionAPI, sessionId: string): void {
   if (probedSessionIds.has(sessionId)) return;
@@ -198,8 +199,7 @@ function patchAgentSessionCapture(): void {
     if (typeof original !== "function") return;
     patchedSessionPrototypes.add(proto);
     // Primary hook: `_bindExtensionCore` runs at session construction, before
-    // any extension code, so a stock pi host is captured without a probe. The
-    // omp bundle does not expose it; there the probe below does the capture.
+    // any extension code, so a new session is captured without a probe.
     if (typeof proto._bindExtensionCore === "function") {
       const bindCore = proto._bindExtensionCore;
       proto._bindExtensionCore = function patchedBindExtensionCore(this: StealCandidate, ...args: unknown[]) {

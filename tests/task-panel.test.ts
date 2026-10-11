@@ -1158,7 +1158,6 @@ describe("installResultDelivery", () => {
       isStreaming: true,
       isIdle: false,
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -1210,7 +1209,6 @@ describe("installResultDelivery", () => {
       isStreaming: true,
       isIdle: false,
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -1242,7 +1240,6 @@ describe("installResultDelivery", () => {
       isStreaming: true,
       isIdle: false,
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -1324,7 +1321,6 @@ describe("installResultDelivery", () => {
     mod._registerHostSessionForTests({
       isStreaming: false,
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -1387,7 +1383,6 @@ describe("installResultDelivery", () => {
     mod._registerHostSessionForTests({
       isStreaming: true,
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -2022,38 +2017,6 @@ describe("installResultDelivery", () => {
     assert.ok(piCalls(piB)[0].content.includes("from-B"));
   });
 
-  it("steal accepts an isSessionOnDisk-only host (omp session shape)", async () => {
-    // omp's SessionManager has neither isPersisted() nor a `persist` field —
-    // only isSessionOnDisk(). Without this branch the host is never stolen and
-    // completion stays pendingDelivery forever (#109).
-    const pi = createMockPi();
-    const manager = createMockManager(
-      makeRun({
-        sessionId: "sess-omp",
-        runId: "run-omp",
-        result: { result: { verdict: "delivered" }, agentCount: 1, durationMs: 1 },
-      }),
-    );
-    manager.setSessionId("sess-omp");
-    invokePatchedSendCustomMessage({
-      sessionManager: {
-        getSessionId: () => "sess-omp",
-        getSessionName: () => "host-omp",
-        isSessionOnDisk: () => true,
-      },
-      _resourceLoader: { noExtensions: false },
-      sendCustomMessage: recordingStableSend(pi),
-    });
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    mod.bindSessionDelivery("sess-omp", pi as unknown as ExtensionAPI, { manager });
-    manager.emit("complete", { runId: "run-omp" });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal(piCalls(pi).length, 1, "omp-shaped host receives its result");
-    assert.ok(piCalls(pi)[0].content.includes("delivered"));
-    const stealKeys = () => [...mod._getStealMapForTests().keys()];
-    assert.ok(stealKeys().includes("sess-omp"), "omp-shaped host is stolen");
-  });
-
   it("quiet host: bind probes once via pi.sendMessage, captures send, delivers", async () => {
     const pi = createMockPi();
     const manager = createMockManager(
@@ -2073,7 +2036,7 @@ describe("installResultDelivery", () => {
         sessionManager: {
           getSessionId: () => "sess-quiet",
           getSessionName: () => "host-quiet",
-          isSessionOnDisk: () => true,
+          isPersisted: () => true,
         },
         _resourceLoader: { noExtensions: false },
         sendCustomMessage: recordingStableSend(pi),
@@ -2091,7 +2054,7 @@ describe("installResultDelivery", () => {
     assert.ok(piCalls(pi)[0].content.includes("delivered"));
   });
 
-  it("omp print-mode host: probe captures despite isSessionOnDisk false at session_start", async () => {
+  it("probe captures a session that is not yet persisted at session_start", async () => {
     const pi = createMockPi();
     const manager = createMockManager(
       makeRun({
@@ -2108,9 +2071,8 @@ describe("installResultDelivery", () => {
           sessionManager: {
             getSessionId: () => "sess-omp",
             getSessionName: () => "host-omp",
-            // omp persists lazily AFTER bind — the on-disk gate must not
-            // reject a probe-bearing send (root cause of the E2E failure).
-            isSessionOnDisk: () => false,
+            // The persistence gate must not reject a probe-bearing send.
+            isPersisted: () => false,
           },
           _resourceLoader: { noExtensions: false },
           sendCustomMessage: recordingStableSend(pi),
@@ -2139,7 +2101,7 @@ describe("installResultDelivery", () => {
           sessionManager: {
             getSessionId: () => "sess-child",
             getSessionName: () => "workflow:run-child",
-            isSessionOnDisk: () => false,
+            isPersisted: () => false,
           },
           _resourceLoader: { noExtensions: false },
           sendCustomMessage: recordingStableSend(pi),
@@ -2193,7 +2155,7 @@ describe("installResultDelivery", () => {
       sessionManager: {
         getSessionId: () => "sess-map",
         getSessionName: () => "host-map",
-        isSessionOnDisk: () => true,
+        isPersisted: () => true,
       },
       _resourceLoader: { noExtensions: false },
       sendCustomMessage: recordingStableSend(pi),
@@ -2217,7 +2179,7 @@ describe("installResultDelivery", () => {
         sessionManager: {
           getSessionId: () => "sess-probe-only",
           getSessionName: () => "host-probe-only",
-          // probe-bearing sends bypass the persistence gate — omit isSessionOnDisk
+          // probe-bearing sends bypass the persistence gate — omit isPersisted
         },
         _resourceLoader: { noExtensions: false },
         sendCustomMessage: () => {
@@ -2261,7 +2223,7 @@ describe("installResultDelivery", () => {
           sessionManager: {
             getSessionId: () => "sess-retry",
             getSessionName: () => "host-retry",
-            isSessionOnDisk: () => false,
+            isPersisted: () => false,
           },
           _resourceLoader: { noExtensions: false },
           sendCustomMessage: recordingStableSend(pi),
@@ -2289,7 +2251,7 @@ describe("installResultDelivery", () => {
           sessionManager: {
             getSessionId: () => "sess-dropped",
             getSessionName: () => "host-dropped",
-            isSessionOnDisk: () => false,
+            isPersisted: () => false,
           },
           _resourceLoader: { noExtensions: false },
           sendCustomMessage: recordingStableSend(pi),
@@ -2383,7 +2345,6 @@ describe("installResultDelivery", () => {
     // wrapped by the patch, so invoking it steals the session-stable send.
     invokePatchedSendCustomMessage({
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -2418,7 +2379,6 @@ describe("installResultDelivery", () => {
     // {triggerTurn:true, deliverAs:"followUp"}.
     invokePatchedSendCustomMessage({
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -2574,7 +2534,6 @@ describe("installResultDelivery", () => {
       isStreaming: false,
       isIdle: true,
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,
@@ -2615,7 +2574,6 @@ describe("installResultDelivery", () => {
     const failingSend = () => Promise.reject(new Error("network blip"));
     mod._registerHostSessionForTests({
       sessionManager: {
-        persist: true,
         getSessionId: () => SESSION,
         getSessionName: () => "chat",
         isPersisted: () => true,

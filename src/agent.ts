@@ -1,5 +1,4 @@
 // Runs one workflow subagent: picks its tools, model, and session, prompts it, and returns its answer.
-import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import {
   type CreateAgentSessionOptions,
@@ -210,9 +209,6 @@ export type AgentRunResult<TSchemaDef extends TSchema | undefined> = TSchemaDef 
   ? Static<TSchemaDef>
   : string;
 
-/** Process-global subagent id counter: unique across concurrent workflow runs. */
-let workflowAgentSeq = 0;
-
 /**
  * Runs subagents for one workflow invocation. Production creates one instance
  * per run, so per-instance caches (tier config, resource loaders, threads) live
@@ -237,7 +233,6 @@ export class WorkflowAgent {
   private readonly sessionManagers: SessionManagers;
   private readonly activeThreads = new Set<string>();
   /** Unique per-instance identity: agent ids must never collide across WorkflowAgent instances. */
-  private readonly agentInstanceId = randomUUID();
 
   constructor(options: WorkflowAgentOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -326,7 +321,6 @@ export class WorkflowAgent {
         cwd: runCwd,
         cwdIsExplicit: options.cwd !== undefined,
         agentDir,
-        agentId: this.agentIdFor(options, runCwd),
         sessionManager,
         keepSessionManager: Boolean(options.thread),
         customTools,
@@ -492,18 +486,6 @@ export class WorkflowAgent {
   private restoreThreadLeaf(sessionManager: SessionManager, leafId: string | null): void {
     if (leafId) sessionManager.branch(leafId);
     else sessionManager.resetLeaf();
-  }
-
-  /**
-   * Unique id in the SDK's process-global agent registry. Concurrent sessions
-   * created without one all default to "Main" and replace each other there.
-   * One-shot calls embed a per-process sequence, so retries and concurrent runs
-   * never reuse an id; a named thread keeps one id per instance because it is
-   * one continuing session.
-   */
-  private agentIdFor(options: AgentRunOptions<any>, runCwd: string): string {
-    if (options.thread) return `workflow:${runCwd}:${this.agentInstanceId}:${options.thread}`;
-    return `workflow:${runCwd}:${process.pid}:${++workflowAgentSeq}`;
   }
 
   private buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string {

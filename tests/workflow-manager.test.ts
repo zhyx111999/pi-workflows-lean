@@ -15,6 +15,7 @@ import { WorkflowManager } from "../src/workflow-manager.js";
 import { NavigatorModel, NavigatorState, renderNavigator } from "../src/workflow-ui.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { fauxRegistryFor } from "./helpers/faux-registry.js";
+import { writeRunRecord } from "./helpers/run-records.js";
 
 /** Agent runner that reports fixed usage so token accounting is exercised. */
 function fakeAgent(usage: Partial<AgentUsage> = {}, result: unknown = "ok") {
@@ -5999,32 +6000,27 @@ test(
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
     manager.on("error", () => {});
-    // Direct file write: save() would restamp updatedAt to now, hiding the clamp.
-    const runsDir = manager.getPersistence().getRunsDir();
-    mkdirSync(runsDir, { recursive: true });
-    writeFileSync(
-      join(runsDir, "clamp-run.json"),
-      JSON.stringify({
-        runId: "clamp-run",
-        workflowName: "two_agent_demo",
-        script: twoAgentScript,
-        status: "paused",
-        phases: ["Work"],
-        agents: [
-          {
-            id: 1,
-            callId: "clamp-run:0",
-            label: "a",
-            prompt: "first",
-            status: "running",
-            startedAt: "2026-01-01T00:00:00.000Z",
-          },
-        ],
-        logs: [],
-        startedAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2027-06-01T00:00:00.000Z", // future: the clamp must pull settle up to this
-      }),
-    );
+    // Direct write: save() would restamp updatedAt to now, hiding the clamp.
+    writeRunRecord(manager.getPersistence().getRunsDir(), {
+      runId: "clamp-run",
+      workflowName: "two_agent_demo",
+      script: twoAgentScript,
+      status: "paused",
+      phases: ["Work"],
+      agents: [
+        {
+          id: 1,
+          callId: "clamp-run:0",
+          label: "a",
+          prompt: "first",
+          status: "running",
+          startedAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+      logs: [],
+      startedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2027-06-01T00:00:00.000Z", // future: the clamp must pull settle up to this
+    });
 
     assert.equal(await manager.resume("clamp-run"), true);
     for (let i = 0; i < 2000 && manager.getRun("clamp-run")?.status === "running"; i++) {

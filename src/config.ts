@@ -14,15 +14,6 @@ export const MAX_CONCURRENCY = 16;
 /** Maximum automatic retry attempts after a recoverable agent failure. */
 export const MAX_AGENT_RETRIES = 3;
 
-/** Legacy project-relative directory for persisted workflow run state. New writes use workflowProjectPaths(). */
-export const WORKFLOW_RUNS_DIR = ".pi/workflows/runs";
-
-/** Legacy project-relative directory for saved workflow commands. New writes use workflowProjectPaths(). */
-export const WORKFLOW_SAVED_DIR = ".pi/workflows/saved";
-
-/** User-level saved workflows directory. */
-export const USER_WORKFLOW_SAVED_DIR = "~/.pi/workflows/saved";
-
 /** User-level model tiers config file, relative to the home directory. */
 export const MODEL_TIERS_FILE = ".pi/workflows/model-tiers.json";
 
@@ -30,12 +21,9 @@ export const MODEL_TIERS_FILE = ".pi/workflows/model-tiers.json";
 export const WORKFLOW_SETTINGS_FILE = ".pi/workflows/settings.json";
 
 /**
- * Named workflow subagent definitions directory. Resolved project-relative
- * (cwd/.pi/agents), plus user-level at `~/.pi/agent/agents/` (the primary
- * location, via `getAgentDir()` in agent-registry.ts) with the legacy
- * `~/.pi/agents/` (this constant, home-relative) scanned as a deprecated
- * fallback. Project entries win on name collision, then the primary user
- * location, then the legacy one. Each `*.md` file is an agent definition
- * (frontmatter + body prompt).
+ * Project directory of agent definitions, relative to the project (cwd/.pi/agents).
+ * User definitions live in `~/.pi/agent/agents/` (see agent-registry.ts); a
+ * project definition wins on a name collision. Each `*.md` file is one
+ * definition (frontmatter + body prompt).
  */
 export const AGENTS_DIR = ".pi/agents";

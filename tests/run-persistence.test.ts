@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -13,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { WORKFLOW_RUNS_DIR } from "../src/config.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import {
   createRunPersistence,
@@ -27,6 +25,7 @@ import {
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { workflowProjectPaths } from "../src/workflow-paths.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
+import { writeRunRecord } from "./helpers/run-records.js";
 
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
   return async () => {
@@ -60,7 +59,6 @@ test(
     });
     assert.ok(existsSync(runsDir), "dir should be created");
     assert.ok(existsSync(join(runsDir, "test-1.json")), "run file should exist");
-    assert.equal(existsSync(join(cwd, WORKFLOW_RUNS_DIR)), false, "legacy project runs dir should not be created");
   }),
 );
 
@@ -136,61 +134,23 @@ test(
 );
 
 test(
-  "createRunPersistence reads legacy project run files",
+  "createRunPersistence list returns runs sorted by updatedAt descending",
   withTempCwd(async (cwd) => {
     const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-run.json"),
-      JSON.stringify({
-        runId: "legacy-run",
-        workflowName: "legacy",
-        script: "export const meta = { name: 'legacy', description: 'legacy' }",
+    // save() stamps updatedAt with the current time, so write the records directly.
+    const runsDir = workflowProjectPaths(cwd).runsDir;
+    const makeFile = (runId: string, date: string) => {
+      writeRunRecord(runsDir, {
+        runId,
+        workflowName: `wf-${runId}`,
+        script: "export const meta = { name: 'w', description: 'w' }",
         status: "completed",
         phases: [],
         agents: [],
         logs: [],
-        startedAt: "2024-01-01T00:00:00.000Z",
-        updatedAt: "2024-01-01T00:00:00.000Z",
-      }),
-    );
-
-    const loaded = rp.load("legacy-run");
-    assert.equal(loaded?.workflowName, "legacy");
-    assert.equal(loaded?.parentSessionFile, undefined, "legacy files without lineage fields still load");
-    assert.equal(
-      rp.list().some((run) => run.runId === "legacy-run"),
-      true,
-    );
-  }),
-);
-
-test(
-  "createRunPersistence list returns runs sorted by updatedAt descending",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    // Save with explicit updatedAt values to guarantee order
-    // (save() overwrites updatedAt, so we need to write files directly)
-    const runsDir = workflowProjectPaths(cwd).runsDir;
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(runsDir, { recursive: true });
-    const makeFile = (runId: string, date: string) => {
-      writeFileSync(
-        join(runsDir, `${runId}.json`),
-        JSON.stringify({
-          runId,
-          workflowName: `wf-${runId}`,
-          script: "export const meta = { name: 'w', description: 'w' }",
-          status: "completed",
-          phases: [],
-          agents: [],
-          logs: [],
-          startedAt: date,
-          updatedAt: date,
-        }),
-      );
+        startedAt: date,
+        updatedAt: date,
+      });
     };
     makeFile("oldest", "2024-01-01T00:00:00.000Z");
     makeFile("middle", "2024-03-01T00:00:00.000Z");
@@ -261,33 +221,6 @@ test(
     const deleted = rp.delete("delete-me");
     assert.equal(deleted, true);
     assert.equal(rp.load("delete-me"), null);
-  }),
-);
-
-test(
-  "createRunPersistence delete removes legacy project run files",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    const { mkdirSync, writeFileSync } = await import("node:fs");
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "delete-legacy.json"),
-      JSON.stringify({
-        runId: "delete-legacy",
-        workflowName: "legacy",
-        script: "export const meta = { name: 'legacy', description: 'legacy' }",
-        status: "completed",
-        phases: [],
-        agents: [],
-        logs: [],
-        startedAt: "2024-01-01T00:00:00.000Z",
-        updatedAt: "2024-01-01T00:00:00.000Z",
-      }),
-    );
-
-    assert.equal(rp.delete("delete-legacy"), true);
-    assert.equal(existsSync(join(legacyRunsDir, "delete-legacy.json")), false);
   }),
 );
 
@@ -726,17 +659,17 @@ test(
     const runsDir = workflowProjectPaths(cwd).runsDir;
     const filePath = join(runsDir, "r.json");
 
+    // A record head: list() reads only the head's index, never the log.
     const makeContent = (status: string) =>
       JSON.stringify({
-        runId: "r",
-        workflowName: "w",
-        script: "s",
-        status,
-        phases: [],
-        agents: [],
-        logs: [],
-        startedAt: "t",
-        updatedAt: "t",
+        format: "pi-workflow-run-v2",
+        generation: "g",
+        bytes: 1,
+        sequence: 1,
+        hash: "h",
+        keys: ["runId", "status", "updatedAt"],
+        index: { runId: "r", status, updatedAt: "t" },
+        summary: {},
       });
     const contentA = makeContent("paused");
     const contentB = makeContent("failed");
@@ -968,56 +901,6 @@ test(
 );
 
 test(
-  "run lease refuses while a legacy project lock owner is alive",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-live.lock"),
-      JSON.stringify({
-        runId: "legacy-live",
-        runPath: join(legacyRunsDir, "legacy-live.json"),
-        pid: process.pid,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "legacy-owner",
-      }),
-      "utf-8",
-    );
-
-    assert.equal(rp.acquireRunLease("legacy-live"), null);
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "legacy-live.lock")), false);
-  }),
-);
-
-test(
-  "run lease removes a stale legacy project lock before acquiring the new lock",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    const primaryRunsDir = workflowProjectPaths(cwd).runsDir;
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-stale.lock"),
-      JSON.stringify({
-        runId: "legacy-stale",
-        runPath: join(legacyRunsDir, "legacy-stale.json"),
-        pid: 2147483647,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "legacy-stale",
-      }),
-      "utf-8",
-    );
-
-    const lease = rp.acquireRunLease("legacy-stale");
-    assert.ok(lease, "dead-pid legacy lock should not block the new owner");
-    assert.equal(existsSync(join(legacyRunsDir, "legacy-stale.lock")), false);
-    assert.equal(existsSync(join(primaryRunsDir, "legacy-stale.lock")), true);
-    rp.releaseRunLease(lease);
-  }),
-);
-
-test(
   "run lease steals a stale lock whose pid is dead",
   withTempCwd(async (cwd) => {
     const rp = createRunPersistence(cwd);
@@ -1071,7 +954,7 @@ test(
 );
 
 test(
-  "delete removes primary and legacy recovery records before releasing either lock",
+  "delete removes the record and its recovery files before releasing the lock",
   withTempCwd(async (cwd) => {
     const runId = "delete-lock-last";
     let rp!: ReturnType<typeof createRunPersistence>;
@@ -1095,22 +978,13 @@ test(
     } as PersistedRunState;
     rp.save(state);
 
-    const { runsDir, legacyRunsDir } = workflowProjectPaths(cwd);
-    mkdirSync(legacyRunsDir, { recursive: true });
-    for (const path of [
-      join(runsDir, `${runId}.json.tmp`),
-      join(legacyRunsDir, `${runId}.json`),
-      join(legacyRunsDir, `${runId}.json.bak`),
-      join(legacyRunsDir, `${runId}.json.tmp`),
-    ]) {
-      writeFileSync(path, JSON.stringify(state));
-    }
+    const { runsDir } = workflowProjectPaths(cwd);
+    writeFileSync(join(runsDir, `${runId}.json.tmp`), JSON.stringify(state));
     const lease = rp.acquireRunLease(runId);
-    assert.ok(lease, "primary lock exists before delete");
-    writeFileSync(join(legacyRunsDir, `${runId}.lock`), "legacy lock");
+    assert.ok(lease, "the lock exists before delete");
 
     assert.equal(rp.delete(runId), true);
-    assert.equal(recordsVisibleWhenLockReleased.length, 2, "both primary and legacy locks are released last");
+    assert.equal(recordsVisibleWhenLockReleased.length, 1, "the lock is released last");
     for (const observed of recordsVisibleWhenLockReleased) {
       assert.equal(observed.record, null, `${observed.path} is released only after no run record is loadable`);
     }
@@ -1161,46 +1035,6 @@ test(
     assert.equal(recovered?.agents[0]?.error, "interrupted");
     assert.ok(recovered?.agents[0]?.endedAt);
     assert.deepEqual(recovered?.logs, ["still going"]);
-  }),
-);
-
-test(
-  "WorkflowManager does not recover a legacy running run while its legacy lock owner is alive",
-  withTempCwd(async (cwd) => {
-    const rp = createRunPersistence(cwd);
-    const legacyRunsDir = join(cwd, WORKFLOW_RUNS_DIR);
-    mkdirSync(legacyRunsDir, { recursive: true });
-    writeFileSync(
-      join(legacyRunsDir, "legacy-live.json"),
-      JSON.stringify({
-        runId: "legacy-live",
-        workflowName: "w",
-        status: "running",
-        script: "export const meta = { name: 'w', description: 'd' }\nawait agent('x',{label:'x'})\nreturn 1",
-        phases: [],
-        agents: [],
-        logs: [],
-        startedAt: "2024-01-01T00:00:00.000Z",
-        updatedAt: "2024-01-01T00:00:00.000Z",
-      }),
-      "utf-8",
-    );
-    writeFileSync(
-      join(legacyRunsDir, "legacy-live.lock"),
-      JSON.stringify({
-        runId: "legacy-live",
-        runPath: join(legacyRunsDir, "legacy-live.json"),
-        pid: process.pid,
-        startedAt: "2024-01-01T00:00:00.000Z",
-        token: "legacy-owner",
-      }),
-      "utf-8",
-    );
-
-    new WorkflowManager({ cwd });
-
-    assert.equal(rp.load("legacy-live")?.status, "running");
-    assert.equal(existsSync(join(workflowProjectPaths(cwd).runsDir, "legacy-live.json")), false);
   }),
 );
 

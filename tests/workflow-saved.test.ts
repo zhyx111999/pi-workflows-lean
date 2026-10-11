@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import test from "node:test";
-import { WORKFLOW_SAVED_DIR } from "../src/config.js";
 import { workflowProjectPaths } from "../src/workflow-paths.js";
 import { createWorkflowStorage, resolveSavedScriptPath } from "../src/workflow-saved.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -41,7 +40,6 @@ test(
     const dir = workflowProjectPaths(cwd).savedDir;
     assert.ok(existsSync(dir), "project saved dir should exist");
     assert.ok(existsSync(join(dir, "test-wf.json")), "file should exist");
-    assert.equal(existsSync(join(cwd, WORKFLOW_SAVED_DIR)), false, "legacy project saved dir should not be created");
   }),
 );
 
@@ -110,39 +108,6 @@ test(
     assert.ok(loaded, "should load successfully");
     assert.equal(loaded?.script, "user script");
     assert.equal(loaded?.location, "user");
-  }),
-);
-
-test(
-  "createWorkflowStorage load reads legacy project workflows before user workflows",
-  withIsolatedHome(async (cwd) => {
-    const storage = createWorkflowStorage(cwd);
-    const legacyProjectDir = join(cwd, WORKFLOW_SAVED_DIR);
-    mkdirSync(legacyProjectDir, { recursive: true });
-    writeFileSync(
-      join(legacyProjectDir, "shared.json"),
-      JSON.stringify({
-        name: "shared",
-        description: "Legacy project version",
-        script: "legacy project script",
-        location: "project",
-        savedAt: "2024-01-01T00:00:00.000Z",
-        path: join(legacyProjectDir, "shared.json"),
-      }),
-      "utf-8",
-    );
-    storage.save(
-      {
-        name: "shared",
-        description: "User version",
-        script: "user script",
-      },
-      "user",
-    );
-
-    const loaded = storage.load("shared");
-    assert.equal(loaded?.script, "legacy project script");
-    assert.equal(loaded?.location, "project");
   }),
 );
 
@@ -278,7 +243,7 @@ test(
 );
 
 test(
-  "createWorkflowStorage skips legacy files with unsafe workflow names",
+  "createWorkflowStorage skips files with unsafe workflow names",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
     const projectDir = workflowProjectPaths(cwd).savedDir;
@@ -441,16 +406,10 @@ test(
 );
 
 test(
-  "string delete project covers project and legacy while omitted delete also covers user",
+  "string delete with a location covers that tier; omitted, it covers both",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
     storage.save({ name: "layers", description: "project", script: "p" });
-    const legacyDir = workflowProjectPaths(cwd).legacySavedDir;
-    mkdirSync(legacyDir, { recursive: true });
-    writeFileSync(
-      join(legacyDir, "layers.json"),
-      JSON.stringify({ name: "layers", description: "legacy", script: "l", savedAt: "2025-01-01" }),
-    );
     storage.save({ name: "layers", description: "user", script: "u" }, "user");
     assert.equal(storage.delete("layers", "project"), true);
     assert.equal(storage.load("layers")?.location, "user");

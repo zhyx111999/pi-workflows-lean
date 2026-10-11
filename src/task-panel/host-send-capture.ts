@@ -6,7 +6,7 @@
 import type { DeliverySend } from "./delivery-endpoints.js";
 import { sessionFileContainsEntry } from "./session-file-scan.js";
 
-/** The parts of an AgentSession the capture relies on; every member is optional because host shapes vary. */
+/** The parts of an AgentSession the capture relies on; optional so test doubles can supply only what they use. */
 export interface StealCandidate {
   sendCustomMessage?: DeliverySend;
   isStreaming?: boolean;
@@ -24,14 +24,12 @@ export interface StealCandidate {
     }) => void,
   ) => () => void;
   sessionManager?: {
-    persist?: boolean;
     getSessionId?: () => string;
     getSessionName?: () => string | undefined;
     getEntries?: () => Array<{ type?: string; customType?: string; details?: unknown }>;
     getBranch?: () => Array<{ id?: string; type?: string; customType?: string; details?: unknown }>;
     getSessionFile?: () => string | undefined;
     isPersisted?: () => boolean;
-    isSessionOnDisk?: () => boolean;
   };
   _resourceLoader?: { noExtensions?: boolean };
   _bindExtensionCore?: (...args: unknown[]) => unknown;
@@ -70,18 +68,10 @@ function hostSessionIdToSteal(session: StealCandidate, probe?: boolean): string 
   // A probe skips only the persistence gate below; the sessionManager,
   // noExtensions, and workflow:-name gates above still apply. That is safe: a
   // probe is only ever sent through the pi.sendMessage of the session running
-  // this extension, so it cannot reach a foreign or child session. It is also
-  // necessary: omp print-mode hosts persist lazily after bind and report
-  // isSessionOnDisk()===false at session_start.
+  // this extension, so it cannot reach a foreign or child session.
   if (!probe) {
     try {
-      if (typeof sm.isPersisted === "function") {
-        if (!sm.isPersisted()) return undefined;
-      } else if (typeof sm.isSessionOnDisk === "function") {
-        if (!sm.isSessionOnDisk()) return undefined;
-      } else if (sm.persist !== true) {
-        return undefined;
-      }
+      if (!sm.isPersisted?.()) return undefined;
     } catch {
       return undefined;
     }

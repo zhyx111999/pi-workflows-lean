@@ -1589,10 +1589,8 @@ test("component rename handles a legacy source and live-loads only the new slash
   const { registerSavedWorkflow } = await import("../src/saved-commands.js");
   registerSavedWorkflow(
     pi,
-    "/cwd",
     oldWorkflow,
-    manager,
-    () => current?.name === "legacy-old",
+    () => manager,
     () => (current?.name === "legacy-old" ? current : null),
   );
   openWorkflowNavigator(pi, manager, ui, { storage: storage as unknown as WorkflowStorage }).catch(() => {});

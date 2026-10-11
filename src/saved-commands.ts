@@ -3,12 +3,14 @@
  * command that runs its script, passing parsed arguments through as `args`.
  */
 
-import { createCodingTools, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { claimCommand, commandOwner, isCommandRegistered } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
-import { runWorkflow, type WorkflowRunResult } from "./workflow.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
+
+/** The parts of a saved workflow a command run needs. */
+type SavedWorkflowScript = Pick<SavedWorkflow, "name" | "script" | "parameters">;
 
 function savedCommandOwnedByExtension(pi: ExtensionAPI, name: string): boolean {
   const owner = commandOwner(pi, name);
@@ -27,12 +29,6 @@ export function savedWorkflowCommandAvailability(
   return { ok: false, message: `/${name} is already provided by Pi or another extension.` };
 }
 
-function reportText(result: WorkflowRunResult): string {
-  const r = result.result as { report?: unknown } | undefined;
-  if (r && typeof r.report === "string" && r.report.trim()) return r.report;
-  return JSON.stringify(result.result, null, 2);
-}
-
 export function parseCommandArgs(raw: string, parameters?: SavedWorkflow["parameters"]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const positional: string[] = [];
@@ -49,28 +45,26 @@ export function parseCommandArgs(raw: string, parameters?: SavedWorkflow["parame
   return out;
 }
 
-/** Register one saved workflow as a dynamically loaded slash command. */
+/**
+ * Register `/<name>` for a saved workflow. `load` re-reads the workflow at each
+ * invocation: Pi cannot unregister a command, so after a rename or delete the
+ * lingering command must find nothing rather than run a frozen script.
+ */
 export function registerSavedWorkflow(
   pi: ExtensionAPI,
-  cwd: string | (() => string),
-  wf: Pick<SavedWorkflow, "name" | "description" | "script" | "parameters">,
-  manager?: WorkflowManager | (() => WorkflowManager | undefined),
-  exists?: () => boolean,
-  loadWorkflow?: () => Pick<SavedWorkflow, "name" | "description" | "script" | "parameters"> | null | undefined,
+  wf: Pick<SavedWorkflow, "name" | "description">,
+  getManager: () => WorkflowManager,
+  load: () => SavedWorkflowScript | null | undefined,
 ): { ok: true } | { ok: false; message: string } {
   const availability = savedWorkflowCommandAvailability(pi, wf.name);
   if (!availability.ok) return availability;
   if (isCommandRegistered(pi, wf.name)) return { ok: true };
-  const getCwd = typeof cwd === "function" ? cwd : () => cwd;
-  const getManager = typeof manager === "function" ? manager : () => manager;
   try {
     pi.registerCommand(wf.name, {
       description: wf.description || `Saved workflow: ${wf.name}`,
       async handler(args: string, ctx: ExtensionCommandContext) {
-        // The loader is deliberately evaluated at invocation. After rename/delete
-        // the old unavoidable Pi registration cannot execute a frozen script.
-        const liveWorkflow = loadWorkflow ? loadWorkflow() : exists && !exists() ? null : wf;
-        if (!liveWorkflow) {
+        const live = load();
+        if (!live) {
           ctx.ui.notify(
             `/${wf.name} is not available in this project — reload the session to drop the stale command.`,
             "warning",
@@ -78,35 +72,10 @@ export function registerSavedWorkflow(
           return;
         }
         try {
-          const liveManager = getManager();
-          if (liveManager) {
-            const { runId } = liveManager.startInBackground(
-              liveWorkflow.script,
-              parseCommandArgs(args, liveWorkflow.parameters),
-            );
-            ctx.ui.notify(backgroundStartNotice(liveWorkflow.name, runId, ctx.mode, "result"), "info");
-            return;
-          }
-          const liveCwd = getCwd();
-          ctx.ui.notify(`Starting /${liveWorkflow.name}…`, "info");
-          const result = await runWorkflow(liveWorkflow.script, {
-            cwd: liveCwd,
-            args: parseCommandArgs(args, liveWorkflow.parameters),
-            tools: createCodingTools(liveCwd),
-            onPhase: (title) => ctx.ui.setStatus(`wf:${liveWorkflow.name}`, `${liveWorkflow.name}: ${title}`),
-            // Manager-less fallback (production always goes through getManager):
-            // legacy routing only — no mainModel/inheritMainModel plumbing, so
-            // untagged agents follow the implicit medium tier / settings default.
-          });
-          ctx.ui.setStatus(`wf:${liveWorkflow.name}`, undefined);
-          await pi.sendMessage({
-            customType: `workflow:${liveWorkflow.name}`,
-            content: reportText(result),
-            display: true,
-          });
+          const { runId } = getManager().startInBackground(live.script, parseCommandArgs(args, live.parameters));
+          ctx.ui.notify(backgroundStartNotice(live.name, runId, ctx.mode, "result"), "info");
         } catch (error) {
-          ctx.ui.setStatus(`wf:${liveWorkflow.name}`, undefined);
-          ctx.ui.notify(`/${liveWorkflow.name} failed: ${error instanceof Error ? error.message : error}`, "error");
+          ctx.ui.notify(`/${live.name} failed: ${error instanceof Error ? error.message : error}`, "error");
         }
       },
     });
@@ -119,21 +88,10 @@ export function registerSavedWorkflow(
 
 export function registerAllSavedWorkflows(
   pi: ExtensionAPI,
-  cwd: string | (() => string),
-  storage: WorkflowStorage | (() => WorkflowStorage),
-  manager?: WorkflowManager | (() => WorkflowManager | undefined),
+  getStorage: () => WorkflowStorage,
+  getManager: () => WorkflowManager,
 ): void {
-  const getStorage = typeof storage === "function" ? storage : () => storage;
-  const getCwd = typeof cwd === "function" ? cwd : () => cwd;
   for (const workflow of getStorage().list()) {
-    const name = workflow.name;
-    registerSavedWorkflow(
-      pi,
-      getCwd,
-      workflow,
-      manager,
-      () => getStorage().load(name) != null,
-      () => getStorage().load(name),
-    );
+    registerSavedWorkflow(pi, workflow, getManager, () => getStorage().load(workflow.name));
   }
 }

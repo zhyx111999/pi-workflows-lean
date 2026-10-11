@@ -102,13 +102,8 @@ const MAX_CACHE_BYTES = 16 * 1024 * 1024;
 function isHead(value: unknown): value is Head {
   return !!value && typeof value === "object" && (value as Head).format === FORMAT;
 }
-function validateRecord(record: PersistedRunState | Head): void {
-  if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("Invalid run record");
-  if (Object.hasOwn(record, "format") && !isHead(record)) throw new Error("Unsupported run record format");
-  if (!isHead(record)) {
-    if (typeof record.runId !== "string") throw new Error("Invalid legacy run identity");
-    return;
-  }
+function validateHead(record: unknown): asserts record is Head {
+  if (!isHead(record)) throw new Error("Unsupported run record format");
   if (
     !Number.isSafeInteger(record.bytes) ||
     record.bytes <= 0 ||
@@ -124,9 +119,10 @@ function validateRecord(record: PersistedRunState | Head): void {
   )
     throw new Error("Invalid run head");
 }
-function readRecord(fs: PersistenceFsLayer, path: string): PersistedRunState | Head | null {
-  const record = readJsonWithBackupRecovery<PersistedRunState | Head>(fs, path);
-  if (record) validateRecord(record);
+function readHead(fs: PersistenceFsLayer, path: string): Head | null {
+  const record = readJsonWithBackupRecovery<unknown>(fs, path);
+  if (record === null) return null;
+  validateHead(record);
   return record;
 }
 function digest(line: string): string {
@@ -246,14 +242,8 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
       cache.delete(key);
     }
   }
+  /** The full run a validated head commits to, replayed from its log (or the cache). */
   function hydrate(path: string, head: Head): PersistedRunState {
-    if (
-      !Number.isSafeInteger(head.bytes) ||
-      head.bytes <= 0 ||
-      !Number.isSafeInteger(head.sequence) ||
-      head.sequence <= 0
-    )
-      throw new Error("Invalid run commit boundary");
     const cached = cache.get(path);
     if (
       cached?.generation === head.generation &&
@@ -298,38 +288,32 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     return result;
   }
   function read(path: string): PersistedRunState | null {
-    const record = readRecord(fs, path);
-    if (!record) return null;
-    if (!isHead(record)) return record;
+    const head = readHead(fs, path);
+    if (!head) return null;
     // A committed-but-damaged log fails closed, rather than silently replaying
     // an older paid-call prefix. Only a corrupt/missing head uses its backup.
-    return structuredClone(hydrate(path, record));
+    return structuredClone(hydrate(path, head));
   }
   function peek(path: string): PersistedRunState | null {
-    const record = readRecord(fs, path);
-    return record ? preview(path, record) : null;
+    const head = readHead(fs, path);
+    return head ? preview(path, head) : null;
   }
-  function preview(path: string, record: PersistedRunState | Head): PersistedRunState {
-    validateRecord(record);
-    const head = isHead(record) ? record : undefined;
-    const index = head?.index ?? Object.fromEntries(Object.entries(record).filter(([key]) => INDEX_KEYS.has(key)));
-    const keys = head?.keys ?? Object.keys(record);
+  /** A light view of a run from its head; fields outside the index load the log on first access. */
+  function preview(path: string, head: unknown): PersistedRunState {
+    validateHead(head);
+    const { index } = head;
     const view = { ...index } as unknown as PersistedRunState;
     // Getters close over only the small head/path, never the hydrated state.
-    // Enumeration/spread retains the full-record API for existing consumers.
-    for (const key of keys)
+    // Enumeration and spread still see every field of the full record.
+    for (const key of head.keys)
       if (!Object.hasOwn(index, key))
         Object.defineProperty(view, key, {
           enumerable: true,
           configurable: true,
-          get: () => {
-            const full = head ? hydrate(path, head) : read(path);
-            if (!full) throw new Error("Run record disappeared");
-            return structuredClone((full as unknown as Record<string, unknown>)[key]);
-          },
+          get: () => structuredClone((hydrate(path, head) as unknown as Record<string, unknown>)[key]),
         });
     // Markers are needed to route pending delivery without loading results.
-    if (head?.pendingDelivery) {
+    if (head.pendingDelivery) {
       const marker = { ...head.pendingDelivery };
       if (marker.kind === "text")
         Object.defineProperty(marker, "text", {
@@ -345,7 +329,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
         configurable: true,
       });
     }
-    summaries.set(view, head?.summary ?? runSummary(record as PersistedRunState));
+    summaries.set(view, head.summary);
     return view;
   }
   function commit(
@@ -380,8 +364,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     return next;
   }
   function save(path: string, state: PersistedRunState): void {
-    const previous = readRecord(fs, path);
-    const head = isHead(previous) ? previous : undefined;
+    const head = readHead(fs, path) ?? undefined;
     const prior = head ? hydrate(path, head) : undefined;
     const before = prior ? (cache.get(path)?.cells ?? cellsOf(prior)) : new Map();
     const after = cellsOf(state);
@@ -413,7 +396,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     patch: Partial<Pick<PersistedRunState, "sessionId" | "pendingDelivery" | "autoResumeAttempts">>,
     expectedDeliveryId?: string,
   ): boolean {
-    const record = readRecord(fs, path);
+    const record = readHead(fs, path);
     if (!record) return false;
     if (
       expectedDeliveryId &&
@@ -421,10 +404,6 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
       record.pendingDelivery.deliveryId !== expectedDeliveryId
     )
       return false;
-    if (!isHead(record)) {
-      save(path, { ...record, ...patch });
-      return true;
-    }
     const updated = { ...patch, updatedAt: new Date().toISOString() };
     const after = cellsOf(updated as PersistedRunState);
     const delta = deltaOf(new Map(Object.keys(updated).map((key) => [key, "null"])), after);
@@ -449,23 +428,12 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     return true;
   }
   function recoverInterrupted(path: string): boolean {
-    const record = readRecord(fs, path);
-    if (!record) return false;
-    const head = isHead(record) ? record : undefined;
-    const status = head ? head.index.status : (record as PersistedRunState).status;
-    const summary = head?.summary ?? runSummary(record as PersistedRunState);
+    const head = readHead(fs, path);
+    if (!head) return false;
+    const status = head.index.status;
+    const { summary } = head;
     if (status !== "running" && !(status === "paused" && summary.active > 0)) return false;
     const endedAt = new Date().toISOString();
-    if (!head) {
-      const legacy = record as PersistedRunState;
-      save(path, {
-        ...legacy,
-        status: "paused",
-        updatedAt: endedAt,
-        agents: settleInterruptedPersistedAgents(legacy.agents ?? [], INTERRUPTED_AGENT_CAUSE, endedAt),
-      });
-      return true;
-    }
     commit(
       path,
       head,

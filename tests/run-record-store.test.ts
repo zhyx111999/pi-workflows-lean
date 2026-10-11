@@ -15,7 +15,6 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { WORKFLOW_RUNS_DIR } from "../src/config.js";
 import { defaultPersistenceFs, type PersistenceFsLayer } from "../src/fs-persistence.js";
 import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { createRunRecordStore } from "../src/run-record-store.js";
@@ -135,30 +134,6 @@ test(
     const raw = readFileSync(modifiedLog, "utf8");
     writeFileSync(modifiedLog, raw.replace("value", "tampered"), "utf8");
     assert.equal(createRunPersistence(cwd).load(modifiedId), null);
-  }),
-);
-
-test(
-  "legacy complete JSON loads and first save migrates without losing journal, script, or args",
-  withFixture((cwd) => {
-    const legacyDir = join(cwd, WORKFLOW_RUNS_DIR);
-    mkdirSync(legacyDir, { recursive: true });
-    const legacy = state("legacy-migrate", [{ index: 0, hash: "legacy", result: { ok: true } }]);
-    writeFileSync(join(legacyDir, `${legacy.runId}.json`), JSON.stringify(legacy), "utf8");
-    const rp = createRunPersistence(cwd);
-    const loaded = rp.load(legacy.runId);
-    assert.deepEqual(loaded?.journal, legacy.journal);
-    assert.equal(loaded?.script, legacy.script);
-    assert.deepEqual(loaded?.args, legacy.args);
-
-    assert.ok(loaded);
-    rp.save({ ...loaded, status: "paused" });
-    const migratedPath = join(workflowProjectPaths(cwd).runsDir, `${legacy.runId}.json`);
-    assert.ok(existsSync(migratedPath));
-    const migrated = createRunPersistence(cwd).load(legacy.runId);
-    assert.deepEqual(migrated?.journal, legacy.journal);
-    assert.equal(migrated?.script, legacy.script);
-    assert.deepEqual(migrated?.args, legacy.args);
   }),
 );
 

@@ -184,7 +184,7 @@ export default function extension(pi: ExtensionAPI) {
         const targetCwd = sessionFileCwd(event?.targetSessionFile);
         if (targetCwd !== cwd) {
           pauseStrandedWorkflowRuntime(runtime);
-          discardWorkflowRuntime(cwd, runtime);
+          discardWorkflowRuntime(runtime);
           dropSessionDelivery(outgoingSessionId);
           return;
         }
@@ -195,7 +195,7 @@ export default function extension(pi: ExtensionAPI) {
         const targetCwd = sessionFileCwd(event?.targetSessionFile);
         if (targetCwd && targetCwd !== cwd) {
           pauseStrandedWorkflowRuntime(runtime);
-          discardWorkflowRuntime(cwd, runtime);
+          discardWorkflowRuntime(runtime);
           dropSessionDelivery(outgoingSessionId);
           return;
         }
@@ -207,7 +207,7 @@ export default function extension(pi: ExtensionAPI) {
     }
 
     pauseStrandedWorkflowRuntime(runtime);
-    discardWorkflowRuntime(cwd, runtime);
+    discardWorkflowRuntime(runtime);
     dropSessionDelivery(outgoingSessionId);
   });
 
@@ -266,7 +266,7 @@ export default function extension(pi: ExtensionAPI) {
     // Handlers load by name from the live storage, so a later same-session
     // overwrite picks up the new script; Pi still cannot drop source-only
     // names left over from a prior generation — those handlers notify.
-    registerAllSavedWorkflows(pi, getCwd, getStorage, getManager);
+    registerAllSavedWorkflows(pi, getStorage, getManager);
 
     if (pausedForMismatch > 0) {
       ctx.ui.notify(

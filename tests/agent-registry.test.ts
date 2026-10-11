@@ -108,7 +108,7 @@ describe("loadAgentRegistry", () => {
     writeDef(userDir, "reviewer.md", "---\nname: reviewer\nmodel: user/model\n---\nuser body");
     writeDef(userDir, "researcher.md", "---\nname: researcher\n---\nuser-only researcher");
 
-    const reg = loadAgentRegistry(root, { projectDir, userDir, legacyUserDir: join(root, "legacy-none") });
+    const reg = loadAgentRegistry(root, { projectDir, userDir });
     assert.equal(reg.size, 2);
     assert.equal(reg.get("reviewer")?.model, "project/model", "project def wins");
     assert.equal(reg.get("reviewer")?.source, "project");
@@ -120,7 +120,6 @@ describe("loadAgentRegistry", () => {
     const reg = loadAgentRegistry("/nonexistent", {
       projectDir: "/nonexistent/a",
       userDir: "/nonexistent/b",
-      legacyUserDir: "/nonexistent/c",
     });
     assert.equal(reg.size, 0);
   });
@@ -133,7 +132,6 @@ describe("loadAgentRegistry", () => {
     const reg = loadAgentRegistry(root, {
       projectDir,
       userDir: join(root, "none"),
-      legacyUserDir: join(root, "legacy-none"),
     });
     assert.deepEqual([...reg.keys()], ["ok"]);
     rmSync(root, { recursive: true, force: true });
@@ -152,7 +150,6 @@ describe("loadAgentRegistry", () => {
     const reg = loadAgentRegistry(root, {
       projectDir,
       userDir: join(root, "none"),
-      legacyUserDir: join(root, "legacy-none"),
     });
     assert.deepEqual(reg.get("scout")?.tools, ["read", "grep", "find"]);
     assert.deepEqual(reg.get("scout")?.disallowedTools, ["write", "bash"]);
@@ -186,98 +183,6 @@ describe("loadAgentRegistry", () => {
       else process.env.PI_CODING_AGENT_DIR = originalAgentDirEnv;
       rmSync(tmpHome, { recursive: true, force: true });
     }
-  });
-});
-
-// ── loadAgentRegistry dual-scan: new location + deprecated legacy fallback ──
-
-describe("loadAgentRegistry legacy ~/.pi/agents fallback", () => {
-  function writeDef(dir: string, file: string, content: string) {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, file), content, "utf-8");
-  }
-
-  function withCapturedWarnings<T>(fn: () => T): { result: T; warnings: string[] } {
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map(String).join(" "));
-    };
-    try {
-      const result = fn();
-      return { result, warnings };
-    } finally {
-      console.warn = originalWarn;
-    }
-  }
-
-  it("resolves a definition that exists only in the legacy location and warns once", () => {
-    const root = mkdtempSync(join(tmpdir(), "agents-legacy-"));
-    const legacyUserDir = join(root, "legacy-user");
-    writeDef(legacyUserDir, "scout.md", "---\nname: scout\ntools: read, grep\n---\nLegacy scout.");
-    writeDef(legacyUserDir, "other.md", "---\nname: other\n---\nAnother legacy agent.");
-
-    const { result: reg, warnings } = withCapturedWarnings(() =>
-      loadAgentRegistry(root, {
-        projectDir: join(root, "project-none"),
-        userDir: join(root, "user-none"),
-        legacyUserDir,
-      }),
-    );
-
-    assert.equal(reg.get("scout")?.source, "user");
-    assert.equal(reg.get("scout")?.prompt, "Legacy scout.");
-    assert.deepEqual(reg.get("scout")?.tools, ["read", "grep"]);
-    assert.ok(reg.get("other"), "second legacy-only def also resolves");
-    assert.equal(warnings.length, 1, "exactly one deprecation warning, not one per legacy file");
-    assert.match(warnings[0], /deprecated/i);
-    assert.match(warnings[0], new RegExp(legacyUserDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("a new-location definition shadows a same-named legacy definition and suppresses its warning", () => {
-    const root = mkdtempSync(join(tmpdir(), "agents-legacy-"));
-    const userDir = join(root, "user");
-    const legacyUserDir = join(root, "legacy-user");
-    writeDef(userDir, "scout.md", "---\nname: scout\nmodel: new/model\n---\nNew scout.");
-    writeDef(legacyUserDir, "scout.md", "---\nname: scout\nmodel: old/model\n---\nOld scout.");
-
-    const { result: reg, warnings } = withCapturedWarnings(() =>
-      loadAgentRegistry(root, {
-        projectDir: join(root, "project-none"),
-        userDir,
-        legacyUserDir,
-      }),
-    );
-
-    assert.equal(reg.size, 1);
-    assert.equal(reg.get("scout")?.model, "new/model", "new location wins over legacy");
-    assert.equal(reg.get("scout")?.prompt, "New scout.");
-    assert.equal(warnings.length, 0, "no deprecation warning when the legacy file is fully shadowed");
-    rmSync(root, { recursive: true, force: true });
-  });
-
-  it("mixes new and legacy-only names: new wins on collision, legacy fills the rest, one warning", () => {
-    const root = mkdtempSync(join(tmpdir(), "agents-legacy-"));
-    const userDir = join(root, "user");
-    const legacyUserDir = join(root, "legacy-user");
-    writeDef(userDir, "scout.md", "---\nname: scout\nmodel: new/model\n---\nNew scout.");
-    writeDef(legacyUserDir, "scout.md", "---\nname: scout\nmodel: old/model\n---\nOld scout.");
-    writeDef(legacyUserDir, "researcher.md", "---\nname: researcher\n---\nLegacy-only researcher.");
-
-    const { result: reg, warnings } = withCapturedWarnings(() =>
-      loadAgentRegistry(root, {
-        projectDir: join(root, "project-none"),
-        userDir,
-        legacyUserDir,
-      }),
-    );
-
-    assert.equal(reg.size, 2);
-    assert.equal(reg.get("scout")?.model, "new/model");
-    assert.equal(reg.get("researcher")?.source, "user");
-    assert.equal(warnings.length, 1, "warns once for the researcher-only legacy resolution");
-    rmSync(root, { recursive: true, force: true });
   });
 });
 

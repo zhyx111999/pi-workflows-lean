@@ -79,7 +79,7 @@ export function runRow(record: PersistedRunState, live: RunSnapshot | undefined)
   // The run-level aggregate is authoritative but only lands when the run
   // ends; per-agent figures update live. Use whichever accounts for more
   // tokens, so live runs show a count in the list (agreeing with the phase
-  // view) and finished/legacy runs keep the final aggregate.
+  // view) and finished runs keep the final aggregate.
   const fromUsage = tokenFigures(usage);
   const fromAgents = live ? aggregateAgentUsage(agents) : summary.usage;
   const figures =

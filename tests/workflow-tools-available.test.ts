@@ -25,7 +25,7 @@ describe("workflow extension - tool availability", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
         const registeredTools: string[] = [];
         const registeredCommands: string[] = [];
         const activeTools = ["bash", "read"];
@@ -80,7 +80,7 @@ describe("workflow extension - tool availability", () => {
         assert.equal(handlers.before_agent_start.length, 1, "session_start does not add another start hook");
 
         handlers.session_shutdown?.[0]?.({ reason: "reload" });
-        const staged = takeWorkflowRuntime(process.cwd());
+        const staged = takeWorkflowRuntime();
         assert.ok(staged, "session_shutdown(reload) stages the live manager for the next extension generation");
         handoffWorkflowRuntime(staged);
 
@@ -100,7 +100,7 @@ describe("workflow extension - tool availability", () => {
           sendMessage: () => {},
         } as unknown as ExtensionAPI;
         installExtension(secondPi);
-        assert.equal(takeWorkflowRuntime(process.cwd()), undefined, "the fresh factory consumes the staged runtime");
+        assert.equal(takeWorkflowRuntime(), undefined, "the fresh factory consumes the staged runtime");
 
         secondHandlers.session_start?.[0]?.(
           { reason: "reload" },
@@ -114,9 +114,9 @@ describe("workflow extension - tool availability", () => {
         );
 
         secondHandlers.session_shutdown?.[0]?.({ reason: "reload" });
-        const restaged = takeWorkflowRuntime(process.cwd());
+        const restaged = takeWorkflowRuntime();
         assert.equal(restaged?.manager, staged.manager, "a compatible generation keeps the exact live manager");
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
@@ -212,7 +212,7 @@ describe("workflow extension - tool availability", () => {
         ];
 
         for (const { reason, event } of cases) {
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
 
           const activeTools = ["bash", "read"];
           const handlers: Record<string, Array<(...args: any[]) => any>> = {};
@@ -234,7 +234,7 @@ describe("workflow extension - tool availability", () => {
           installExtension(pi);
 
           handlers.session_shutdown?.[0]?.(event);
-          const staged = takeWorkflowRuntime(process.cwd());
+          const staged = takeWorkflowRuntime();
           assert.ok(
             staged,
             `session_shutdown(${reason}) must stage the live manager so background result delivery survives`,
@@ -260,7 +260,7 @@ describe("workflow extension - tool availability", () => {
             },
           } as unknown as ExtensionAPI;
           installExtension(secondPi);
-          assert.equal(takeWorkflowRuntime(process.cwd()), undefined, "second generation claims the staged runtime");
+          assert.equal(takeWorkflowRuntime(), undefined, "second generation claims the staged runtime");
 
           // Production session_start does not pass stableSend — steal map only.
           _resetDeliveryRegistriesForTests();
@@ -295,7 +295,7 @@ describe("workflow extension - tool availability", () => {
             secondDelivered.some((c) => c.includes(`ok-${reason}`)),
             `completion after ${reason} handoff must deliver via the stolen host send`,
           );
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
         }
       });
     } finally {
@@ -352,7 +352,7 @@ describe("workflow extension - tool availability", () => {
           handlers.session_shutdown?.[0]?.({ reason: "resume" });
           assert.deepEqual(paused, ["resume-no-target"], "fail-closed resume must pause the live run");
           assert.equal(
-            takeWorkflowRuntime(process.cwd()),
+            takeWorkflowRuntime(),
             undefined,
             "resume without targetSessionFile must fail closed (no handoff)",
           );
@@ -366,16 +366,12 @@ describe("workflow extension - tool availability", () => {
             targetSessionFile: join(sessionDir, "does-not-exist.jsonl"),
           });
           assert.deepEqual(paused, ["resume-missing-header"], "unreadable resume target must pause the live run");
-          assert.equal(
-            takeWorkflowRuntime(process.cwd()),
-            undefined,
-            "resume with missing session header must fail closed",
-          );
+          assert.equal(takeWorkflowRuntime(), undefined, "resume with missing session header must fail closed");
         }
 
         // resume + different cwd header → discard
         {
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
           const foreign = join(sessionDir, "foreign.jsonl");
           writeFileSync(
             foreign,
@@ -389,16 +385,12 @@ describe("workflow extension - tool availability", () => {
           const { handlers, paused } = installWithLiveRun("resume-foreign-cwd");
           handlers.session_shutdown?.[0]?.({ reason: "resume", targetSessionFile: foreign });
           assert.deepEqual(paused, ["resume-foreign-cwd"], "cross-project resume must pause the source live run");
-          assert.equal(
-            takeWorkflowRuntime(process.cwd()),
-            undefined,
-            "resume into a different project must discard, not hand off",
-          );
+          assert.equal(takeWorkflowRuntime(), undefined, "resume into a different project must discard, not hand off");
         }
 
         // resume + same cwd header → handoff
         {
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
           const same = join(sessionDir, "same-cwd.jsonl");
           writeFileSync(
             same,
@@ -412,9 +404,9 @@ describe("workflow extension - tool availability", () => {
           const { handlers, paused } = installWithLiveRun("resume-same-cwd");
           handlers.session_shutdown?.[0]?.({ reason: "resume", targetSessionFile: same });
           assert.deepEqual(paused, [], "same-project resume must keep the live run running");
-          const staged = takeWorkflowRuntime(process.cwd());
+          const staged = takeWorkflowRuntime();
           assert.ok(staged, "resume with readable same-cwd header must hand off");
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
         }
 
         // fork without a session file still hands off (new fork file may not exist yet)
@@ -422,9 +414,9 @@ describe("workflow extension - tool availability", () => {
           const { handlers, paused } = installWithLiveRun("fork-no-target");
           handlers.session_shutdown?.[0]?.({ reason: "fork" });
           assert.deepEqual(paused, [], "fork without a target file stays in-project and must keep the live run");
-          const staged = takeWorkflowRuntime(process.cwd());
+          const staged = takeWorkflowRuntime();
           assert.ok(staged, "fork without targetSessionFile must still hand off");
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
         }
 
         // fork + positively foreign cwd → pause + discard
@@ -471,8 +463,8 @@ describe("workflow extension - tool availability", () => {
           location: "project",
         });
 
-        discardWorkflowRuntime(process.cwd());
-        discardWorkflowRuntime(otherProject);
+        discardWorkflowRuntime();
+        discardWorkflowRuntime();
 
         const commands: Array<{
           name: string;
@@ -528,7 +520,7 @@ describe("workflow extension - tool availability", () => {
 
         // Capture the live manager and assert the handler executes B's script.
         handlers.session_shutdown?.[0]?.({ reason: "reload" });
-        const runtime = claimWorkflowRuntime(process.cwd()).compatible;
+        const runtime = claimWorkflowRuntime().compatible;
         assert.ok(runtime, "shutdown after rebuild must be claimable via process.cwd()");
         const started: string[] = [];
         runtime.manager.startInBackground = ((script: string) => {
@@ -557,7 +549,7 @@ describe("workflow extension - tool availability", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-model-select-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
         const { WorkflowManager } = await import("../src/workflow-manager.js");
         const seen: Array<string | undefined> = [];
         const original = WorkflowManager.prototype.setMainModel;
@@ -610,7 +602,7 @@ describe("workflow extension - tool availability", () => {
             "model_select must call setMainModel with the newly selected spec",
           );
 
-          discardWorkflowRuntime(process.cwd());
+          discardWorkflowRuntime();
         } finally {
           WorkflowManager.prototype.setMainModel = original;
         }
@@ -624,7 +616,7 @@ describe("workflow extension - tool availability", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-prebind-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
         const activeTools = ["bash", "read"];
         const handlers: Record<string, Array<(...args: any[]) => any>> = {};
         const delivered: string[] = [];
@@ -652,7 +644,7 @@ describe("workflow extension - tool availability", () => {
         installExtension(pi);
 
         handlers.session_shutdown?.[0]?.({ reason: "reload" });
-        const staged = takeWorkflowRuntime(process.cwd());
+        const staged = takeWorkflowRuntime();
         assert.ok(staged);
         handoffWorkflowRuntime(staged);
 
@@ -719,7 +711,7 @@ describe("workflow extension - tool availability", () => {
           delivered.some((c) => c.includes("prebind-ok")),
           "session_start must flush the pre-bind queue",
         );
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
@@ -732,7 +724,7 @@ describe("workflow extension - tool availability", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-samecwd-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
         const piFor = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
           ({
             registerTool: () => {},
@@ -750,7 +742,7 @@ describe("workflow extension - tool availability", () => {
         const first: Record<string, Array<(...args: any[]) => any>> = {};
         installExtension(piFor(first));
         first.session_shutdown?.[0]?.({ reason: "reload" });
-        const factoryRuntime = takeWorkflowRuntime(process.cwd());
+        const factoryRuntime = takeWorkflowRuntime();
         assert.ok(factoryRuntime);
         handoffWorkflowRuntime(factoryRuntime);
 
@@ -769,14 +761,14 @@ describe("workflow extension - tool availability", () => {
           },
         );
         second.session_shutdown?.[0]?.({ reason: "reload" });
-        const kept = claimWorkflowRuntime(process.cwd()).compatible;
+        const kept = claimWorkflowRuntime().compatible;
         assert.equal(
           kept?.manager,
           factoryRuntime.manager,
           "another spelling of the same project is not a project switch",
         );
         if (kept) handoffWorkflowRuntime(kept);
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
@@ -788,7 +780,7 @@ describe("workflow extension - tool availability", () => {
     const otherProject = mkdtempSync(join(tmpdir(), "pi-dw-other-project-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
         const activeTools = ["bash", "read"];
         const handlers: Record<string, Array<(...args: any[]) => any>> = {};
         const pi = {
@@ -809,7 +801,7 @@ describe("workflow extension - tool availability", () => {
         installExtension(pi);
 
         handlers.session_shutdown?.[0]?.({ reason: "reload" });
-        const factoryRuntime = takeWorkflowRuntime(process.cwd());
+        const factoryRuntime = takeWorkflowRuntime();
         assert.ok(factoryRuntime);
         const factoryManager = factoryRuntime.manager;
         assert.equal(resolve(factoryManager.getCwd()), resolve(process.cwd()));
@@ -847,7 +839,7 @@ describe("workflow extension - tool availability", () => {
         // Process-wide slot: claimable via process.cwd() even though the manager
         // owns otherProject. Next factory (which only knows process.cwd()) must
         // receive the same manager.
-        const rebuilt = claimWorkflowRuntime(process.cwd()).compatible;
+        const rebuilt = claimWorkflowRuntime().compatible;
         assert.ok(rebuilt, "rebuilt runtime must be claimable via process.cwd() (factory path)");
         assert.equal(resolve(rebuilt.manager.getCwd()), resolve(otherProject));
         assert.notEqual(rebuilt.manager, factoryManager, "must not keep the source-project manager");
@@ -880,7 +872,7 @@ describe("workflow extension - tool availability", () => {
           },
         );
         handlers3.session_shutdown?.[0]?.({ reason: "reload" });
-        const again = claimWorkflowRuntime(process.cwd()).compatible;
+        const again = claimWorkflowRuntime().compatible;
         assert.ok(again);
         assert.equal(again.manager, rebuilt.manager, "round-trip reload must keep the same live manager");
         discardWorkflowRuntime();
@@ -895,7 +887,7 @@ describe("workflow extension - tool availability", () => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-quit-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        discardWorkflowRuntime(process.cwd());
+        discardWorkflowRuntime();
         const activeTools = ["bash", "read"];
         const makePi = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
           ({
@@ -939,18 +931,14 @@ describe("workflow extension - tool availability", () => {
           const { handlers, paused } = installWithLiveRun("shutdown-unknown");
           handlers.session_shutdown?.[0]?.();
           assert.deepEqual(paused, ["shutdown-unknown"], "missing shutdown reason must pause the live run");
-          assert.equal(
-            takeWorkflowRuntime(process.cwd()),
-            undefined,
-            "session_shutdown with no reason must not stage a handoff",
-          );
+          assert.equal(takeWorkflowRuntime(), undefined, "session_shutdown with no reason must not stage a handoff");
         }
         {
           const { handlers, paused } = installWithLiveRun("shutdown-quit");
           handlers.session_shutdown?.[0]?.({ reason: "quit" });
           assert.deepEqual(paused, ["shutdown-quit"], "quit must pause the live run before process teardown");
           assert.equal(
-            takeWorkflowRuntime(process.cwd()),
+            takeWorkflowRuntime(),
             undefined,
             "session_shutdown(quit) must not stage a handoff — process is exiting",
           );
@@ -959,11 +947,7 @@ describe("workflow extension - tool availability", () => {
           const { handlers, paused } = installWithLiveRun("shutdown-manual");
           handlers.session_shutdown?.[0]?.({ reason: "manual" });
           assert.deepEqual(paused, ["shutdown-manual"], "unknown shutdown reasons must pause the live run");
-          assert.equal(
-            takeWorkflowRuntime(process.cwd()),
-            undefined,
-            "unknown shutdown reasons must not stage a handoff",
-          );
+          assert.equal(takeWorkflowRuntime(), undefined, "unknown shutdown reasons must not stage a handoff");
         }
       });
     } finally {

@@ -303,17 +303,10 @@ export function registerWorkflowCommands(
             ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
             return;
           }
-          const registration = registerSavedWorkflow(
-            pi,
-            getCwd,
-            saved,
-            getManager,
-            // Always re-resolve storage at invocation — do not close over the
-            // instance from this save call, or a later project switch leaves
-            // the loader pointed at the source project's store.
-            () => getStorage()?.load(name) != null,
-            () => getStorage()?.load(name) ?? null,
-          );
+          // Always re-resolve storage at invocation — do not close over the
+          // instance from this save call, or a later project switch leaves
+          // the loader pointed at the source project's store.
+          const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage()?.load(name));
           // Surface a refused registration: the file persisted,
           // but a host/extension-owned name never becomes a slash command —
           // reporting plain success would silently mislead.
