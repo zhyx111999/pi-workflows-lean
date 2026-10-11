@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { hashCheckpointCall } from "./call-identity.js";
 import { cloneDurableJsonValue } from "./durable-json.js";
+import { currentCallSequence } from "./fanout.js";
 const CHECKPOINT_IDENTIFIER = /^[A-Za-z0-9._:-]{1,200}$/u;
 const invalidCheckpoint = (message) => new WorkflowError(message, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
 /** Build the script's checkpoint() global for this run. */
@@ -14,7 +15,7 @@ export function createCheckpoint(ctx) {
             throw new TypeError("checkpoint() needs exactly { kind, checkpointId, payload } with valid string identifiers");
         }
         ctx.ensureAgentCapacity();
-        const callIndex = state.callSeq++;
+        const callIndex = currentCallSequence(ctx).takeIndex();
         const durableInput = {
             ...input,
             payload: cloneDurableJsonValue(input.payload, "checkpoint payload"),
@@ -32,13 +33,13 @@ export function createCheckpoint(ctx) {
         if (!state.resumeBarrierReached &&
             cached != null &&
             cached.hash === callHash &&
-            callIndex < state.firstMiss &&
+            !state.journalMissed &&
             activeResponse?.checkpointId !== checkpointId) {
             state.agentCount++;
             return cached.result;
         }
         if (cached == null || cached.hash !== callHash) {
-            state.firstMiss = Math.min(state.firstMiss, callIndex);
+            state.journalMissed = true;
         }
         state.agentCount++;
         if (activeResponse) {

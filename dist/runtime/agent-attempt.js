@@ -1,43 +1,45 @@
-/** Starts one attempt of a live agent() call: abort wiring, the runner request, and the attempt deadline. */
+/** One attempt of a live agent() call: its scope, the runner request, the deadline, and the bounded wait for a stopped runner. */
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { createAgentStoreTools } from "../shared-store.js";
-/**
- * Each attempt gets its own controller so a timeout can dispose that session
- * (and release its messages) instead of leaving it streaming while a retry
- * starts another. It also follows the caller's signal (pause/stop/Esc) and the
- * run-fatal seal, so in-flight siblings of a lost run wind down. unlink() must
- * run when the attempt ends, or listeners pile up on the run's signals.
- */
-export function linkAttemptAbort(ctx) {
+export function openAttemptScope(ctx) {
     const controller = new AbortController();
     const abort = () => controller.abort();
-    if (ctx.isAborted()) {
-        abort();
-        return { signal: controller.signal, abort, unlink: () => { } };
-    }
     const external = ctx.options.signal;
     const fatal = ctx.state.runFatalController.signal;
-    external?.addEventListener("abort", abort, { once: true });
-    fatal.addEventListener("abort", abort, { once: true });
+    if (ctx.isAborted()) {
+        abort();
+    }
+    else {
+        external?.addEventListener("abort", abort, { once: true });
+        fatal.addEventListener("abort", abort, { once: true });
+    }
+    let closed = false;
+    const releases = [];
     return {
         signal: controller.signal,
         abort,
-        unlink: () => {
+        // The terminal drain closes every attempt of the run at once.
+        isOpen: () => !closed && !ctx.state.agentCallbacksClosed,
+        onClose: (release) => releases.push(release),
+        close: () => {
+            closed = true;
             external?.removeEventListener("abort", abort);
             fatal.removeEventListener("abort", abort);
+            for (const release of releases)
+                release();
         },
     };
 }
-/** Hand the call to the agent runner; every callback goes quiet once the run's terminal drain closes. */
-export function dispatchAttempt(ctx, call, cwd, signal, usage) {
-    const { options, state, runId } = ctx;
+/** Hand the call to the agent runner; every callback goes quiet once the attempt's scope closes. */
+export function dispatchAttempt(ctx, call, cwd, scope, usage) {
+    const { options, runId } = ctx;
     const { options: agentOptions, definition, id, label, phase } = call;
     return ctx.agentRunner.run(call.prompt, {
         label,
         // Identifiable name for persisted sessions (persistAgentSessions).
         sessionName: agentOptions.thread ? `workflow:${runId} thread:${agentOptions.thread}` : `workflow:${runId} ${label}`,
         schema: agentOptions.schema,
-        signal,
+        signal: scope.signal,
         // The agentType body is the user's own role prompt; the runtime adds no text of its own.
         instructions: definition?.prompt || undefined,
         model: call.modelSpec,
@@ -47,10 +49,10 @@ export function dispatchAttempt(ctx, call, cwd, signal, usage) {
         toolNames: definition?.tools,
         disallowedToolNames: definition?.disallowedTools,
         // Store tools attribute this agent's writes to its call id, so the delta can be journaled and replayed.
-        systemTools: createAgentStoreTools(ctx.store, id),
+        systemTools: createAgentStoreTools(ctx.store, id, scope.isOpen),
         cwd,
         onModelResolved: (model) => {
-            if (state.agentCallbacksClosed)
+            if (!scope.isOpen())
                 return;
             // Replace the pre-resolution guess while the agent is still running;
             // onAgentEnd and the journal carry the same value afterwards.
@@ -58,7 +60,7 @@ export function dispatchAttempt(ctx, call, cwd, signal, usage) {
             options.onAgentModel?.({ id, label, phase, model });
         },
         onModelFallback: ({ tier, requestedSpec, source, }) => {
-            if (state.agentCallbacksClosed)
+            if (!scope.isOpen())
                 return;
             // Only an untagged agent's implicit route degrades (an explicit model or
             // tier fails with MODEL_NOT_FOUND instead); log it so the run shows it.
@@ -66,22 +68,27 @@ export function dispatchAttempt(ctx, call, cwd, signal, usage) {
                 ? `inherited main model "${requestedSpec}" unavailable — using the session default`
                 : `default "${tier}" tier model "${requestedSpec}" unavailable — using the session default`);
         },
+        // The usage tracker ignores an attempt once its usage is committed.
         onUsageProgress: usage.reportProgress,
         onUsage: usage.reportTerminal,
         onSessionCreated: ({ sessionId, sessionFile }) => {
-            if (state.agentCallbacksClosed)
+            if (!scope.isOpen())
                 return;
             options.onAgentSession?.({ callId: id, sessionId, sessionFile });
         },
         onHistory: (history) => {
-            if (state.agentCallbacksClosed)
+            if (!scope.isOpen())
                 return;
             options.onAgentHistory?.({ id, label, phase, history });
         },
         registerSteer: (steer) => {
-            // An abandoned execution must not hand a late session to the host.
-            const unregister = state.agentCallbacksClosed ? undefined : options.registerAgentSteer?.({ id, label, steer });
-            return unregister ?? (() => { });
+            // An ended attempt must not hand a late session to the host, and its
+            // registration ends with it even if the runner never unregisters.
+            if (!scope.isOpen())
+                return () => { };
+            const unregister = options.registerAgentSteer?.({ id, label, steer }) ?? (() => { });
+            scope.onClose(unregister);
+            return unregister;
         },
         thread: agentOptions.thread,
     });
@@ -89,8 +96,8 @@ export function dispatchAttempt(ctx, call, cwd, signal, usage) {
 /**
  * Race the attempt against its deadline. `onTimeout` runs before the timeout
  * error wins so the caller can abort the session and free its resources; the
- * losing promise still settles later, and the caller awaits it before
- * committing usage or retrying.
+ * losing promise settles later, if ever, so the caller waits for it with
+ * awaitRunnerStop before committing usage or retrying.
  */
 export async function withTimeout(promise, ms, label, onTimeout) {
     if (ms === null)
@@ -113,5 +120,25 @@ export async function withTimeout(promise, ms, label, onTimeout) {
     finally {
         if (timeoutId)
             clearTimeout(timeoutId);
+    }
+}
+/**
+ * Wait for a runner that was told to stop, up to `graceMs` (Infinity waits for
+ * good). Its final usage arrives as it unwinds, and a thread's next turn must
+ * not overlap it. False means it ignored its abort and is to be abandoned.
+ */
+export async function awaitRunnerStop(runner, graceMs) {
+    const stopped = runner.then(() => true, () => true);
+    if (graceMs === Number.POSITIVE_INFINITY)
+        return stopped;
+    let timer;
+    const grace = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), graceMs);
+    });
+    try {
+        return await Promise.race([stopped, grace]);
+    }
+    finally {
+        clearTimeout(timer);
     }
 }

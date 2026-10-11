@@ -1,8 +1,10 @@
 /** Lossless JSON copies for checkpoint payloads and responses that must survive persistence exactly. */
 /**
  * Copy a checkpoint payload or response that must survive persistence exactly:
- * only plain objects, dense arrays, strings, finite numbers, booleans and null
- * are accepted; anything a JSON round trip would change throws a TypeError.
+ * the copy equals what a JSON round trip of the value yields. Only plain
+ * objects, dense arrays, strings, finite numbers, booleans and null are
+ * accepted; -0 becomes 0 because JSON has a single zero; anything else a round
+ * trip would change or drop throws a TypeError.
  */
 export function cloneDurableJsonValue(value, label) {
     const active = new WeakSet();
@@ -12,8 +14,13 @@ export function cloneDurableJsonValue(value, label) {
     const clone = (item, depth) => {
         if (item === null || typeof item === "string" || typeof item === "boolean")
             return item;
-        if (typeof item === "number")
-            return Number.isFinite(item) ? item : invalid();
+        if (typeof item === "number") {
+            if (!Number.isFinite(item))
+                return invalid();
+            // -0 === 0, so this returns +0 for both zeros: a persisted payload must
+            // still deep-equal the in-memory one, and isDeepStrictEqual tells them apart.
+            return item === 0 ? 0 : item;
+        }
         if (typeof item !== "object" || depth > 100)
             return invalid();
         if (active.has(item))

@@ -2,17 +2,19 @@
  * In-memory key-value store scoped to a single workflow run.
  *
  * One `SharedStore` instance is created at run start and disposed when the run
- * ends. Two MCP-compatible tool definitions (`store_put` / `store_get`) are
- * injected into every agent's tool list so parallel agents can share
- * intermediate state without coordinating through the script itself.
+ * ends; a disposed store rejects every write, so a late caller fails loudly
+ * instead of writing state nobody journals. Two MCP-compatible tool
+ * definitions (`store_put` / `store_get`) are injected into every agent's tool
+ * list so parallel agents can share intermediate state without coordinating
+ * through the script itself.
  *
  * Journal integration: callers capture `store.commitDelta(deltaKey)` alongside
  * each agent result in the journal. On resume, `store.applyDelta(delta)` rebuilds
- * the store state additively in callSeq order, so parallel-agent writes are
+ * the store state additively in replay order, so parallel-agent writes are
  * replayed correctly without the last-complete-wins ordering bug that a
  * whole-Map restore() would cause. Known limitation: when two PARALLEL agents
  * write the SAME key, live resolution follows last-WRITE order while replay
- * follows callSeq order, so the final value can differ between live and resume
+ * follows the order calls replay in, so the final value can differ between live and resume
  * (the deltas themselves are journaled and replayed faithfully; only the
  * same-key ordering is not reconstructible).
  *
@@ -46,6 +48,12 @@ export class SharedStore {
     // (moved to the top, preserving last-write order), and compaction (see
     // compactHistory) drops everything below the topmost permanent write.
     keyHistories = new Map();
+    disposed = false;
+    /** Every mutation and delta hand-off calls this first. */
+    assertWritable() {
+        if (this.disposed)
+            throw new Error("SharedStore is disposed: its run has ended and it accepts no more writes");
+    }
     historyFor(key) {
         let history = this.keyHistories.get(key);
         if (!history) {
@@ -82,6 +90,7 @@ export class SharedStore {
     }
     /** Store a value under `key`. Overwrites any existing value. */
     put(key, value) {
+        this.assertWritable();
         // Untracked (direct-API) write: survives every window discard. One clone,
         // shared by the log entry and the map (recompute relies on that sharing),
         // so caller-side mutation can never alias into the store.
@@ -98,6 +107,7 @@ export class SharedStore {
      * writes can be journaled and replayed independently.
      */
     trackPut(key, value, deltaKey) {
+        this.assertWritable();
         // A non-string deltaKey would tag the entry window === undefined — PERMANENT,
         // un-rollbackable — and key the delta map with "undefined". Refuse it.
         if (typeof deltaKey !== "string") {
@@ -157,9 +167,12 @@ export class SharedStore {
      * window's write-log entries stay: a committed write is permanent history
      * that later discards must not remove (resume replay re-applies it). A
      * later discardDelta for the same key is a no-op — the delta bookkeeping
-     * is gone — so committed entries are unreachable by rollbacks.
+     * is gone — so committed entries are unreachable by rollbacks. A disposed
+     * store throws: its deltas are gone, and an empty one would journal as if
+     * the agent wrote nothing.
      */
     commitDelta(deltaKey) {
+        this.assertWritable();
         const delta = this.agentDeltas.get(deltaKey) ?? {};
         this.agentDeltas.delete(deltaKey);
         // Detach this window's surviving log entries (they are permanent history
@@ -197,7 +210,8 @@ export class SharedStore {
      * write by an earlier window resurfaces only if that window itself is still
      * live or committed.
      *
-     * A no-op if `deltaKey` never wrote anything (nothing to roll back).
+     * A no-op if `deltaKey` never wrote anything (nothing to roll back), which
+     * includes every key of a disposed store, so failure cleanup never throws.
      */
     discardDelta(deltaKey) {
         // Guard against undefined/non-string callers: untagged entries have
@@ -219,12 +233,13 @@ export class SharedStore {
     }
     /**
      * Apply a write delta additively — sets each key without clearing others.
-     * Used during resume replay so parallel-agent deltas applied in callSeq
+     * Used during resume replay so parallel-agent deltas applied in replay
      * order accumulate correctly regardless of original completion order.
      * Replay writes are untagged log entries: they belong to no live window and
      * no window's discard may remove them.
      */
     applyDelta(delta) {
+        this.assertWritable();
         // Clone everything first: a clone failure mid-loop must not leave the
         // store half-applied.
         const entries = Object.entries(delta).map(([k, v]) => [k, structuredClone(v)]);
@@ -240,6 +255,7 @@ export class SharedStore {
      * Prefer `applyDelta` for resume replay — see journal integration above.
      */
     restore(snap) {
+        this.assertWritable();
         // Clone everything BEFORE clearing: a clone failure must leave the current
         // state untouched rather than half-restored.
         const entries = Object.entries(snap).map(([k, v]) => [k, structuredClone(v)]);
@@ -253,8 +269,9 @@ export class SharedStore {
             this.map.set(k, stored);
         }
     }
-    /** Clear all entries (called when the run ends). */
+    /** Clear all entries and refuse later writes (called when the run ends). */
     dispose() {
+        this.disposed = true;
         this.map.clear();
         this.agentDeltas.clear();
         this.keyHistories.clear();
@@ -265,8 +282,11 @@ export class SharedStore {
  * agent call id `${runId}:${callIndex}` (see the `SharedStore` class doc).
  * Used internally by `runWorkflow` so each agent's puts are tracked in the
  * store's delta journal and can be replayed additively on resume.
+ * `acceptsWrites` turns false once the agent's attempt has ended: a runner
+ * abandoned while ignoring its abort must not write after its delta was
+ * discarded, where no journal or rollback would ever see the write.
  */
-export function createAgentStoreTools(store, deltaKey) {
+export function createAgentStoreTools(store, deltaKey, acceptsWrites) {
     const storePut = defineTool({
         name: "store_put",
         label: "Store Put",
@@ -277,6 +297,9 @@ export function createAgentStoreTools(store, deltaKey) {
             value: Type.Any({ description: "The value to store (any JSON-serializable value)." }),
         }),
         async execute(_id, params) {
+            if (!acceptsWrites()) {
+                throw new Error("This agent call has ended; the shared store no longer accepts its writes.");
+            }
             store.trackPut(params.key, params.value, deltaKey);
             return {
                 content: [{ type: "text", text: `Stored value under key "${params.key}".` }],

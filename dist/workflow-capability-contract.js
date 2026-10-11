@@ -1,31 +1,68 @@
+/**
+ * Workflow capability contract: the single declaration of every workflow runtime
+ * global and `subagents` tool input. runWorkflow assembles script globals from it
+ * and the docs generator publishes it, so runtime and documentation cannot drift.
+ */
 import packageJson from "../package.json" with { type: "json" };
+import { deepFreeze } from "./deep-freeze.js";
 import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 import { WorkflowCapabilityContractError } from "./errors.js";
-const DETAILS_PATH = "skills/workflow-authoring/references/capability-details.md";
+import { THINKING_LEVELS } from "./model-spec.js";
+/** Package-relative exhaustive generated capability reference; every fact's `reference` links into it. */
+export const CAPABILITY_DETAIL_PATH = "skills/workflow-authoring/references/capability-details.md";
 const NONE = [];
-const option = (name, type, optional, defaultValue = null, constraints = NONE, dynamicReference = null) => ({ name, type, optional, default: defaultValue, constraints, dynamicReference });
-/** The complete set of agent() options; the runtime rejects any other key. */
+function typeText(rule) {
+    switch (rule.kind) {
+        case "string":
+            return rule.nonEmpty ? "non-empty string" : "string";
+        case "boolean":
+            return "boolean";
+        case "literal":
+            return rule.values.map((value) => JSON.stringify(value)).join(" | ");
+        case "json-schema":
+            return "plain JSON Schema object";
+        case "directory":
+            return "absolute directory path";
+    }
+}
+const option = (name, accepts, optional, defaultValue = null, constraints = NONE, dynamicReference = null) => ({
+    name,
+    type: typeText(accepts),
+    accepts,
+    optional,
+    default: defaultValue,
+    constraints,
+    dynamicReference,
+});
+const ANY_STRING = { kind: "string", nonEmpty: false };
+const NON_EMPTY_STRING = { kind: "string", nonEmpty: true };
+/** The first agent() argument: the task text the subagent receives. */
+export const AGENT_PROMPT = option("prompt", NON_EMPTY_STRING, false);
+/** The agent() prompt and complete option set; the runtime rejects any other key or value. */
 export const AGENT_OPTIONS = {
     id: "agent-options",
+    positional: [AGENT_PROMPT],
     options: [
-        option("label", "string", true, "derived from phase and call count"),
-        option("phase", "string", true, "current phase"),
-        option("schema", "plain JSON Schema", true),
-        option("model", "string", true, null, ["highest-priority exact model selector"]),
-        option("thinking", '"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"', true, null, [
-            "call-site value overrides agentType thinking; selected model suffix takes precedence; invalid values fail before dispatch",
+        option("label", ANY_STRING, true, "derived from phase and call count", ["blank uses the default"]),
+        option("phase", NON_EMPTY_STRING, true, "current phase"),
+        option("schema", { kind: "json-schema" }, true),
+        option("model", NON_EMPTY_STRING, true, null, ["highest-priority exact model selector"]),
+        option("thinking", { kind: "literal", values: THINKING_LEVELS }, true, null, [
+            "call-site value overrides agentType thinking; selected model suffix takes precedence",
         ]),
-        option("tier", "string", true, null, ["configured route name"], "model-routes"),
-        option("isolation", '"worktree" | false', true),
-        option("keepWorktree", "boolean", true, "true"),
-        option("cwd", "string", true, null, [
-            "non-empty absolute existing directory; resolved to its real path",
+        option("tier", NON_EMPTY_STRING, true, null, ["configured route name"], "model-routes"),
+        option("isolation", { kind: "literal", values: ["worktree", false] }, true, null, [
+            "false opts out of an agentType worktree default",
+        ]),
+        option("keepWorktree", { kind: "boolean" }, true, "true"),
+        option("cwd", { kind: "directory" }, true, null, [
+            "must exist; resolved to its real path",
             "coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host",
             "cannot combine with worktree isolation",
             "on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory",
         ]),
-        option("thread", "string", true, null, ["non-empty name; same-name calls must be sequential"]),
-        option("agentType", "string", true, null, ["must come from provided context"], "agent-types"),
+        option("thread", NON_EMPTY_STRING, true, null, ["trimmed; same-name calls must be sequential"]),
+        option("agentType", NON_EMPTY_STRING, true, null, ["must come from provided context"], "agent-types"),
     ],
 };
 const runtimeGlobal = (name, options = {}) => ({
@@ -64,7 +101,7 @@ const capabilities = [
         signature: "agent(prompt, options?) => Promise<string | structured value | null>",
         optionShape: "agent-options",
         constraints: [
-            "options must be an object using only the declared option names; anything else fails before dispatch with an error listing the accepted names",
+            "prompt must be a non-empty string; options must be an object using only the declared option names, each value matching its declared type (undefined means omitted); anything else fails before dispatch with SCRIPT_VALIDATION_ERROR listing the accepted names or values",
             "recoverable failures return null after retries; nonrecoverable failures throw",
             "schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries",
             "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)",
@@ -80,7 +117,6 @@ const capabilities = [
             "only the implicit route an untagged agent falls into — the implicit default medium tier, or the inherited main model when inheritMainModel is on (no explicit model, tier, agentType, or phase model requested) — degrades to the session default when unavailable, logging a one-time run-visible warning instead of throwing",
             "with the inheritMainModel setting on, an untagged agent (no explicit model, tier, agentType model, or phase model) inherits the session's main model (the model in effect when the run starts) instead of the implicit medium tier or the settings default; an unavailable inherited model degrades to the settings default with a one-time run-visible warning instead of throwing",
             "requested worktree isolation fails closed before agent execution if git cannot create the worktree; it never falls back to the shared checkout",
-            "isolation: false opts out of an agentType worktree default",
             "keepWorktree defaults true (worktree kept for merge); false deletes after the call",
             "each live execution creates a uniquely owned worktree; retries or resume never reuse or overwrite a retained worktree",
         ],
@@ -90,7 +126,7 @@ const capabilities = [
         constraints: [
             "requires functions rather than promises",
             "result order matches input order",
-            "recoverable thunk failures become null; nonrecoverable failures throw",
+            "a thunk's recoverable workflow failure becomes null, as with agent(); nonrecoverable failures and errors thrown by the thunk's own code reject parallel()",
         ],
     }),
     runtimeGlobal("pipeline", {
@@ -99,7 +135,7 @@ const capabilities = [
             "items run concurrently while stages per item run sequentially",
             "each stage receives previousValue, originalItem, and zero-based index",
             "a null stage result is passed to the next stage; authors must guard missing coverage explicitly",
-            "recoverable stage failures become null; nonrecoverable failures throw",
+            "a stage's recoverable workflow failure becomes null, as with agent(); nonrecoverable failures and errors thrown by the stage's own code reject pipeline()",
         ],
     }),
     runtimeGlobal("checkpoint", {
@@ -242,7 +278,7 @@ const capabilities = [
 /** Authoritative versioned inventory used by runtime assembly and every static projection. */
 export const WORKFLOW_CAPABILITY_DEFINITION = {
     versions: {
-        format: { kind: "present-at", version: "2.0.0" },
+        format: { kind: "present-at", version: "2.1.0" },
         content: { kind: "present-at", version: packageJson.version },
     },
     optionShapes: [AGENT_OPTIONS],
@@ -346,7 +382,7 @@ export function defineWorkflowCapabilityContract(definition) {
                 signature: capability.signature,
                 options: capability.optionShape ? (optionShapes.get(capability.optionShape) ?? null) : null,
                 constraints: capability.constraints,
-                reference: `${DETAILS_PATH}#${capability.detailsAnchor}`,
+                reference: `${CAPABILITY_DETAIL_PATH}#${capability.detailsAnchor}`,
                 dynamicReference: capability.dynamicReference
                     ? (dynamicReferences.get(capability.dynamicReference) ?? null)
                     : null,
@@ -408,14 +444,6 @@ function validateDefinition(definition) {
         }
     }
     return diagnostics;
-}
-function deepFreeze(value) {
-    if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-        for (const nested of Object.values(value))
-            deepFreeze(nested);
-        Object.freeze(value);
-    }
-    return value;
 }
 /** Installed validated workflow capability contract. */
 export const WORKFLOW_CAPABILITY_CONTRACT = defineWorkflowCapabilityContract(WORKFLOW_CAPABILITY_DEFINITION);

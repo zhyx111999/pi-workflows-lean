@@ -1,14 +1,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CapabilityClassification, CapabilitySupport } from "./enums.js";
-import { WORKFLOW_CAPABILITY_CONTRACT, } from "./workflow-capability-contract.js";
+import { CAPABILITY_DETAIL_PATH, WORKFLOW_CAPABILITY_CONTRACT, } from "./workflow-capability-contract.js";
 const GENERATED_MARKER = "<!-- GENERATED from WORKFLOW_CAPABILITY_CONTRACT; do not edit by hand. -->";
 const TABLE_START = "<!-- BEGIN GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";
 const TABLE_END = "<!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";
 /** Package-relative compact capability index generated from the contract. */
 export const CAPABILITY_INDEX_PATH = "skills/workflow-authoring/references/capabilities.md";
-/** Package-relative exhaustive generated capability reference. */
-export const CAPABILITY_DETAIL_PATH = "skills/workflow-authoring/references/capability-details.md";
 /** Documents that embed the byte-identical supported-capability table. */
 export const CAPABILITY_TABLE_PUBLICATION_PATHS = [
     CAPABILITY_INDEX_PATH,
@@ -28,7 +26,7 @@ function optionText(option) {
     const defaultValue = option.default === null ? "" : `; default: ${option.default}`;
     const constraints = option.constraints.length === 0 ? "" : `; ${option.constraints.join("; ")}`;
     const dynamic = option.dynamicReference === null ? "" : `; dynamic reference: ${option.dynamicReference}`;
-    return `- \`${option.name}\`: ${option.type} (${required}${defaultValue}${constraints}${dynamic})`;
+    return `\`${option.name}\`: ${option.type} (${required}${defaultValue}${constraints}${dynamic})`;
 }
 function compactOptions(fact) {
     if (!fact.options)
@@ -108,7 +106,7 @@ function detail(fact) {
         `- Signature: ${display(fact.signature)}`,
     ];
     if (fact.options) {
-        lines.push(`- Option shape: \`${fact.options.id}\``, ...fact.options.options.map(optionText));
+        lines.push(...fact.options.positional.map((argument) => `- Argument ${optionText(argument)}`), `- Option shape: \`${fact.options.id}\``, ...fact.options.options.map((option) => `- ${optionText(option)}`));
     }
     if (fact.constraints.length > 0)
         lines.push(...fact.constraints.map((constraint) => `- Constraint: ${constraint}`));

@@ -1,6 +1,8 @@
 /** Holds one run's mutable state and the shared services that every workflow global uses. */
 import { WorkflowError, WorkflowErrorCode, workflowAbortedError, } from "../errors.js";
+import { CallSequence } from "./call-position.js";
 import { createLimiter } from "./run-limits.js";
+import { createScriptCalls } from "./script-calls.js";
 export function createRuntimeState(meta, options, concurrency) {
     // The first declared phase is the default, so agents started before any
     // phase() call group under it instead of an orphan "(no phase)" bucket.
@@ -9,8 +11,8 @@ export function createRuntimeState(meta, options, concurrency) {
         logs: [],
         phases: firstPhase ? [firstPhase] : [],
         currentPhase: firstPhase,
-        callSeq: 0,
-        firstMiss: Number.POSITIVE_INFINITY,
+        scriptCalls: CallSequence.forScript(),
+        journalMissed: false,
         limiter: createLimiter(concurrency),
         // Not seeded on resume: the script replays from call 0 and every replayed
         // call counts again, so maxAgents stays a cumulative cap on its own.
@@ -25,7 +27,7 @@ export function createRuntimeState(meta, options, concurrency) {
         activeCheckpointResponse: options.resumeCheckpoint ?? null,
         seenCheckpointIds: new Set(),
         runFatalController: new AbortController(),
-        inFlight: new Set(),
+        calls: createScriptCalls(),
         activeThreads: new Set(),
         resumeBarrierReached: false,
     };

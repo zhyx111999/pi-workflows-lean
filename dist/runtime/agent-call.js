@@ -2,35 +2,39 @@
 import { agentDefinitionKey, resolveAgentType } from "../agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { resolveModelForPhase } from "../model-routing.js";
-import { validateThinkingLevel } from "../model-spec.js";
 import { isEmptyTextAgentResult, runLiveAgent } from "./agent-execution.js";
-import { normalizeThread, resolveAgentCwd, validateAgentOptions } from "./agent-options.js";
+import { parseAgentCall, resolveIsolation } from "./agent-options.js";
 import { agentCallId, hashAgentCall } from "./call-identity.js";
-import { currentFanoutBatch } from "./fanout.js";
+import { currentCallSequence, currentFanoutBatch } from "./fanout.js";
 /** Build the script's agent() global for this run. */
 export function createAgent(ctx) {
     const { state } = ctx;
     /** Validate synchronously (a failure throws), enforce thread exclusivity, then start the call. */
-    const startAgentCall = (prompt, agentOptions) => {
-        validateAgentOptions(agentOptions);
-        const thread = normalizeThread(agentOptions.thread);
+    const startAgentCall = (rawPrompt, rawOptions) => {
+        const { prompt, options: agentOptions } = parseAgentCall(rawPrompt, rawOptions);
+        const { thread } = agentOptions;
         if (thread === undefined)
             return runAgentCall(prompt, agentOptions);
         if (state.activeThreads.has(thread)) {
             throw new WorkflowError(`agent thread "${thread}" is already running; same-thread calls must be sequential`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
         }
         state.activeThreads.add(thread);
-        return runAgentCall(prompt, thread === agentOptions.thread ? agentOptions : { ...agentOptions, thread }).finally(() => state.activeThreads.delete(thread));
+        return runAgentCall(prompt, agentOptions).finally(() => state.activeThreads.delete(thread));
     };
     const runAgentCall = async (prompt, agentOptions) => {
+        // An un-awaited chain can reach agent() after the terminal drain. Checked
+        // here, with no await before the replay below, so a late call neither
+        // reports to the host nor touches the disposed store, replayed or live.
+        if (state.agentCallbacksClosed) {
+            throw new WorkflowError("agent() was called after the run ended; await every agent() call before the script returns", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
+        }
         ctx.throwIfAborted();
-        validateThinkingLevel(agentOptions.thinking);
         // Invalid local configuration must fail before a slot is reserved, so it
         // cannot change the run's capacity or scheduling state.
         const definition = resolveAgentType(agentOptions.agentType, ctx.agentRegistry);
-        // isolation: false opts out; otherwise the call's isolation beats the definition's.
-        const isolation = agentOptions.isolation === false ? undefined : (agentOptions.isolation ?? definition?.isolation);
-        const cwd = resolveAgentCwd(agentOptions.cwd);
+        const isolation = resolveIsolation(agentOptions.isolation, definition?.isolation);
+        // Already resolved to its real path by parseAgentCall.
+        const cwd = agentOptions.cwd;
         if (cwd && isolation === "worktree") {
             throw new WorkflowError("agent cwd cannot be combined with worktree isolation", WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
         }
@@ -51,9 +55,9 @@ export function createAgent(ctx) {
         // only a tier set, modelSpec stays undefined so the agent layer resolves the tier.
         const explicitModel = agentOptions.model ?? definition?.model;
         const modelSpec = explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(phase, ctx.routingConfig));
-        // The resume key is assigned at lexical call time, before the limiter, so a
-        // fixed script's fan-out numbers its calls the same way on every run.
-        const index = state.callSeq++;
+        // The resume key comes from the call's position in the script, taken before
+        // the first await, so it is the same on every run however calls are timed.
+        const index = currentCallSequence(ctx).takeIndex();
         const hash = hashAgentCall({
             prompt,
             model: modelSpec,
@@ -93,30 +97,18 @@ export function createAgent(ctx) {
         const cached = agentOptions.thread ? undefined : ctx.options.resumeJournal?.get(index);
         const hashMatches = cached != null && cached.hash === hash;
         const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-        const withinReplay = ctx.options.independentCalls || index < state.firstMiss;
+        const withinReplay = ctx.options.independentCalls || !state.journalMissed;
         if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && withinReplay) {
             return replayFromJournal(ctx, call, cached);
         }
         // A genuine miss marks where the unchanged prefix ends.
         if (!hashMatches || cachedEmptyOutput) {
-            state.firstMiss = Math.min(state.firstMiss, index);
+            state.journalMissed = true;
         }
         return runLiveAgent(ctx, call);
     };
-    return (prompt, agentOptions = {}) => {
-        let call;
-        try {
-            call = startAgentCall(prompt, agentOptions);
-        }
-        catch (error) {
-            call = Promise.reject(error);
-        }
-        // Tracked whether or not the script awaits it, so the run can drain it before teardown.
-        state.inFlight.add(call);
-        // This handler also keeps an un-awaited call's rejection from crashing the process.
-        call.catch(() => { }).finally(() => state.inFlight.delete(call));
-        return call;
-    };
+    // runWorkflow exposes this through trackScriptCalls, which also turns a synchronous validation throw into a rejection.
+    return (prompt, agentOptions = {}) => startAgentCall(prompt, agentOptions);
 }
 /** Report a journaled call as if it ran, keeping its recorded model and store writes. */
 function replayFromJournal(ctx, call, entry) {
