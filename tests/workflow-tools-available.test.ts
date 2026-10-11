@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -14,6 +14,7 @@ import {
   discardWorkflowRuntime,
   handoffWorkflowRuntime,
   takeWorkflowRuntime,
+  WORKFLOW_EXTENSION_VERSION,
 } from "../src/extension-reload.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
 import { useHostSessionClass } from "../src/task-panel/host-session-capture.js";
@@ -771,6 +772,73 @@ describe("workflow extension - tool availability", () => {
       });
     } finally {
       rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it("hands off on resume and fork into another spelling of the same project (Windows)", {
+    skip: process.platform !== "win32" && "only Windows has case-insensitive spellings of one directory",
+  }, async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-alias-"));
+    const sessionDir = mkdtempSync(join(tmpdir(), "pi-dw-session-alias-"));
+    const parent = mkdtempSync(join(tmpdir(), "pi-dw-alias-project-"));
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        const { default: installExtension } = await import("../src/pi-extension.js");
+        const { WorkflowManager } = await import("../src/workflow-manager.js");
+        const project = join(realpathSync.native(parent), "MixedCase");
+        mkdirSync(project);
+        const spellings = {
+          lower: project.toLowerCase(),
+          upper: project.toUpperCase(),
+          lowerDrive: project[0].toLowerCase() + project.slice(1),
+          slashes: project.replaceAll("\\", "/"),
+          extendedLength: `\\\\?\\${project}`,
+        };
+
+        for (const reason of ["resume", "fork"] as const) {
+          for (const [name, spelling] of Object.entries(spellings)) {
+            discardWorkflowRuntime();
+            const manager = new WorkflowManager({ cwd: project });
+            const paused: string[] = [];
+            manager.listLiveRuns = (() => [{ runId: name, status: "running" }]) as typeof manager.listLiveRuns;
+            manager.pause = ((id: string) => {
+              paused.push(id);
+              return true;
+            }) as typeof manager.pause;
+            handoffWorkflowRuntime({ cwd: project, extensionVersion: WORKFLOW_EXTENSION_VERSION, manager });
+
+            const handlers: Record<string, Array<(...args: any[]) => any>> = {};
+            installExtension({
+              registerTool: () => {},
+              registerCommand: () => {},
+              getCommands: () => [],
+              on: (event: string, handler: (...args: any[]) => any) => {
+                if (!handlers[event]) handlers[event] = [];
+                handlers[event].push(handler);
+              },
+              getActiveTools: () => [],
+              setActiveTools: () => {},
+              sendMessage: () => {},
+            } as unknown as ExtensionAPI);
+
+            const target = join(sessionDir, `${reason}-${name}.jsonl`);
+            writeFileSync(
+              target,
+              `${JSON.stringify({ type: "session", id: name, cwd: spelling, timestamp: new Date().toISOString() })}\n`,
+            );
+            handlers.session_shutdown?.[0]?.({ reason, targetSessionFile: target });
+
+            const label = `${reason} into ${name} spelling`;
+            assert.deepEqual(paused, [], `${label} must keep the live run running`);
+            assert.equal(takeWorkflowRuntime()?.manager, manager, `${label} must hand off the live manager`);
+          }
+        }
+        discardWorkflowRuntime();
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(sessionDir, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 
