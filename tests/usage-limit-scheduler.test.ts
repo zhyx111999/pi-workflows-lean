@@ -358,10 +358,9 @@ test("jitter spreads identical arms deterministically with an injected random (a
   scheduler.dispose();
 });
 
-test("refused-resume re-arms are capped instead of polling forever (audit2 #12)", async () => {
+test("refused-resume re-arms are capped instead of polling forever", async () => {
   const manager = new FakeManager();
   manager.resume = async () => false; // structurally refused (e.g. lease held elsewhere)
-  manager.persistence.seed(makeRun({ status: "running", resetHint: "resets in 10m" }));
   const clock = createFakeClock();
   const diagnostics: string[] = [];
   const scheduler = new UsageLimitScheduler(manager, {
@@ -372,6 +371,8 @@ test("refused-resume re-arms are capped instead of polling forever (audit2 #12)"
     ...TUNABLES,
     maxRefusals: 2,
   });
+  // Seeded after construction, so cold-start re-arm does not pick it up first.
+  manager.persistence.seed(makeRun({ status: "paused", pauseReason: "usage_limit", resetHint: "resets in 10m" }));
 
   manager.emit("paused", { runId: "run-1", reason: "usage_limit", resetHint: "resets in 10m" });
   // Fire the armed timer: refused → re-arm at minDelayMs (refusal 1).
@@ -748,7 +749,6 @@ test("manual pause (no usage_limit reason) is ignored", async () => {
 
 test("resume() returning false does NOT consume an attempt and re-arms at minDelayMs", async () => {
   const manager = new FakeManager();
-  manager.persistence.seed(makeRun({ resetHint: "resets in 10m", status: "paused" }));
   const clock = createFakeClock();
   let resumeCalls = 0;
   manager.resumeImpl = async () => {
@@ -762,6 +762,8 @@ test("resume() returning false does NOT consume an attempt and re-arms at minDel
     clearTimer: clock.clearTimer,
     ...TUNABLES,
   });
+  // Seeded after construction, so cold-start re-arm does not pick it up first.
+  manager.persistence.seed(makeRun({ resetHint: "resets in 10m", status: "paused", pauseReason: "usage_limit" }));
 
   manager.emit("paused", { runId: "run-1", reason: "usage_limit", resetHint: "resets in 10m" });
   assert.equal(scheduler.getAttemptCount("run-1"), 1);
@@ -1102,4 +1104,41 @@ test("a live pause sanitizes a corrupt disk counter (#207)", () => {
   assert.equal(manager.persistence.get("run-1")?.autoResumeAttempts, 1);
   assert.ok(clock.pendingDelays().every((d) => Number.isFinite(d)));
   scheduler.dispose();
+});
+
+test("real managers: a timer armed in one window never resumes a run another window stopped", async () => {
+  await withRealManagerCwd(async (cwd) => {
+    let calls = 0;
+    const agent = {
+      async run() {
+        calls++;
+        throw new WorkflowError("quota", WorkflowErrorCode.PROVIDER_USAGE_LIMIT, { recoverable: false });
+      },
+    };
+    const managerA = new WorkflowManager({ cwd, agent });
+    managerA.on("error", () => {});
+    const clock = createFakeClock();
+    const schedulerA = new UsageLimitScheduler(managerA, {
+      now: clock.now,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      ...TUNABLES,
+    });
+    const { runId, promise } = managerA.startInBackground(QUOTA_SCRIPT);
+    await promise.catch(() => {});
+    assert.equal(clock.pendingCount(), 1, "window A armed its auto-resume");
+
+    const managerB = new WorkflowManager({ cwd, agent });
+    managerB.on("error", () => {});
+    assert.equal(managerB.stop(runId), true, "window B stops the paused run");
+    assert.equal(managerB.findRun(runId)?.status, "aborted");
+
+    const callsBefore = calls;
+    clock.fireAll();
+    await flush();
+    assert.equal(managerA.findRun(runId)?.status, "aborted", "the stop stands");
+    assert.equal(calls, callsBefore, "no agent ran again");
+    assert.equal(clock.pendingCount(), 0, "window A stops polling a run it may no longer resume");
+    schedulerA.dispose();
+  });
 });

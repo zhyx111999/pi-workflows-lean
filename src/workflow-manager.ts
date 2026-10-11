@@ -124,6 +124,13 @@ export interface WorkflowResumeOptions {
    * run keeps its session (auto-resume), unless it has none yet.
    */
   claimDelivery?: boolean;
+  /**
+   * Resume only while the record still satisfies this. It is checked on the
+   * record that the lease then confirms unchanged, so another process cannot
+   * stop or resume the run in between. The usage-limit scheduler uses it to
+   * resume a run only while it is still paused on a provider limit.
+   */
+  onlyIf?: (record: PersistedRunState) => boolean;
 }
 
 export interface WorkflowManagerOptions {
@@ -426,6 +433,7 @@ export class WorkflowManager extends EventEmitter {
       return false;
     }
     if (checkpointAlreadyConsumed(persisted, opts?.checkpointId)) return true;
+    if (opts?.onlyIf && !opts.onlyIf(persisted)) return false;
 
     // A finished run has nothing left to continue; it reruns only with an edit.
     const edited = opts?.script !== undefined || opts?.tasks !== undefined;

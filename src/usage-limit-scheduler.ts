@@ -21,15 +21,20 @@
  * rely on manager.stop(), which only operates on in-memory runs.
  */
 
-import type { PersistedRunState, RunPersistence, RunStatus } from "./run-persistence.js";
+import type { PersistedRunState, RunPersistence } from "./run-persistence.js";
 import { sanitizeAutoResumeAttempts } from "./run-persistence.js";
+
+/** A run this scheduler may resume: still paused on a provider usage limit. */
+export function isUsageLimitPaused(run: Pick<PersistedRunState, "status" | "pauseReason">): boolean {
+  return run.status === "paused" && run.pauseReason === "usage_limit";
+}
 
 /** Narrow surface this scheduler depends on — satisfied by WorkflowManager. */
 export interface SchedulableWorkflowManager {
   on(event: string, listener: (...args: any[]) => void): unknown;
   off(event: string, listener: (...args: any[]) => void): unknown;
   listAllRuns(): PersistedRunState[];
-  resume(runId: string): Promise<boolean>;
+  resume(runId: string, opts?: { onlyIf?: (record: PersistedRunState) => boolean }): Promise<boolean>;
   getPersistence(): RunPersistence;
   /**
    * Record the auto-resume backoff counter THROUGH the manager so the next
@@ -369,7 +374,7 @@ export class UsageLimitScheduler {
   private coldStartRearm(): void {
     const runs = this.manager.listAllRuns();
     for (const run of runs) {
-      if (run.status !== "paused" || run.pauseReason !== "usage_limit") continue;
+      if (!isUsageLimitPaused(run)) continue;
       if (this.state.has(run.runId)) continue;
 
       // Validate the persisted counter: a corrupt/foreign value (NaN, string,
@@ -460,7 +465,9 @@ export class UsageLimitScheduler {
     // reset the backoff counter mid-sequence.
     this.autoResumingRunIds.add(runId);
     try {
-      resumed = await this.manager.resume(runId);
+      // Only a run still paused on a provider limit: another window may have
+      // stopped or resumed it since this timer was armed.
+      resumed = await this.manager.resume(runId, { onlyIf: isUsageLimitPaused });
     } catch (err) {
       this.diagnostic(`[usage-limit-scheduler] ${runId}: resume() threw`, err);
       resumed = false;
@@ -476,13 +483,13 @@ export class UsageLimitScheduler {
       return;
     }
 
-    // resume() returned false without throwing: it refused for a structural
-    // reason (already running/aborted, no persisted script, or the lease is
-    // held elsewhere) rather than a real failed attempt. Per the fix for bug
-    // (a), that must NOT consume an attempt. Distinguish "gone for good" from
-    // "try again shortly":
-    const status = this.safeStatus(runId);
-    if (status === undefined || status === "completed" || status === "aborted") {
+    // resume() refused without throwing. A refusal is not a failed attempt and
+    // consumes none. Only a run still paused on a usage limit (its lease is
+    // busy elsewhere) is polled again; anything else (deleted, finished,
+    // stopped, resumed or paused for another reason by another window) is no
+    // longer this scheduler's to resume.
+    const record = this.safeLoad(runId);
+    if (!record || !isUsageLimitPaused(record)) {
       this.cleanup(runId);
       return;
     }
@@ -512,15 +519,6 @@ export class UsageLimitScheduler {
       return persistence.loadPreview(runId) ?? undefined;
     } catch (err) {
       this.diagnostic(`[usage-limit-scheduler] ${runId}: persistence load failed`, err);
-      return undefined;
-    }
-  }
-
-  private safeStatus(runId: string): RunStatus | undefined {
-    try {
-      return this.manager.listAllRuns().find((r) => r.runId === runId)?.status;
-    } catch (err) {
-      this.diagnostic(`[usage-limit-scheduler] ${runId}: listAllRuns() failed`, err);
       return undefined;
     }
   }
