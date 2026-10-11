@@ -3,7 +3,8 @@
  * command that runs its script, passing parsed arguments through as `args`.
  */
 import { claimCommand, commandOwner, isCommandTaken } from "./command-registry.js";
-import { backgroundStartNotice } from "./display.js";
+import { startCommandRun } from "./command-run.js";
+import { errorMessage } from "./errors.js";
 import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 function savedCommandOwnedByExtension(pi, name) {
     const owner = commandOwner(pi, name);
@@ -59,20 +60,20 @@ export function registerSavedWorkflow(pi, wf, getManager, load) {
                     ctx.ui.notify(`/${wf.name} is not available in this project — reload the session to drop the stale command.`, "warning");
                     return;
                 }
-                try {
-                    const { runId } = getManager().startInBackground(live.script, parseCommandArgs(args, live.parameters));
-                    ctx.ui.notify(backgroundStartNotice(live.name, runId, ctx.mode, "result"), "info");
-                }
-                catch (error) {
-                    ctx.ui.notify(`/${live.name} failed: ${error instanceof Error ? error.message : error}`, "error");
-                }
+                startCommandRun(getManager(), ctx, {
+                    name: live.name,
+                    script: live.script,
+                    args: parseCommandArgs(args, live.parameters),
+                    exec: { toolset: live.toolset },
+                    deliverable: "result",
+                });
             },
         });
         claimCommand(pi, wf.name, "saved");
         return { ok: true };
     }
     catch (error) {
-        return { ok: false, message: error instanceof Error ? error.message : String(error) };
+        return { ok: false, message: errorMessage(error) };
     }
 }
 export function registerAllSavedWorkflows(pi, getStorage, getManager) {

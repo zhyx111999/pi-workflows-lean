@@ -8,6 +8,7 @@
  */
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { errorMessage } from "./errors.js";
 const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
 /** Read cap for fetched pages: htmlToText runs ~10 regex passes
  * over whatever we buffer — an unbounded multi-MB body stalls the host event
@@ -112,7 +113,7 @@ export function createWebSearchTool() {
             }
             catch (error) {
                 return {
-                    content: [{ type: "text", text: `web_search failed: ${error instanceof Error ? error.message : error}` }],
+                    content: [{ type: "text", text: `web_search failed: ${errorMessage(error)}` }],
                     details: { results: [] },
                 };
             }
@@ -143,7 +144,7 @@ export function createWebFetchTool(maxChars = 6000) {
                     content: [
                         {
                             type: "text",
-                            text: `web_fetch failed for ${params.url}: ${error instanceof Error ? error.message : error}`,
+                            text: `web_fetch failed for ${params.url}: ${errorMessage(error)}`,
                         },
                     ],
                     details: { status: 0, url: params.url },

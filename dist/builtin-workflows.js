@@ -69,7 +69,7 @@ export function findBuiltinWorkflow(name) {
 export function resolveWorkflowInvocation(name, args, ctx) {
     const saved = ctx.storage.load(name);
     if (saved)
-        return { script: saved.script };
+        return { script: saved.script, toolset: saved.toolset };
     const builtin = findBuiltinWorkflow(name);
     if (builtin)
         return builtin.resolve(ctx.cwd, args);

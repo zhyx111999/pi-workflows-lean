@@ -3,8 +3,8 @@
  * sent with typed messages, the `/workflows run` directive, and the
  * `/workflows-progress` panel preference command.
  */
+import { errorMessage } from "./errors.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "./parent-prompt.js";
-import { loadWorkflowSettings, saveWorkflowSettings, } from "./workflow-settings.js";
 /**
  * The directive for the explicit `/workflows run <prompt>` command. The user
  * typed a command whose only purpose is to run a workflow, so the model is told
@@ -61,7 +61,7 @@ function isTypedPrompt(event) {
  * other source for these values, so a failed save changes nothing and is
  * reported that way.
  */
-export function registerWorkflowProgressCommands(pi, settingsStore = DEFAULT_SETTINGS_STORE) {
+export function registerWorkflowProgressCommands(pi, settingsStore) {
     pi.registerCommand?.("workflows-progress", {
         description: "Bottom progress panel: compact | detailed | status | max <N>",
         async handler(args, _ctx) {
@@ -98,10 +98,6 @@ export function registerWorkflowProgressCommands(pi, settingsStore = DEFAULT_SET
         },
     });
 }
-const DEFAULT_SETTINGS_STORE = {
-    load: loadWorkflowSettings,
-    save: saveWorkflowSettings,
-};
 /** Save panel preferences; returns why the save failed, or undefined when it succeeded. */
 function saveProgressSettings(settingsStore, settings) {
     try {
@@ -109,7 +105,7 @@ function saveProgressSettings(settingsStore, settings) {
         return undefined;
     }
     catch (error) {
-        return error instanceof Error ? error.message : String(error);
+        return errorMessage(error);
     }
 }
 function loadProgressMode(settingsStore) {

@@ -60,9 +60,25 @@ function currentCount(state, model) {
  * Apply a browse-mode action. Returns false when nothing should be redrawn:
  * the key did nothing, or the overlay closed.
  */
+/** Actions that apply to the selected row of the runs list. */
+const TARGETED_ACTIONS = new Set([
+    "rename",
+    "drill",
+    "deleteSaved",
+    "pause",
+    "stop",
+    "restart",
+    "save",
+]);
 export function runBrowseAction(session, action, close) {
     const { state, model } = session;
     const snapshot = () => currentSnapshot(session);
+    // An action on the selected row must not land on another one: when the row
+    // the user last saw is gone, refuse and let the redraw show the new list.
+    if (TARGETED_ACTIONS.has(action.type) && state.selectionVanished(snapshot())) {
+        session.ui.notify("The selected item is no longer listed; check the list and try again.", "warning");
+        return true;
+    }
     switch (action.type) {
         case "move":
             if (state.kind === "runs")

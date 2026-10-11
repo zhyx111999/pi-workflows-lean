@@ -52,11 +52,11 @@ export function loadWorkflowSettings(settingsPathOrOptions) {
         ...(projectPath ? readSettings(projectPath) : {}),
     };
 }
-/** Merge known settings into the user-level settings file. */
-export function saveWorkflowSettings(settings, settingsPathOrOptions) {
-    const options = normalizeOptions(settingsPathOrOptions);
-    const projectPath = options.projectSettingsPath ?? (options.cwd ? getWorkflowProjectSettingsPath(options.cwd) : undefined);
-    const path = options.scope === "project" && projectPath ? projectPath : (options.settingsPath ?? getWorkflowSettingsPath());
+/**
+ * Merge the known keys of `settings` into the one settings file at `path`,
+ * creating it when missing. Other keys in the file are left as they are.
+ */
+export function writeWorkflowSettingsFile(path, settings) {
     const dir = dirname(path);
     if (!existsSync(dir))
         mkdirSync(dir, { recursive: true });
@@ -72,14 +72,14 @@ export function saveWorkflowSettings(settings, settingsPathOrOptions) {
  * so later global changes still reach this project. The repo-local file is
  * never written: it belongs to the repository and may be shared.
  */
-export function saveWorkflowSettingsForCwd(settings, cwd) {
+export function saveWorkflowSettings(settings, cwd) {
     const next = normalizeSettings(settings);
-    saveWorkflowSettings(next);
+    writeWorkflowSettingsFile(getWorkflowSettingsPath(), next);
     const projectPath = getWorkflowProjectSettingsPath(cwd);
     const projectLayers = { ...readSettings(getProjectLocalWorkflowSettingsPath(cwd)), ...readSettings(projectPath) };
     const shadowed = Object.fromEntries(Object.entries(next).filter(([key]) => key in projectLayers));
     if (Object.keys(shadowed).length)
-        saveWorkflowSettings(shadowed, projectPath);
+        writeWorkflowSettingsFile(projectPath, shadowed);
 }
 function normalizeOptions(settingsPathOrOptions) {
     return typeof settingsPathOrOptions === "string"
@@ -99,7 +99,7 @@ function readSettings(path) {
 /**
  * Copy only known, valid keys. Files written by older versions may still hold
  * keys for removed features; they are ignored here and left untouched on disk
- * by saveWorkflowSettings.
+ * by writeWorkflowSettingsFile.
  */
 function normalizeSettings(value) {
     if (!value || typeof value !== "object" || Array.isArray(value))

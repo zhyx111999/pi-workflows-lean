@@ -12,19 +12,27 @@ export function scrollWindow(total, active, cap) {
 }
 /**
  * Rows for a list pane at most `cap` rows tall: a window of items around
- * `active`, then `moreRow` when items continue below. The marker takes a row
- * of its own so it never hides an item; a one-row pane shows the active item
- * instead of the marker.
+ * `active`, with a marker row where items continue above or below it. Each
+ * marker takes a row of its own, so it never hides an item and the active item
+ * always shows; a pane too small for every marker keeps the one below, and a
+ * one-row pane shows only the active item.
  */
-export function listPaneRows(total, active, cap, itemRow, moreRow) {
-    const fit = scrollWindow(total, active, cap);
-    const marked = fit.more && cap > 1;
-    // A window one row shorter still stops short of the end, so the marker stays truthful.
-    const win = marked ? scrollWindow(total, active, cap - 1) : fit;
+export function listPaneRows(total, active, cap, itemRow, markerRow) {
+    // Markers shrink the window, which can hide more items; settle on a count that holds.
+    let markers = 0;
+    let win = scrollWindow(total, active, cap);
+    for (;;) {
+        const hidden = Number(win.start > 0) + Number(win.start + win.count < total);
+        const fitting = Math.min(hidden, Math.max(0, cap - 1));
+        if (fitting <= markers)
+            break;
+        markers = fitting;
+        win = scrollWindow(total, active, cap - markers);
+    }
+    const below = markers > 0 && win.start + win.count < total;
+    const above = win.start > 0 && markers > Number(below);
     const rows = Array.from({ length: win.count }, (_, k) => itemRow(win.start + k));
-    if (marked)
-        rows.push(moreRow);
-    return rows;
+    return [...(above ? [markerRow("above")] : []), ...rows, ...(below ? [markerRow("below")] : [])];
 }
 /**
  * The slice of a detail body at the state's scroll offset, plus a position

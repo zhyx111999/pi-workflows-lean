@@ -5,7 +5,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { aggregateAgentUsage } from "./display.js";
-import { readJsonWithBackupRecovery, unlinkIfExistsSafe, writeJsonAtomicWithBackup, } from "./fs-persistence.js";
+import { errorMessage, RunRecordUnreadableError } from "./errors.js";
+import { unlinkIfExistsSafe, writeJsonAtomicWithBackup } from "./fs-persistence.js";
 import { INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 const summaries = new WeakMap();
 export function runSummary(state) {
@@ -84,12 +85,39 @@ function validateHead(record) {
         record.keys.some((key) => typeof key !== "string"))
         throw new Error("Invalid run head");
 }
+/**
+ * The committed head, from the head file or, when that is torn or damaged, its
+ * backup. Null only when neither file exists. A head of another format came
+ * from a different writer version and is never bypassed for an older backup;
+ * when every file present is damaged the record fails closed instead of
+ * reading as missing, so no write can recreate the run over it.
+ */
 function readHead(fs, path) {
-    const record = readJsonWithBackupRecovery(fs, path);
-    if (record === null)
-        return null;
-    validateHead(record);
-    return record;
+    let damage;
+    for (const candidate of [path, `${path}.bak`]) {
+        let record;
+        try {
+            record = JSON.parse(fs.readFileSync(candidate, "utf-8"));
+        }
+        catch (error) {
+            if (error.code !== "ENOENT")
+                damage ??= error.message;
+            continue;
+        }
+        const format = record?.format;
+        if (typeof format === "string" && format !== FORMAT)
+            throw new Error("Unsupported run record format");
+        try {
+            validateHead(record);
+            return record;
+        }
+        catch (error) {
+            damage ??= error.message;
+        }
+    }
+    if (damage !== undefined)
+        throw new RunRecordUnreadableError(path, damage);
+    return null;
 }
 function digest(line) {
     return createHash("sha256").update(line).digest("hex");
@@ -321,17 +349,44 @@ export function createRunRecordStore(fs) {
             }
         }
     }
+    /**
+     * The run `head` commits to. A committed-but-damaged log fails closed,
+     * rather than silently replaying an older paid-call prefix; only a corrupt
+     * or missing head uses its backup.
+     */
+    function replayCommitted(path, head) {
+        try {
+            return replay(path, head);
+        }
+        catch (error) {
+            throw error instanceof RunRecordUnreadableError ? error : new RunRecordUnreadableError(path, errorMessage(error));
+        }
+    }
     function read(path) {
+        const head = readHead(fs, path);
+        return head ? structuredClone(replayCommitted(path, head)) : null;
+    }
+    /**
+     * The light view of a run, or null when it has none. A head whose log is
+     * missing or shorter than its commit (a retired generation's, or a torn
+     * file) is unreadable here already, so a view never lists a record load()
+     * cannot read; damage inside a log of the right size surfaces when a lazy
+     * field is read.
+     */
+    function peek(path) {
         const head = readHead(fs, path);
         if (!head)
             return null;
-        // A committed-but-damaged log fails closed, rather than silently replaying
-        // an older paid-call prefix. Only a corrupt/missing head uses its backup.
-        return structuredClone(replay(path, head));
-    }
-    function peek(path) {
-        const head = readHead(fs, path);
-        return head ? preview(path, head) : null;
+        let size;
+        try {
+            ({ size } = logFile(path, head));
+        }
+        catch (error) {
+            throw new RunRecordUnreadableError(path, `committed run log is missing (${errorMessage(error)})`);
+        }
+        if (size < head.bytes)
+            throw new RunRecordUnreadableError(path, "Truncated committed run log");
+        return preview(path, head);
     }
     /** A light view of a run from its head; fields outside the index load the log on first access. */
     function preview(path, head) {
@@ -344,7 +399,7 @@ export function createRunRecordStore(fs) {
                 Object.defineProperty(view, key, {
                     enumerable: true,
                     configurable: true,
-                    get: () => structuredClone(replay(path, head)[key]),
+                    get: () => structuredClone(replayCommitted(path, head)[key]),
                 });
         // Markers are needed to route pending delivery without loading results.
         if (head.pendingDelivery) {
@@ -353,7 +408,7 @@ export function createRunRecordStore(fs) {
                 Object.defineProperty(marker, "text", {
                     enumerable: true,
                     get: () => {
-                        const full = replay(path, head).pendingDelivery;
+                        const full = replayCommitted(path, head).pendingDelivery;
                         return full?.kind === "text" ? full.text : undefined;
                     },
                 });
@@ -490,9 +545,14 @@ export function createRunRecordStore(fs) {
         if (status !== "running" && !(status === "paused" && summary.active > 0))
             return false;
         const endedAt = new Date().toISOString();
-        append(path, head, { set: { status: "paused", updatedAt: endedAt }, remove: [], arrays: {}, settleAgentsAt: endedAt }, {
-            keys: [...new Set([...head.keys, "status", "updatedAt", "agents"])],
-            index: { ...head.index, status: "paused", updatedAt: endedAt },
+        append(path, head, {
+            set: { status: "paused", pauseReason: "interrupted", updatedAt: endedAt },
+            remove: [],
+            arrays: {},
+            settleAgentsAt: endedAt,
+        }, {
+            keys: [...new Set([...head.keys, "status", "pauseReason", "updatedAt", "agents"])],
+            index: { ...head.index, status: "paused", pauseReason: "interrupted", updatedAt: endedAt },
             summary: {
                 ...summary,
                 active: 0,

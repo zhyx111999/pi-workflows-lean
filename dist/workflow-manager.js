@@ -231,6 +231,8 @@ export class WorkflowManager extends EventEmitter {
         }
         if (checkpointAlreadyConsumed(persisted, opts?.checkpointId))
             return true;
+        if (opts?.onlyIf && !opts.onlyIf(persisted))
+            return false;
         // A finished run has nothing left to continue; it reruns only with an edit.
         const edited = opts?.script !== undefined || opts?.tasks !== undefined;
         if (!persisted.script || (persisted.status === "completed" && !edited))
@@ -322,7 +324,7 @@ export class WorkflowManager extends EventEmitter {
         // No execution will settle the cached copy, so it may be evicted now.
         if (cached && this.live.isCurrent(cached)) {
             this.markStopped(cached);
-            this.live.recordTerminalRun(runId);
+            this.live.recordTerminalRun(cached);
         }
         this.emit("stopped", { runId });
         return true;
@@ -385,7 +387,8 @@ export class WorkflowManager extends EventEmitter {
             run = this.persistence.loadPreview(runId);
         }
         catch {
-            // A damaged record is unreadable, not deleted; list() skips it as well.
+            // A damaged record is unreadable, not deleted; list() skips it as well,
+            // and /workflows rm still removes it by id.
             return undefined;
         }
         if (!run)
@@ -430,8 +433,24 @@ export class WorkflowManager extends EventEmitter {
                 this.emit("deleted", { runId });
             return deleted;
         }
+        catch (error) {
+            // Removing the head commits a deletion. If only the cleanup after it
+            // failed, the run is gone all the same and watchers must hear it now.
+            if (this.recordIsGone(runId))
+                this.emit("deleted", { runId });
+            throw error;
+        }
         finally {
             this.persistence.releaseRunLease(heldLease);
+        }
+    }
+    /** Whether the run has no record at all; a damaged record still counts as present. */
+    recordIsGone(runId) {
+        try {
+            return this.persistence.loadPreview(runId) === null;
+        }
+        catch {
+            return false;
         }
     }
     /**

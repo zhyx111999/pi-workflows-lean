@@ -47,68 +47,58 @@ export function registerWorkflowModelsCommand(pi) {
             };
             let config = loadForScope(scope);
             let dirty = false;
-            const ensureFresh = (cfg) => {
-                config = cfg;
-                dirty = true;
-            };
-            // eslint-disable-next-line no-constant-condition
-            while (true) {
-                const tiers = sortedTierNames(config);
-                const menuOptions = [];
-                menuOptions.push(`Editing ${scope} tiers`);
-                menuOptions.push("─".repeat(30));
-                for (const name of tiers) {
-                    const model = config.tiers[name];
-                    menuOptions.push(`${name} tier → ${model}`);
-                }
-                menuOptions.push("─".repeat(30));
-                menuOptions.push(scope === "project" ? "Switch to global" : "Switch to project");
-                menuOptions.push("Reset to defaults");
-                menuOptions.push(dirty ? "Save and exit" : "Exit");
-                const choice = await ctx.ui.select(`Model tier configuration (${scope})`, menuOptions);
-                if (!choice)
-                    break;
-                if (choice === "Editing global tiers" || choice === "Editing project tiers") {
-                    continue;
-                }
-                // Handle "<tier> → [model]" selections
-                for (const name of tiers) {
-                    if (choice.startsWith(`${name} tier →`)) {
-                        const updatedTiers = await editSingleTier(ctx, config.tiers, name);
-                        if (updatedTiers !== null) {
-                            ensureFresh({ ...config, tiers: updatedTiers });
+            const menu = () => [
+                ...sortedTierNames(config).map((name) => ({
+                    label: `${name} tier → ${config.tiers[name]}`,
+                    choose: async () => {
+                        const updated = await editSingleTier(ctx, config.tiers, name);
+                        if (updated) {
+                            config = { ...config, tiers: updated };
+                            dirty = true;
                         }
-                        break;
-                    }
-                }
-                if (choice === "Switch to global" || choice === "Switch to project") {
-                    const nextScope = choice === "Switch to project" ? "project" : "global";
-                    if (nextScope === scope)
-                        continue;
-                    if (dirty) {
-                        const confirmed = await ctx.ui.confirm("Switch scope", "Unsaved changes will be discarded. Continue?");
-                        if (!confirmed)
-                            continue;
-                    }
-                    scope = nextScope;
-                    config = loadForScope(scope);
-                    dirty = false;
-                    continue;
-                }
-                if (choice === "Reset to defaults") {
-                    const confirmed = await ctx.ui.confirm("Reset model tiers", "This will reset tiers from your available model list. Continue?");
-                    if (confirmed) {
-                        ensureFresh(buildDefaultTierConfig(currentModel, listAvailableModels(ctx.modelRegistry)));
-                        ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
-                    }
-                }
-                if (choice === "Save and exit" || choice === "Exit") {
-                    if (choice === "Save and exit") {
-                        saveModelTierConfig(config, scope === "project" ? projectPath : globalPath);
-                        ctx.ui.notify(scope === "project" ? "Project model tiers saved." : "Model tiers saved.", "info");
-                    }
+                        return true;
+                    },
+                })),
+                {
+                    label: scope === "project" ? "Switch to global" : "Switch to project",
+                    choose: async () => {
+                        if (dirty && !(await ctx.ui.confirm("Switch scope", "Unsaved changes will be discarded. Continue?"))) {
+                            return true;
+                        }
+                        scope = scope === "project" ? "global" : "project";
+                        config = loadForScope(scope);
+                        dirty = false;
+                        return true;
+                    },
+                },
+                {
+                    label: "Reset to defaults",
+                    choose: async () => {
+                        if (await ctx.ui.confirm("Reset model tiers", "This will reset tiers from your available model list. Continue?")) {
+                            config = defaults();
+                            dirty = true;
+                            ctx.ui.notify("Tiers reset to defaults. Use 'Save and exit' to persist.", "info");
+                        }
+                        return true;
+                    },
+                },
+                {
+                    label: dirty ? "Save and exit" : "Exit",
+                    choose: async () => {
+                        if (dirty) {
+                            saveModelTierConfig(config, scope === "project" ? projectPath : globalPath);
+                            ctx.ui.notify(scope === "project" ? "Project model tiers saved." : "Model tiers saved.", "info");
+                        }
+                        return false;
+                    },
+                },
+            ];
+            for (;;) {
+                const entries = menu();
+                const choice = await ctx.ui.select(`Model tiers (editing ${scope})`, entries.map((entry) => entry.label));
+                const entry = entries.find((candidate) => candidate.label === choice);
+                if (!entry || !(await entry.choose()))
                     break;
-                }
             }
         },
     });
@@ -126,8 +116,12 @@ function fromThinkingChoice(choice) {
  */
 export async function editSingleTier(ctx, tiers, tierName) {
     const available = listAvailableModelSpecs(ctx.modelRegistry);
+    if (available.length === 0) {
+        ctx.ui.notify("No models are available to choose from. Check that a provider is signed in.", "warning");
+        return null;
+    }
     const current = tiers[tierName];
-    const currentParts = splitModelSpecThinking(current, available.length > 0 ? available : undefined);
+    const currentParts = splitModelSpecThinking(current, available);
     const title = current ? `Pick a model for "${tierName}" (current: ${current})` : `Pick a model for "${tierName}"`;
     const selectedModel = await pickModel(ctx, title, available, currentParts.modelSpec);
     if (!selectedModel)

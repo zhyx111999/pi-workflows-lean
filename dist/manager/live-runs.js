@@ -1,6 +1,7 @@
 // Keeps the manager's in-memory runs in step with their records, ignoring superseded executions.
 import { RunRecordDeletedError } from "../errors.js";
-import { PersistThrottle } from "./persist-throttle.js";
+import { reportDiagnostic } from "../host-diagnostics.js";
+import { BURST_PERSIST_MS, PersistThrottle, PROGRESS_PERSIST_MS } from "./persist-throttle.js";
 import { runRecord, settleAgentsForTerminalRun } from "./run-record.js";
 import { TerminalRunRetention } from "./terminal-retention.js";
 /**
@@ -52,9 +53,13 @@ export class LiveRuns {
         this.throttle.cancel(managed.runId);
         this.writeRunToDisk(managed, required);
     }
-    /** Write the run after the throttle window (progress only). */
+    /** Write the run after a short window, for writes that come in bursts. */
     schedulePersist(managed) {
-        this.throttle.schedule(managed.runId, () => this.writeRunToDisk(managed));
+        this.throttle.schedule(managed.runId, () => this.writeRunToDisk(managed), BURST_PERSIST_MS);
+    }
+    /** Write the run after the long progress window, for running agents' streaming usage and history. */
+    scheduleProgressPersist(managed) {
+        this.throttle.schedule(managed.runId, () => this.writeRunToDisk(managed), PROGRESS_PERSIST_MS);
     }
     /**
      * The single path to disk. The current-entry check repeats persistRun()'s
@@ -81,7 +86,7 @@ export class LiveRuns {
             if (required)
                 throw err;
             if (!deleted)
-                console.warn("[workflow-manager] Persist run failed:", err);
+                reportDiagnostic(`Could not save workflow run ${managed.runId}`, err);
         }
     }
     releaseLease(managed) {
@@ -91,8 +96,8 @@ export class LiveRuns {
         managed.lease = undefined;
     }
     /** A run whose execution settled to a terminal status may now be evicted from memory. */
-    recordTerminalRun(runId) {
-        this.retention.record(runId);
+    recordTerminalRun(managed) {
+        this.retention.record(managed.runId, managed);
     }
     /** Remove a run being deleted: its entry and any pending write go; its execution, if any, finishes the deletion. */
     remove(runId, managed) {

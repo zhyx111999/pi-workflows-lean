@@ -1,6 +1,5 @@
 /** Ends a run: drains every promise the script was handed, settles the run's verdict once, and closes the callbacks of abandoned agents. */
-import { WorkflowCheckpointSuspensionError, workflowAbortedError, wrapError } from "../errors.js";
-import { resolveDrainAbortGraceMs } from "./run-limits.js";
+import { errorMessage, isWorkflowError, WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, workflowAbortedError, wrapError, } from "../errors.js";
 import { unobservedFailures } from "./script-calls.js";
 /**
  * End the run after its script body has ended: return the run's result, or
@@ -87,12 +86,21 @@ function settleUnobservedFailures(ctx) {
     for (const { global, error } of unobservedFailures(ctx.state.calls)) {
         if (error instanceof WorkflowCheckpointSuspensionError)
             continue;
-        const workflowError = wrapError(error);
-        ctx.log(`${global}() failed and the script never awaited it: ${workflowError.message}`);
+        // A promise the script made itself failed in the script's own code: a bug, never a recoverable miss.
+        const workflowError = global ? wrapError(error) : scriptRejection(error);
+        ctx.log(global
+            ? `${global}() failed and the script never awaited it: ${workflowError.message}`
+            : `a promise the script created was rejected and never handled: ${workflowError.message}`);
         if (!workflowError.recoverable)
             fatal ??= workflowError;
     }
     return fatal;
+}
+function scriptRejection(error) {
+    if (isWorkflowError(error))
+        return error;
+    const message = errorMessage(error);
+    return new WorkflowError(message, WorkflowErrorCode.UNKNOWN, { recoverable: false });
 }
 /** Wait out every tracked promise of the run, including ones the script never awaited. */
 async function drainScriptCalls(ctx) {
@@ -105,7 +113,7 @@ async function drainScriptCalls(ctx) {
     // their results are wanted. Once the run is aborted the wait is bounded,
     // because abort is cooperative and a runner that ignores its signal (with no
     // agent timeout configured) would otherwise block the run from ending forever.
-    const graceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
+    const graceMs = ctx.drainAbortGraceMs;
     // Wakes the wait as soon as either abort source fires, so the grace clock starts.
     let wakeAbort = () => { };
     const abortWake = new Promise((resolve) => {
@@ -152,6 +160,9 @@ async function drainScriptCalls(ctx) {
         options.signal?.removeEventListener("abort", externalWake);
         state.runFatalController.signal.removeEventListener("abort", fatalWake);
     }
+    // Node reports an unhandled rejection only once the current microtasks have
+    // run; one more turn lets the script's own last rejections arrive.
+    await new Promise((resolve) => setImmediate(resolve));
 }
 /** An abandoned runner may still be live: record its latest usage while the host is listening, then close every callback it still holds. */
 function closeAgentCallbacks(ctx) {

@@ -3,9 +3,9 @@ import { createAgentCallUsageTracker, sumAgentUsage } from "../agent-usage.js";
 import { WorkflowError, WorkflowErrorCode, workflowAbortedError, wrapError } from "../errors.js";
 import { createWorktree, removeWorktree } from "../worktree.js";
 import { awaitRunnerStop, dispatchAttempt, openAttemptScope, withTimeout } from "./agent-attempt.js";
-import { normalizeAgentRetries, resolveDrainAbortGraceMs, retryBackoffMs } from "./run-limits.js";
+import { normalizeAgentRetries, retryBackoffMs } from "./run-limits.js";
 /** A string result that is blank means the subagent produced no answer at all. */
-export function isEmptyTextAgentResult(result, schema) {
+function isEmptyTextAgentResult(result, schema) {
     return schema === undefined && typeof result === "string" && result.trim().length === 0;
 }
 function estimateTokens(value) {
@@ -42,7 +42,7 @@ function throwIfCallCancelled(ctx, call) {
 }
 /** Requested isolation is mandatory. A kept tree belongs to this execution, not to a later retry or resume. */
 async function createIsolatedWorktree(ctx, call) {
-    const worktree = await createWorktree(ctx.baseCwd, `${ctx.runId}-${call.index}-${call.label}`);
+    const worktree = await createWorktree(ctx.baseCwd, call.label);
     if (!worktree.isolated) {
         throw new WorkflowError(`worktree isolation failed for "${call.label}": ${worktree.reason}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
     }
@@ -62,7 +62,7 @@ async function runAttempts(ctx, call, worktreePath) {
     const { id, label, phase, prompt } = call;
     const maxAttempts = normalizeAgentRetries(options.agentRetries ?? 0) + 1;
     // The same grace bounds an aborted run's final drain.
-    const graceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
+    const graceMs = ctx.drainAbortGraceMs;
     // Keeps provisional estimates apart from committed usage, sums retries, and
     // ignores callbacks from attempts that already settled.
     const usageTracker = createAgentCallUsageTracker((update) => {

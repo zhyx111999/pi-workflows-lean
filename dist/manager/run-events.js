@@ -25,6 +25,11 @@ export function runEventHooks(managed, sink) {
                 throw error;
             }
         },
+        onJournalPrefixEnd: (replayedIndices) => {
+            const kept = new Set(replayedIndices);
+            managed.journal = managed.journal.filter((e) => kept.has(e.index));
+            sink.schedulePersist();
+        },
         onAgentJournal: (entry) => {
             // Keep the latest entry per call index. This fires once per finished agent
             // and can burst, so it is the one throttled write; lifecycle writes flush it.
@@ -81,6 +86,7 @@ export function runEventHooks(managed, sink) {
             // Displays sum live per-agent usage; this refreshes them without adding
             // estimates to the persisted run total.
             sink.emit("tokenUsage", { runId: managed.runId, usage: managed.snapshot.tokenUsage });
+            sink.scheduleProgressPersist();
         },
         onAgentSession: (event) => {
             const agent = managed.agentsById.get(event.callId);
@@ -133,6 +139,7 @@ export function runEventHooks(managed, sink) {
             const agent = managed.agentsById.get(event.id);
             if (agent) {
                 agent.history = event.history;
+                sink.scheduleProgressPersist();
             }
             sink.emit("agentHistory", { runId: managed.runId, agentId: agent?.id, ...event });
         },

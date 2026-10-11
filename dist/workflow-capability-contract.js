@@ -62,7 +62,7 @@ export const AGENT_OPTIONS = {
             "on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory",
         ]),
         option("thread", NON_EMPTY_STRING, true, null, ["trimmed; same-name calls must be sequential"]),
-        option("agentType", NON_EMPTY_STRING, true, null, ["must come from provided context"], "agent-types"),
+        option("agentType", NON_EMPTY_STRING, true, null, ["must come from provided context", "a name the agent registry does not define fails the call"], "agent-types"),
     ],
 };
 const runtimeGlobal = (name, options = {}) => ({
@@ -114,6 +114,7 @@ const capabilities = [
             "an explicit cwd must be a non-empty absolute existing directory; its real path determines coding tools and session cwd; default settings and AGENTS/skill resources follow it while embedding-host dependency overrides remain authoritative; it participates in resume identity and cannot combine with worktree isolation",
             "selector priority is explicit model > agentType model > tier > phase model > metadata model > inherited main model (inheritMainModel on) > implicit medium > session default",
             "an explicit model, agentType model, tier, or phase model that resolves to an unavailable model throws MODEL_NOT_FOUND naming the source (e.g. the tier and what it resolved to) instead of falling back",
+            "a tier that a saved model-tiers.json does not define throws MODEL_NOT_FOUND listing the defined tiers; with no model-tiers.json saved, the session's main model stands in for every tier and the run log says so once",
             "only the implicit route an untagged agent falls into — the implicit default medium tier, or the inherited main model when inheritMainModel is on (no explicit model, tier, agentType, or phase model requested) — degrades to the session default when unavailable, logging a one-time run-visible warning instead of throwing",
             "with the inheritMainModel setting on, an untagged agent (no explicit model, tier, agentType model, or phase model) inherits the session's main model (the model in effect when the run starts) instead of the implicit medium tier or the settings default; an unavailable inherited model degrades to the settings default with a one-time run-visible warning instead of throwing",
             "requested worktree isolation fails closed before agent execution if git cannot create the worktree; it never falls back to the shared checkout",
@@ -150,7 +151,10 @@ const capabilities = [
         ],
     }),
     runtimeGlobal("log", { signature: "log(message) => void" }),
-    runtimeGlobal("phase", { signature: "phase(title) => void" }),
+    runtimeGlobal("phase", {
+        signature: "phase(title) => void",
+        constraints: ["title must be a nonblank string"],
+    }),
     runtimeGlobal("args", { signature: "args: unknown", allowsUndefined: true }),
     runtimeGlobal("cwd", { signature: "cwd: string" }),
     runtimeGlobal("process", { signature: "process: { cwd(): string }" }),
@@ -186,6 +190,7 @@ const capabilities = [
         constraints: [
             "must be the first statement",
             "name and description must be nonblank strings",
+            "each phase title and every model must be a nonblank string; a phase detail must be a string",
             "metadata must use literal values; expressions such as string concatenation and template interpolation are rejected",
             "the meta declaration is the only legal export because the remaining body executes inside an async function",
         ],
@@ -215,7 +220,7 @@ const capabilities = [
         signature: null,
         optionShape: null,
         constraints: [
-            "Date.now(), Math.random(), and no-argument new Date() are unavailable",
+            "Date.now(), Date(), no-argument new Date(), Math.random(), and Intl.DateTimeFormat formatting without an explicit date are unavailable",
             "pass timestamps and randomness through args",
         ],
         runtimeBinding: null,

@@ -1,3 +1,4 @@
+import { asText } from "./navigator/as-text.js";
 import { groupAgentsByPhase } from "./phase-groups.js";
 /**
  * Displayable fresh/cached figures from a usage breakdown and/or a scalar
@@ -50,7 +51,7 @@ export function aggregateAgentUsage(agents) {
  * "fresh". `fmt` adapts the number style per surface (compact in panels, full in
  * the print view).
  */
-export function fmtTokenCount(fresh, cacheRead, fmt) {
+function fmtTokenCount(fresh, cacheRead, fmt) {
     const f = fmt(fresh) || "0";
     return cacheRead > 0 ? `${f} tok · ${fmt(cacheRead)} cached` : `${f} tok`;
 }
@@ -152,18 +153,6 @@ export function emptyFleetSummary(agents, maxLabels = 5) {
         emptyLabels: empty.slice(0, maxLabels).map((agent) => agent.label || `agent #${agent.id}`),
     };
 }
-/**
- * One-line "started in the background" notice pointing at a progress surface
- * that exists in the current host. The task panel and /workflows navigator are
- * TUI components (`ui.custom()` / widget factories) that no-op in RPC hosts
- * such as Paseo even though `ctx.hasUI` is true there — so non-TUI modes are
- * pointed at `/workflows status <id>`, which prints plain text any host can
- * display.
- */
-export function backgroundStartNotice(name, runId, mode, deliverable) {
-    const where = mode === "tui" ? "watch the task panel or /workflows" : `check progress with /workflows status ${runId}`;
-    return `/${name} running in the background (${runId}) — ${where}; the ${deliverable} is posted here when it finishes.`;
-}
 /** The text view lists only each phase's most recent agents, so a large fleet stays readable. */
 const TEXT_AGENTS_PER_PHASE = 8;
 /** Plain-text progress of a run, for hosts that can only print text (`/workflows status`, the final watch message). */
@@ -185,9 +174,9 @@ export function renderWorkflowText(snapshot, completed = false) {
     return lines.join("\n");
 }
 /** One phase: a marker and tally line, then its most recent agents. */
-function phaseLines({ title, agents, counts }, currentPhase) {
+function phaseLines({ phase, title, agents, counts }, currentPhase) {
     const settled = agents.length > 0 && counts.done + counts.error + counts.skipped === agents.length;
-    const marker = counts.running > 0 || (!settled && currentPhase === title) ? "▶" : settled ? "✓" : " ";
+    const marker = counts.running > 0 || (!settled && currentPhase === phase) ? "▶" : settled ? "✓" : " ";
     const tally = [
         `${counts.done}/${agents.length}`,
         counts.running ? `${counts.running} running` : "",
@@ -199,7 +188,7 @@ function phaseLines({ title, agents, counts }, currentPhase) {
     const visible = agents.slice(-TEXT_AGENTS_PER_PHASE);
     const lines = [`  ${marker} ${title} ${tally}`];
     for (const agent of visible) {
-        lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokenCell(agent)}`);
+        lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(asText(agent.label), 48)}${agentTokenCell(agent)}`);
     }
     if (agents.length > visible.length)
         lines.push(`    … ${agents.length - visible.length} earlier agents`);

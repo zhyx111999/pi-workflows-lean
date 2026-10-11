@@ -66,7 +66,6 @@ export function parseAgentDefinition(content, source, fileName) {
         return null;
     return {
         name,
-        description: typeof fm.description === "string" ? fm.description.trim() || undefined : undefined,
         tools: toStringArray(fm.tools),
         disallowedTools: toStringArray(fm.disallowedTools),
         model: typeof fm.model === "string" ? fm.model.trim() || undefined : undefined,

@@ -14,32 +14,12 @@ function historyLabel(entry) {
 function editCallPath(entry) {
     if (entry.kind !== "toolCall" || entry.toolName !== "edit")
         return undefined;
-    if (typeof entry.path === "string")
-        return entry.path;
-    // Older persisted histories kept the path only inside the JSON argument envelope.
-    try {
-        const args = JSON.parse(asText(entry.text));
-        return typeof args.path === "string" ? args.path : undefined;
-    }
-    catch {
-        return undefined;
-    }
+    return typeof entry.path === "string" ? entry.path : undefined;
 }
 function writeCallSource(entry) {
-    if (entry.kind !== "toolCall" || entry.toolName !== "write")
+    if (entry.kind !== "toolCall" || entry.toolName !== "write" || typeof entry.path !== "string")
         return undefined;
-    if (typeof entry.path === "string")
-        return { path: entry.path, content: asText(entry.text) };
-    // Older persisted histories stored the whole write argument envelope as JSON.
-    try {
-        const args = JSON.parse(asText(entry.text));
-        return typeof args.path === "string" && typeof args.content === "string"
-            ? { path: args.path, content: args.content }
-            : undefined;
-    }
-    catch {
-        return undefined;
-    }
+    return { path: entry.path, content: asText(entry.text) };
 }
 /** The call that produced a tool result. Matching on Pi's tool call id keeps
  * parallel calls apart; a result whose call is not in the history has none. */

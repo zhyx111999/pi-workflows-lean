@@ -8,9 +8,14 @@ export const DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY = 20;
  * state and released its lease; running and paused runs are never recorded.
  * The newest few stay so listeners of the final event still see the live
  * object. Evicted runs are read from disk like any run this process never had.
+ *
+ * Each queue entry names the exact in-memory run that settled. A resume puts a
+ * new run object under the same id, so an older entry no longer matches and can
+ * never evict the newer execution, even one that a stop() already marked aborted
+ * while it still drains and holds the lease.
  */
 export class TerminalRunRetention {
-    /** Oldest first. A run resumed after eviction can appear twice; eviction re-checks it. */
+    /** Oldest first. */
     queue = [];
     runs;
     max;
@@ -19,18 +24,17 @@ export class TerminalRunRetention {
         this.max = max;
     }
     /** Make a settled run eviction-eligible and evict the oldest beyond the limit. */
-    record(runId) {
-        this.queue.push(runId);
+    record(runId, run) {
+        this.queue.push({ runId, run });
         while (this.queue.length > this.max) {
             const oldest = this.queue.shift();
             if (oldest === undefined)
                 break;
-            // Check the current entry, not the one queued: a resume may have replaced
-            // it with a live execution, which must stay.
-            const current = this.runs.get(oldest);
-            if (current && TERMINAL_RUN_STATUSES.has(current.status)) {
-                this.runs.delete(oldest);
-            }
+            const { runId: oldestId, run: settled } = oldest;
+            if (this.runs.get(oldestId) !== settled)
+                continue;
+            if (settled.lease === undefined && TERMINAL_RUN_STATUSES.has(settled.status))
+                this.runs.delete(oldestId);
         }
     }
 }

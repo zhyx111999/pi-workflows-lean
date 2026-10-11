@@ -2,8 +2,11 @@ import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import { resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createCodingTools } from "@earendil-works/pi-coding-agent";
+import { loadedBuildIsStale } from "./build-identity.js";
 import { registerBuiltinWorkflows } from "./builtin-commands.js";
-import { claimWorkflowRuntime, discardWorkflowRuntime, handoffWorkflowRuntime, pauseStrandedWorkflowRuntime, SESSION_REPLACEMENT_REASONS, WORKFLOW_EXTENSION_VERSION, } from "./extension-reload.js";
+import { claimWorkflowRuntime, discardWorkflowRuntime, handoffWorkflowRuntime, pauseStrandedWorkflowRuntime, SESSION_REPLACEMENT_REASONS, WORKFLOW_EXTENSION_BUILD, } from "./extension-reload.js";
+import { bindDiagnosticSink } from "./host-diagnostics.js";
+import { stopRunWatchers } from "./run-watchers.js";
 import { registerAllSavedWorkflows } from "./saved-commands.js";
 import { createSubagentsControlTool } from "./subagents-control-tool.js";
 import { createSubagentsTool } from "./subagents-tool.js";
@@ -15,7 +18,7 @@ import { installParentPromptHook, registerWorkflowProgressCommands } from "./wor
 import { WorkflowManager } from "./workflow-manager.js";
 import { workflowProjectKey } from "./workflow-paths.js";
 import { createWorkflowStorage } from "./workflow-saved.js";
-import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
+import { loadWorkflowSettings, saveWorkflowSettings, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 export { useHostSessionClass } from "./task-panel/host-session-capture.js";
 /**
@@ -127,7 +130,7 @@ export default function extension(pi) {
     // true session project.
     const runtimeClaim = claimWorkflowRuntime();
     const previousRuntime = runtimeClaim.compatible;
-    let pausedForMismatch = runtimeClaim.versionMismatch ? pauseStrandedWorkflowRuntime(runtimeClaim.versionMismatch) : 0;
+    let pausedForMismatch = runtimeClaim.buildMismatch ? pauseStrandedWorkflowRuntime(runtimeClaim.buildMismatch) : 0;
     // Mutable host state. Tools/commands resolve through getters so a
     // session_start that discovers a cross-project cwd can replace the manager
     // without leaving closed-over references pointing at the source project.
@@ -135,15 +138,25 @@ export default function extension(pi) {
     // Pi does not pass the session cwd into the factory, so a fresh manager
     // starts from process.cwd() while a claimed one keeps the project it already
     // serves. The real session cwd arrives on session_start as ctx.cwd.
-    let cwd = resolve(previousRuntime?.manager.getCwd() ?? process.cwd());
-    let storage = createWorkflowStorage(cwd);
-    let managerOptions = buildManagerOptions(cwd);
-    let manager = previousRuntime?.manager ?? new WorkflowManager({ cwd, ...managerOptions });
+    // The manager's cwd is the one project path everything here uses.
+    const startCwd = resolve(previousRuntime?.manager.getCwd() ?? process.cwd());
+    let manager = previousRuntime?.manager ?? new WorkflowManager({ cwd: startCwd, ...buildManagerOptions(startCwd) });
     if (previousRuntime)
-        manager.reconfigureAfterReload(managerOptions);
+        manager.reconfigureAfterReload(buildManagerOptions(manager.getCwd()));
+    let storage = createWorkflowStorage(manager.getCwd());
     const getManager = () => manager;
-    const getCwd = () => cwd;
+    const getCwd = () => manager.getCwd();
     const getStorage = () => storage;
+    /** The live runtime as a handoff value. Releasing it drops the delivery of the session it serves now. */
+    const liveRuntime = () => {
+        const servedSessionId = manager.getSessionId();
+        return {
+            cwd: manager.getCwd(),
+            extensionBuild: WORKFLOW_EXTENSION_BUILD,
+            manager,
+            release: () => dropSessionDelivery(servedSessionId),
+        };
+    };
     // Install delivery listeners once. Delivery is fail-closed until
     // session_start binds a per-session endpoint (no "latest pi wins"). Completions
     // that race before bind leave a disk pending marker and flush on bind.
@@ -153,22 +166,22 @@ export default function extension(pi) {
     pi.registerTool(subagentsTool);
     pi.registerTool(subagentsControlTool);
     let usageLimitScheduler = new UsageLimitScheduler(manager);
+    let releaseDiagnostics;
     pi.on("session_shutdown", (event) => {
+        // This session's UI is about to go stale.
+        releaseDiagnostics?.();
+        releaseDiagnostics = undefined;
         usageLimitScheduler.dispose();
+        // Watchers report through this session's context, which is about to go stale.
+        stopRunWatchers();
         // Always stop live sends first so a completion racing teardown cannot
         // deliver into the outgoing session (or throw on a just-stale ctx and be
         // lost). The runtime is staged for the next generation only when that
         // generation serves the same project; otherwise in-flight runs pause onto
         // the journal path.
-        const outgoingSessionId = manager.getSessionId();
         suspendResultDelivery(manager);
-        const runtime = {
-            cwd,
-            extensionVersion: WORKFLOW_EXTENSION_VERSION,
-            manager,
-            // A generation that takes the runtime over rebinds delivery itself.
-            release: () => dropSessionDelivery(outgoingSessionId),
-        };
+        // A generation that takes the runtime over rebinds delivery itself.
+        const runtime = liveRuntime();
         if (nextGenerationKeepsProject(event, manager.getCwd())) {
             handoffWorkflowRuntime(runtime);
             return;
@@ -179,7 +192,7 @@ export default function extension(pi) {
     registerWorkflowCommands(pi, { getManager, getStorage, getCwd });
     registerWorkflowProgressCommands(pi, {
         load: () => loadWorkflowSettings({ cwd: getCwd() }),
-        save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, getCwd()),
+        save: (nextSettings) => saveWorkflowSettings(nextSettings, getCwd()),
     });
     registerWorkflowModelsCommand(pi);
     registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage });
@@ -194,32 +207,21 @@ export default function extension(pi) {
         // launching directory across /resume into another project; ctx.cwd is
         // the session header's project path.
         const sessionCwd = resolve(ctx.cwd || process.cwd());
+        releaseDiagnostics?.();
+        releaseDiagnostics = bindDiagnosticSink((message) => ctx.ui.notify(message, "warning"));
+        // Another spelling of the same project (Windows) keeps the manager and
+        // its path. A different project gets a manager of its own; the old one's
+        // live runs pause, and the session it served lets go of its delivery.
         if (!isSameProject(sessionCwd, manager.getCwd())) {
-            // Cross-project: the live manager is for the wrong tree. Pause anything
-            // still on it, then rebuild against the real session project.
-            const stranded = {
-                cwd: manager.getCwd(),
-                extensionVersion: WORKFLOW_EXTENSION_VERSION,
-                manager,
-            };
-            const n = pauseStrandedWorkflowRuntime(stranded);
-            if (n > 0)
-                pausedForMismatch += n;
-            cwd = sessionCwd;
-            storage = createWorkflowStorage(cwd);
-            managerOptions = buildManagerOptions(cwd);
-            manager = new WorkflowManager({ cwd, ...managerOptions });
+            pausedForMismatch += pauseStrandedWorkflowRuntime(liveRuntime());
+            manager = new WorkflowManager({ cwd: sessionCwd, ...buildManagerOptions(sessionCwd) });
+            storage = createWorkflowStorage(sessionCwd);
             installResultDelivery(pi, manager, { loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }) });
             usageLimitScheduler.dispose();
             usageLimitScheduler = new UsageLimitScheduler(manager);
         }
-        else if (cwd !== sessionCwd) {
-            // Same project spelled differently (Windows): adopt the session's
-            // spelling for host-facing paths; the manager and its runs stay.
-            cwd = sessionCwd;
-            storage = createWorkflowStorage(cwd);
-            managerOptions = buildManagerOptions(cwd);
-            manager.reconfigureAfterReload(managerOptions);
+        if (loadedBuildIsStale()) {
+            ctx.ui.notify("pi-workflows-lean changed on disk since it was loaded. Run /reload to load the new build.", "warning");
         }
         // First registration (and post-rebuild catch-up for target-only names).
         // Handlers load by name from the live storage, so a later same-session
@@ -227,7 +229,7 @@ export default function extension(pi) {
         // names left over from a prior generation — those handlers notify.
         registerAllSavedWorkflows(pi, getStorage, getManager);
         if (pausedForMismatch > 0) {
-            ctx.ui.notify(`Paused ${pausedForMismatch} active workflow(s) that could not safely continue in this session (extension update or project switch). Resume them from /workflows when ready.`, "warning");
+            ctx.ui.notify(`Paused ${pausedForMismatch} active workflow(s) that could not safely continue in this session (another extension build or a project switch). Resume them from /workflows when ready.`, "warning");
             pausedForMismatch = 0;
         }
         manager.setMainModel(ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined);

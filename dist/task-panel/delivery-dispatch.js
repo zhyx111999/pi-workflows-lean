@@ -4,6 +4,7 @@
  * Nothing a send's settlement throws escapes: the marker stays, the session's
  * warning channel reports it, and a bounded retry follows.
  */
+import { errorMessage } from "../errors.js";
 import { claimRunSession } from "../manager/session-owner.js";
 import { resolveDeliverySessionId, sessionEndpoints, warnDelivery, } from "./delivery-endpoints.js";
 import { cancelDeliveryRetry, scheduleDeliveryRetry } from "./delivery-retry.js";
@@ -17,14 +18,6 @@ export function setPendingTextRenderer(render) {
 const inFlightDeliveries = new Map();
 let inFlightSeq = 0;
 /** Text for any thrown value. Never throws, so reporting a failure cannot become a failure itself. */
-function reasonText(error) {
-    try {
-        return error instanceof Error ? error.message : String(error);
-    }
-    catch {
-        return "unprintable error";
-    }
-}
 /**
  * Resolve true only after the endpoint's thenable send settles while the
  * session is still live. Void sends and durable appends are not an ACK: an
@@ -47,7 +40,7 @@ async function tryDeliverEndpoint(endpoint, content, deliveryId) {
         await ack;
     }
     catch (error) {
-        warnDelivery(sessionId, `Workflow result remains pending: ${reasonText(error)}`);
+        warnDelivery(sessionId, `Workflow result remains pending: ${errorMessage(error)}`);
         return false;
     }
     // Succeeded under this or a newer live endpoint for the same session.
@@ -125,7 +118,7 @@ async function sendAndSettle(manager, runId, endpoint, content, deliveryId, toke
  * which may be a rebind whose own flush skipped the locked run. Never throws.
  */
 function keepPending(manager, runId, sessionId, error) {
-    warnDelivery(sessionId, `Workflow ${runId}: result remains pending: ${reasonText(error)}`);
+    warnDelivery(sessionId, `Workflow ${runId}: result remains pending: ${errorMessage(error)}`);
     const endpoint = sessionEndpoints.get(sessionId);
     if (endpoint && !endpoint.suspended)
         retryLater(manager, runId, sessionId, endpoint.generation);
@@ -165,7 +158,7 @@ export function routeBackgroundDelivery(manager, run, marker, content) {
     const deliveryId = pending.deliveryId;
     if (!deliveryId)
         return;
-    const saved = persistRunPending(manager, run);
+    const saved = persistRunPending(manager, run, "notification");
     if (saved === "deleted") {
         abandonDeletedDelivery(run.runId, run);
         return;
@@ -189,14 +182,21 @@ export function flushSessionDiskPending(manager, sessionId, endpoint) {
         if (inFlightDeliveries.has(runId))
             return;
         // A live run re-persists its marker; a disk-only run only needs a missing id.
-        const identified = run ? markRunPending(run, marker) : marker.deliveryId ? marker : markerWithId(marker);
+        const identified = run ? markRunPending(run, marker) : markerWithId(marker);
         const saved = run
-            ? persistRunPending(manager, run)
+            ? persistRunPending(manager, run, "retry")
             : identified === marker
                 ? "saved"
                 : persistDiskMarker(manager, runId, identified);
         if (saved === "deleted") {
             abandonDeletedDelivery(runId, run);
+            return;
+        }
+        if (saved === "stale") {
+            // A newer execution elsewhere owns the record's delivery; the disk pass
+            // below delivers that one from the record.
+            if (run)
+                run.pendingDelivery = undefined;
             return;
         }
         if (saved === "failed") {
@@ -217,17 +217,24 @@ export function flushSessionDiskPending(manager, sessionId, endpoint) {
     // Live in-memory runs this session owns by their record. A run nobody owns is
     // claimable only from this manager's own live runs (completions before the
     // first bind), never from a foreign manager.
-    try {
-        for (const run of manager.listLiveRuns()) {
-            if (!run.pendingDelivery)
-                continue;
-            if (claimRunSession(manager.getPersistence(), run, sessionId) !== sessionId)
-                continue;
-            tryOne(run.runId, run.pendingDelivery, run);
+    // One failing run must not keep the others from going out.
+    const tryEach = (deliver) => {
+        try {
+            deliver();
         }
-    }
-    catch {
-        // listLiveRuns may be absent on stubs
+        catch {
+            // A run another process just deleted, or whose record is unreadable, is skipped.
+        }
+    };
+    for (const run of manager.listLiveRuns()) {
+        if (!run.pendingDelivery)
+            continue;
+        tryEach(() => {
+            if (claimRunSession(manager.getPersistence(), run, sessionId) !== sessionId)
+                return;
+            if (run.pendingDelivery)
+                tryOne(run.runId, run.pendingDelivery, run);
+        });
     }
     // Disk runs, including terminal runs already evicted from memory. Require an
     // exact sessionId match: claiming null-sessionId rows would race a second
@@ -242,13 +249,10 @@ export function flushSessionDiskPending(manager, sessionId, endpoint) {
             const live = manager.getRun(state.runId);
             if (live?.pendingDelivery)
                 continue;
-            try {
-                tryOne(state.runId, state.pendingDelivery, live, state);
-            }
-            catch {
-                // The list can still show a run another process just deleted, whose
-                // record then fails to read; skip it so the other results still go out.
-            }
+            // Only an execution holding the lease is newer than the record. A settled
+            // copy may predate a resume another process ran, so the record renders.
+            const pending = state.pendingDelivery;
+            tryEach(() => tryOne(state.runId, pending, live?.lease ? live : undefined, state));
         }
     }
     catch {

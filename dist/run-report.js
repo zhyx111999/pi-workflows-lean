@@ -31,6 +31,7 @@ export function summarizeRun(run, live) {
         runId: run.runId,
         workflowName: live?.name ?? run.workflowName,
         status: run.status,
+        ...(run.status === "paused" && run.pauseReason ? { pauseReason: run.pauseReason } : {}),
         phase: live?.currentPhase ?? run.currentPhase ?? null,
         checkpoint: summary.checkpoint,
         counts,
@@ -56,7 +57,8 @@ function countAgents(agents) {
 export function formatRunSummary(run) {
     const active = run.activeLabels.join(",") || "-";
     const checkpoint = JSON.stringify(run.checkpoint ?? null);
-    return `runId=${run.runId} name=${quote(run.workflowName)} status=${run.status} phase=${quote(run.phase ?? "-")} checkpoint=${checkpoint} total=${run.counts.total} done=${run.counts.done} running=${run.counts.running} queued=${run.counts.queued} error=${run.counts.error} skipped=${run.counts.skipped} active=${quote(active)} tokens=${run.tokenTotalEstimated ? "~" : ""}${run.tokenTotal}`;
+    const pause = run.pauseReason ? ` pause=${run.pauseReason}` : "";
+    return `runId=${run.runId} name=${quote(run.workflowName)} status=${run.status}${pause} phase=${quote(run.phase ?? "-")} checkpoint=${checkpoint} total=${run.counts.total} done=${run.counts.done} running=${run.counts.running} queued=${run.counts.queued} error=${run.counts.error} skipped=${run.counts.skipped} active=${quote(active)} tokens=${run.tokenTotalEstimated ? "~" : ""}${run.tokenTotal}`;
 }
 /** Every agent's label and status, from the live snapshot when the run is in memory. */
 export function agentStatuses(run, live) {

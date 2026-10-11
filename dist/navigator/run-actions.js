@@ -1,4 +1,5 @@
 /** Run actions started from the navigator: confirmed pause and stop, and restart from the recorded run. */
+import { errorMessage } from "../errors.js";
 import { restartRequest } from "../manager/run-restart.js";
 /** Apply a confirmed pause or stop, re-checking the run's status first. */
 export function executeRunConfirmation(session, action, runId) {
@@ -24,7 +25,7 @@ export function executeRunConfirmation(session, action, runId) {
 /** Start a new background run that repeats the selected run: its script, arguments, and execution options. */
 export function restartRun(session, runId) {
     const { manager, ui } = session;
-    const run = runId ? manager.listRuns().find((candidate) => candidate.runId === runId) : undefined;
+    const run = runId ? manager.findRun(runId) : undefined;
     const restart = run ? restartRequest(run) : undefined;
     if (!run || !restart) {
         ui.notify(runId ? `Cannot restart ${runId} (no script saved)` : "No run selected to restart", "warning");
@@ -35,6 +36,6 @@ export function restartRun(session, runId) {
         ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
     }
     catch (error) {
-        ui.notify(`Failed to restart ${run.workflowName || "workflow"}: ${error instanceof Error ? error.message : error}`, "error");
+        ui.notify(`Failed to restart ${run.workflowName || "workflow"}: ${errorMessage(error)}`, "error");
     }
 }

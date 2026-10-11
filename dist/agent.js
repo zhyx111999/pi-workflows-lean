@@ -9,7 +9,7 @@ import { SharedResourceLoaders } from "./agent/resource-loaders.js";
 import { SessionManagers } from "./agent/session-managers.js";
 import { buildSubagentTools, subagentExcludedTools } from "./agent/session-tools.js";
 import { TurnProgress } from "./agent/turn-progress.js";
-import { assertTurnCompleted, finalAssistantText, resolveStructuredOutput } from "./agent/turn-result.js";
+import { assertTurnCompleted, finalAnswer, resolveStructuredOutput } from "./agent/turn-result.js";
 import { assertProcessesStartIn } from "./agent/windows-cwd.js";
 import { WorkflowError, WorkflowErrorCode, workflowAbortedError } from "./errors.js";
 import { canonicalModelSpec, formatModelSpecWithThinking, validateThinkingLevel, } from "./model-spec.js";
@@ -98,7 +98,7 @@ export class WorkflowAgent {
         //    project cwd, not runCwd, so short-lived worktree agents still group
         //    under the project.
         const agentDir = getAgentDir();
-        const sessionManager = this.createSessionManager(options.thread, runCwd);
+        const sessionManager = this.sessionManagers.forCall(options.thread, runCwd, options.onNotice);
         const effectiveSessionManager = options.thread || !this.sessionOptions.sessionManager ? sessionManager : this.sessionOptions.sessionManager;
         // Report the child identity before the first prompt or usage event.
         options.onSessionCreated?.({
@@ -171,7 +171,9 @@ export class WorkflowAgent {
             }
             if (options.signal?.aborted)
                 throw workflowAbortedError();
-            unregisterSteer = options.registerSteer?.((text) => session.steer(text));
+            unregisterSteer = options.registerSteer?.(async (text) => {
+                await session.steer(text);
+            });
             if (options.signal) {
                 const onAbort = () => void session.abort();
                 options.signal.addEventListener("abort", onAbort, { once: true });
@@ -195,13 +197,7 @@ export class WorkflowAgent {
             }
             // A threaded session's restored transcript never enters turnMessages, so
             // an empty turn cannot reuse an old answer.
-            const text = this.finalAssistantText(turnMessages);
-            if (!text.trim()) {
-                throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
-                    recoverable: true,
-                    agentLabel: options.label,
-                });
-            }
+            const text = finalAnswer(turnMessages, options);
             threadTurnSucceeded = true;
             return text;
         }
@@ -261,9 +257,6 @@ export class WorkflowAgent {
     getSharedResourceLoader(agentDir, cwd = this.cwd) {
         return this.resourceLoaders.get(agentDir, cwd);
     }
-    createSessionManager(thread, cwd) {
-        return this.sessionManagers.forCall(thread, cwd);
-    }
     /** Roll a thread back to its leaf before a failed turn, so the next turn continues from there. */
     restoreThreadLeaf(sessionManager, leafId) {
         if (leafId)
@@ -283,9 +276,6 @@ export class WorkflowAgent {
             ].join("\n"));
         }
         return parts.join("\n\n");
-    }
-    finalAssistantText(messages) {
-        return finalAssistantText(messages);
     }
 }
 /**

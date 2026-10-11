@@ -128,7 +128,7 @@ export function bindSessionDelivery(sessionId, pi, opts = {}) {
 }
 /**
  * Suspend delivery for a session. Completions only mark disk pending until
- * {@link bindSessionDelivery} / {@link resumeSessionDelivery} runs again.
+ * {@link bindSessionDelivery} runs again.
  */
 export function suspendSessionDelivery(sessionId) {
     if (!sessionId)
@@ -153,22 +153,6 @@ export function dropSessionDelivery(sessionId) {
     sessionEndpoints.delete(sessionId);
 }
 /**
- * Unsuspend and flush one session's pending deliveries (disk). Prefer
- * {@link bindSessionDelivery} on session_start (also refreshes send).
- */
-export function resumeSessionDelivery(sessionId, manager) {
-    if (!sessionId)
-        return;
-    const endpoint = sessionEndpoints.get(sessionId);
-    if (!endpoint)
-        return;
-    endpoint.suspended = false;
-    if (manager)
-        endpoint.manager = manager;
-    if (endpoint.manager)
-        flushSessionDiskPending(endpoint.manager, sessionId, endpoint);
-}
-/**
  * Stop live sends for the manager's currently bound session. In-flight
  * completions only leave disk pending until the next bind/resume.
  *
@@ -177,14 +161,6 @@ export function resumeSessionDelivery(sessionId, manager) {
  */
 export function suspendResultDelivery(manager) {
     suspendSessionDelivery(manager.getSessionId());
-}
-/**
- * Unsuspend and flush queued deliveries for the manager's bound session.
- * Must run only after Pi has finished bindCore (i.e. from session_start).
- * Prefer {@link bindSessionDelivery} which also captures a fresh stable send.
- */
-export function resumeResultDelivery(manager) {
-    resumeSessionDelivery(manager.getSessionId(), manager);
 }
 // ─── Result delivery ───────────────────────────────────────────────────────────
 /**
@@ -202,18 +178,18 @@ let turnEndDeliveryManagers = new WeakMap();
  * into the originating conversation and continue the turn so the assistant can
  * act on it, without blocking the user meanwhile:
  *
- *  - Delivery is routed by `run.sessionId` through the session endpoints.
+ *  - Delivery goes to the session the run's record names as its owner.
  *  - `triggerTurn: true` starts a fresh turn when the agent is idle.
  *  - `deliverAs: "followUp"` queues behind an in-flight turn — never interrupts.
  *  - The durable pending marker clears only after the send is confirmed.
  *
- * Idempotent per manager. Across session replacement the manager and these
- * listeners survive via the handoff path; each new session calls
+ * One set of listeners per manager: installing again, from this or a reloaded
+ * copy of the module, replaces the previous set. Across session replacement the
+ * manager survives via the handoff path; each new session calls
  * {@link bindSessionDelivery} on session_start.
  */
 export function installResultDelivery(pi, manager, opts = {}) {
-    const installed = deliveryInstalls.get(manager);
-    const install = installed ?? {};
+    const install = deliveryInstalls.get(manager) ?? {};
     install.loadSettings = opts.loadSettings;
     deliveryInstalls.set(manager, install);
     // After each turn, bind the session if its send was not captured yet, then
@@ -237,10 +213,10 @@ export function installResultDelivery(pi, manager, opts = {}) {
             }
             if (!sid)
                 return;
-            let endpoint = sessionEndpoints.get(sid);
+            const endpoint = sessionEndpoints.get(sid);
             if (!endpoint || typeof endpoint.send !== "function") {
                 // Bind only once a send is captured; a failed capture leaves the
-                // session as it was for the next turn to retry.
+                // session as it was for the next turn to retry. Binding flushes.
                 const send = captureSessionSend(pi, sid);
                 if (send) {
                     bindSessionDelivery(sid, pi, {
@@ -249,12 +225,11 @@ export function installResultDelivery(pi, manager, opts = {}) {
                         sessionManager: ctx?.sessionManager,
                         stableSend: send,
                     });
-                    endpoint = sessionEndpoints.get(sid);
                 }
+                return;
             }
-            if (endpoint && !endpoint.suspended && endpoint.manager) {
+            if (!endpoint.suspended && endpoint.manager)
                 flushSessionDiskPending(endpoint.manager, sid, endpoint);
-            }
         });
     }
     // A newly-created manager can replace the current project while this pi and
@@ -268,39 +243,63 @@ export function installResultDelivery(pi, manager, opts = {}) {
             endpoint.manager = manager;
         }
     }
-    if (installed)
-        return;
-    manager.on("complete", ({ runId }) => {
-        const run = manager.getRun(runId);
-        if (!run)
-            return;
-        const sessionId = resolveDeliverySessionId(run, manager);
-        const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
-        const content = deliverText(run, {
-            resultPath: persistedResultPath(manager, runId, run.result?.result),
-            maxChars: deliveredMaxChars(endpoint?.loadSettings ?? install.loadSettings),
-        });
-        routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
-    });
-    manager.on("error", ({ runId, error }) => {
-        const run = manager.getRun(runId);
-        if (!run)
-            return;
-        const text = failedRunText(runId, error);
-        routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
-    });
-    // Two pauses need the model: a provider usage limit (the run is resumable once
-    // the limit resets, not dead) and a script waiting at a durable checkpoint (it
-    // stays paused until someone answers). A manual pause() carries no reason and
-    // is the user's own action, so it delivers nothing.
-    manager.on("paused", (event) => {
-        const run = manager.getRun(event.runId);
-        if (!run)
-            return;
-        const text = pausedRunText(event);
-        if (text)
-            routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
-    });
+    replaceDeliveryListeners(manager, [
+        [
+            "complete",
+            ({ runId }) => {
+                const run = manager.getRun(runId);
+                if (!run)
+                    return;
+                const sessionId = resolveDeliverySessionId(run, manager);
+                const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
+                const content = deliverText(run, {
+                    resultPath: persistedResultPath(manager, runId, run.result?.result),
+                    maxChars: deliveredMaxChars(endpoint?.loadSettings ?? install.loadSettings),
+                });
+                routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
+            },
+        ],
+        [
+            "error",
+            ({ runId, error }) => {
+                const run = manager.getRun(runId);
+                if (!run)
+                    return;
+                const text = failedRunText(runId, error);
+                routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
+            },
+        ],
+        // Two pauses need the model: a provider usage limit (the run is resumable
+        // once the limit resets, not dead) and a script waiting at a durable
+        // checkpoint (it stays paused until someone answers). A manual pause()
+        // carries no reason and is the user's own action, so it delivers nothing.
+        [
+            "paused",
+            (event) => {
+                const run = manager.getRun(event.runId);
+                if (!run)
+                    return;
+                const text = pausedRunText(event);
+                if (text)
+                    routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
+            },
+        ],
+    ]);
+}
+/**
+ * Where a manager keeps its delivery listeners, under a key every loaded copy of
+ * this module shares. A host that reloads the module graph hands the same
+ * manager to the new copy, whose install then replaces the old copy's listeners
+ * instead of stacking a second set that would act on stale module state.
+ */
+const DELIVERY_LISTENERS = Symbol.for("pi-workflows-lean.result-delivery-listeners");
+function replaceDeliveryListeners(manager, listeners) {
+    const owner = manager;
+    for (const [event, listener] of owner[DELIVERY_LISTENERS] ?? [])
+        manager.off(event, listener);
+    for (const [event, listener] of listeners)
+        manager.on(event, listener);
+    owner[DELIVERY_LISTENERS] = listeners;
 }
 // ─── Test helpers ──────────────────────────────────────────────────────────────
 /** @internal test helper — reset process-wide delivery registries between cases. */

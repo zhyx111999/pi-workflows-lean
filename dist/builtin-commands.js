@@ -1,119 +1,69 @@
 /**
- * Bundled workflow command: `/deep-research`.
- *
- * Each command starts its generated workflow through the WorkflowManager's
- * background path — the command returns immediately, progress is visible in
- * the task panel and `/workflows` (pause/stop work like any managed run), and
- * the report is delivered back into the conversation on completion by
- * installResultDelivery. Running inline in the handler instead would block the
- * whole session until the workflow finished.
+ * The bundled `/deep-research` command. It starts its generated workflow in
+ * the background (see command-run.ts); the report is delivered back into the
+ * conversation when the run finishes.
  */
 import { findBuiltinWorkflow } from "./builtin-workflows.js";
 import { claimCommand, isCommandTaken } from "./command-registry.js";
-import { backgroundStartNotice } from "./display.js";
+import { startCommandRun } from "./command-run.js";
+import { errorMessage } from "./errors.js";
 import { parseCommandArgs } from "./saved-commands.js";
-/**
- * Start a built-in workflow through the manager's background path and tell the
- * user where to watch it. startInBackground can throw synchronously (script
- * parse, run lease) — surface that as a notify instead of an unhandled error.
- * Async failures are handled by the manager's generic delivery ("✗ Background
- * workflow … failed"), so no handler-side await is needed — that await is
- * exactly what used to hang the session.
- */
-function startBackground(manager, ctx, name, script, args, exec) {
-    try {
-        const { runId } = manager.startInBackground(script, args, exec ?? {});
-        ctx.ui.notify(backgroundStartNotice(name, runId, ctx.mode, "report"), "info");
-    }
-    catch (error) {
-        ctx.ui.notify(`${name} failed to start: ${error instanceof Error ? error.message : error}`, "error");
-    }
-}
-/**
- * Look up a built-in descriptor by its fixed, hardcoded name. Every call site
- * below passes one of the 5 literal names in BUILTIN_WORKFLOWS, so this can
- * only throw if that registry and this file's command names fall out of sync
- * — a programming error, not a user-input problem (tests pin the names stay
- * in sync, see builtin-commands.test.ts).
- */
-function requireBuiltin(name) {
-    const found = findBuiltinWorkflow(name);
-    if (!found)
-        throw new Error(`internal error: no built-in workflow registered for "${name}"`);
-    return found;
-}
-/**
- * Resolve a built-in's script/exec context for the given args, surfacing an
- * invalid-args error (e.g. a whitespace-only string that passes the handler's
- * cheap `!value` check but fails the registry's real validation) as the same
- * kind of warning notify the handlers already use for their own validation,
- * rather than an uncaught rejection.
- */
-function resolveBuiltinOrNotify(name, cwd, args, ctx) {
-    try {
-        return requireBuiltin(name).resolve(cwd, args);
-    }
-    catch (error) {
-        ctx.ui.notify(`/${name}: ${error instanceof Error ? error.message : String(error)}`, "warning");
-        return undefined;
-    }
-}
+const DEEP_RESEARCH = "deep-research";
 export function registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage }) {
+    if (isCommandTaken(pi, DEEP_RESEARCH))
+        return;
     /**
-     * A project/user saved workflow always takes precedence over a built-in of
-     * the same name — on every path, not just the `subagents` tool's `name`
-     * input. Builtins are registered as commands before saved workflows
-     * (registerAllSavedWorkflows skips a name that's already registered), so
-     * without this dynamic check a same-named saved workflow would silently
-     * never run from its slash command. Checking here, at invocation time
-     * rather than registration time, makes "saved wins" hold regardless of
-     * registration order. Mirrors registerSavedWorkflow's own handler exactly
-     * (same parseCommandArgs call, same startBackground path, no builtin exec
-     * context) so a shadowed command behaves identically to how it would if the
-     * saved workflow itself had been registered under this name.
+     * A saved workflow named like the built-in runs instead of it. Saved commands
+     * register after built-ins and skip taken names, so the check happens here,
+     * at invocation. The whole command text becomes `question`, exactly what the
+     * built-in would research, unless the user named `question=` explicitly or
+     * typed nothing (then a declared default applies).
      */
-    // Positional-argument contract for saved workflows that shadow a built-in.
-    const SHADOW_WHOLE_STRING_PRIMARY = {
-        "deep-research": "question",
-    };
-    function runSavedShadowIfPresent(name, rawArgs, ctx) {
-        const saved = getStorage().load(name);
+    const runSavedShadow = (rawArgs, ctx) => {
+        const saved = getStorage().load(DEEP_RESEARCH);
         if (!saved)
             return false;
-        const parsed = parseCommandArgs(rawArgs, saved.parameters);
-        const raw = typeof parsed._raw === "string" ? parsed._raw.trim() : "";
-        // An explicit `key=value` for the primary beats the positional mapping;
-        // the user's bare positional beats a declared parameter default.
-        const wholeKey = SHADOW_WHOLE_STRING_PRIMARY[name];
-        if (wholeKey && !new RegExp(`(?:^|\\s)${wholeKey}=`).test(rawArgs) && raw) {
-            // The WHOLE raw string is the primary — exactly the builtin's
-            // args.trim(), including "="-containing topics (r2 NIT).
-            parsed[wholeKey] = raw;
-        }
-        startBackground(getManager(), ctx, name, saved.script, parsed);
-        return true;
-    }
-    if (!isCommandTaken(pi, "deep-research")) {
-        pi.registerCommand("deep-research", {
-            description: "Research a question across the web and return sourced claims",
-            async handler(args, ctx) {
-                if (runSavedShadowIfPresent("deep-research", args, ctx))
-                    return;
-                const question = args.trim();
-                if (!question)
-                    return ctx.ui.notify("Usage: /deep-research <question>", "warning");
-                // Resolve through the shared builtin registry (builtin-workflows.ts) so
-                // this command and the subagents tool's `name` input always run the exact
-                // same generated script and exec context (tools/toolset) for this pattern.
-                const resolved = resolveBuiltinOrNotify("deep-research", getCwd(), { question }, ctx);
-                if (!resolved)
-                    return;
-                startBackground(getManager(), ctx, "deep-research", resolved.script, { question }, {
-                    tools: resolved.tools,
-                    toolset: resolved.toolset,
-                });
-            },
+        const args = parseCommandArgs(rawArgs, saved.parameters);
+        const whole = rawArgs.trim();
+        if (whole && !/(?:^|\s)question=/.test(rawArgs))
+            args.question = whole;
+        startCommandRun(getManager(), ctx, {
+            name: DEEP_RESEARCH,
+            script: saved.script,
+            args,
+            exec: { toolset: saved.toolset },
+            deliverable: "result",
         });
-        claimCommand(pi, "deep-research", "builtin");
-    }
+        return true;
+    };
+    pi.registerCommand(DEEP_RESEARCH, {
+        description: "Research a question across the web and return sourced claims",
+        async handler(rawArgs, ctx) {
+            if (runSavedShadow(rawArgs, ctx))
+                return;
+            const question = rawArgs.trim();
+            if (!question)
+                return ctx.ui.notify(`Usage: /${DEEP_RESEARCH} <question>`, "warning");
+            // The same registry entry the subagents tool's `name` input runs, so both
+            // start the identical script with the identical tools.
+            const builtin = findBuiltinWorkflow(DEEP_RESEARCH);
+            if (!builtin)
+                throw new Error(`internal error: no built-in workflow registered for "${DEEP_RESEARCH}"`);
+            let invocation;
+            try {
+                invocation = builtin.resolve(getCwd(), { question });
+            }
+            catch (error) {
+                return ctx.ui.notify(`/${DEEP_RESEARCH}: ${errorMessage(error)}`, "warning");
+            }
+            startCommandRun(getManager(), ctx, {
+                name: DEEP_RESEARCH,
+                script: invocation.script,
+                args: { question },
+                exec: { tools: invocation.tools, toolset: invocation.toolset },
+                deliverable: "report",
+            });
+        },
+    });
+    claimCommand(pi, DEEP_RESEARCH, "builtin");
 }

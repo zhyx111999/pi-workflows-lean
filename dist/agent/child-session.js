@@ -11,7 +11,6 @@ export async function openChildSession(spec) {
         // SettingsManager.inMemory() skips ~/.pi settings, so subagents would fall
         // back to the first available model, which may lack auth and answer empty.
         settingsManager: SettingsManager.create(spec.cwd, spec.agentDir),
-        customTools: spec.customTools,
         // An injected resourceLoader wins and skips the shared build entirely.
         resourceLoader: injected.resourceLoader ?? (await spec.sharedResourceLoader()),
         // The registry's backing runtime, so subagents share the host catalog and auth.
@@ -23,7 +22,11 @@ export async function openChildSession(spec) {
         ...(spec.keepSessionManager ? { sessionManager: spec.sessionManager } : {}),
         ...(spec.model ? { model: spec.model } : {}),
         ...(spec.thinkingLevel ? { thinkingLevel: spec.thinkingLevel } : {}),
-        // Last, so the recursive-orchestration denylist always applies.
+        // Last, so nothing injected widens the call's tools. Without an allowlist
+        // Pi enables its built-in read/bash/edit/write next to the custom tools,
+        // which would bypass an agent type's tool policy.
+        customTools: spec.customTools,
+        tools: spec.customTools.map((tool) => tool.name),
         excludeTools: spec.excludeTools,
     });
     pinChildCacheRetention(session.agent);

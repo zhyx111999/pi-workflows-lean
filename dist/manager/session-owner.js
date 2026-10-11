@@ -3,6 +3,7 @@
 // RunPersistence.moveSession(), and a full save never overwrites it, so a
 // ManagedRun's sessionId is only this process's copy, refreshed from the record
 // whenever this process moves, saves, or delivers the run.
+import { reportDiagnostic } from "../host-diagnostics.js";
 /**
  * Move `run`'s result to `sessionId` when `from` accepts the record's current
  * owner, and copy the owner the record has afterwards into `run`. Without a
@@ -15,7 +16,7 @@ export function moveRunSession(persistence, run, sessionId, from) {
         after = persistence.moveSession(run.runId, sessionId, from);
     }
     catch (error) {
-        console.warn(`[workflow-manager] Could not move run ${run.runId} to session ${sessionId}:`, error);
+        reportDiagnostic(`Could not move workflow run ${run.runId} to session ${sessionId}`, error);
         return "failed";
     }
     if (!after) {

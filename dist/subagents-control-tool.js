@@ -4,6 +4,7 @@
  */
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { errorMessage } from "./errors.js";
 import { AGENT_TAIL_CHARS, agentStatuses, asTailAgent, formatAgentStatuses, formatRunSummary, renderAgentTail, selectTailAgent, summarizeRun, waitingCheckpoint, } from "./run-report.js";
 import { parseSubagentTasks } from "./subagent-tasks.js";
 import { isGiven, normalizeScript } from "./subagents-tool.js";
@@ -63,7 +64,7 @@ export function createSubagentsControlTool(host) {
             catch (error) {
                 // A manager or persistence failure is reported in the tool's own
                 // result shape rather than as a raw stack trace.
-                const message = error instanceof Error ? error.message : String(error);
+                const message = errorMessage(error);
                 return controlError(input.action, run.runId, message, allowedActions(run.status));
             }
         },

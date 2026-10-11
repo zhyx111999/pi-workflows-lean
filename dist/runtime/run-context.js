@@ -13,6 +13,7 @@ export function createRuntimeState(meta, options, concurrency) {
         currentPhase: firstPhase,
         scriptCalls: CallSequence.forScript(),
         journalMissed: false,
+        replayedIndices: new Set(),
         limiter: createLimiter(concurrency),
         // Not seeded on resume: the script replays from call 0 and every replayed
         // call counts again, so maxAgents stays a cumulative cap on its own.
@@ -52,5 +53,40 @@ export function createRunContext(setup) {
         if (state.agentCount >= maxAgents)
             throw agentLimitError();
     };
-    return { ...setup, log, isAborted, throwIfAborted, agentLimitError, ensureAgentCapacity };
+    // In a script run the first miss ends the unchanged prefix: entries not
+    // replayed by then describe calls that now run after a changed one, so the
+    // caller drops them instead of keeping them for a later resume to replay.
+    const noteJournalMiss = () => {
+        if (state.journalMissed)
+            return;
+        state.journalMissed = true;
+        if (!options.independentCalls && options.resumeJournal?.size) {
+            options.onJournalPrefixEnd?.([...state.replayedIndices]);
+        }
+    };
+    const replayable = (index, hash, passOver) => {
+        // A thread's conversation cannot be replayed, so a thread call ends replay for the run.
+        if (state.resumeBarrierReached)
+            return undefined;
+        const entry = options.resumeJournal?.get(index);
+        if (entry?.hash !== hash) {
+            noteJournalMiss();
+            return undefined;
+        }
+        if (passOver?.(entry))
+            return undefined;
+        if (state.journalMissed && !options.independentCalls)
+            return undefined;
+        state.replayedIndices.add(index);
+        return entry;
+    };
+    return {
+        ...setup,
+        log,
+        isAborted,
+        throwIfAborted,
+        agentLimitError,
+        ensureAgentCapacity,
+        replayable,
+    };
 }

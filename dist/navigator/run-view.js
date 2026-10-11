@@ -2,7 +2,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { fmtCompact, fmtTokenSegment } from "../display.js";
 import { BX, renderTwoPaneFrame, topTitleSegment } from "./box-frame.js";
-import { ELLIPSIS, phaseLabel, pluralize } from "./format.js";
+import { ELLIPSIS, pluralize } from "./format.js";
 import { computeLeftWidth, computeModelColStart, LW_MIN, leftPhaseRow, moreRow, RW_MIN, rightAgentRow, } from "./pane-rows.js";
 import { listPaneRows } from "./viewport.js";
 /** Lines for the "phases" and "agents" views; the cursor sits in the left or right pane respectively. */
@@ -62,30 +62,30 @@ function runHeader(model, runId, phases, width, theme) {
     return [line0, line1];
 }
 function agentsTitle(phase, agentCount) {
-    return `${phase ? phaseLabel(phase.title) : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
+    return `${phase ? phase.title : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
 }
 /** The combined Phases | agents frame. The selected phase drives the right pane. */
 function renderPhasesAgents(state, model, runId, phases, width, theme, bodyCap) {
     // Group agents once per frame: every visible phase row needs its agents for
     // the status colour, and the selected phase's agents fill the right pane.
     const agentsByPhase = model.agentsByPhase(runId);
-    const agentsOf = (title) => agentsByPhase.get(title) ?? [];
+    const agentsOf = (phase) => agentsByPhase.get(phase) ?? [];
     // In "phases" view the cursor selects the phase; in "agents" view it is the drilled-in phase.
     const inAgents = state.kind === "agents";
-    let selPhaseIdx = inAgents ? phases.findIndex((p) => p.title === state.phase) : state.cursor;
+    let selPhaseIdx = inAgents ? phases.findIndex((p) => p.phase === state.phase) : state.cursor;
     if (selPhaseIdx < 0)
         selPhaseIdx = 0;
     const selPhase = phases[selPhaseIdx];
-    const agents = selPhase ? agentsOf(selPhase.title) : [];
+    const agents = selPhase ? agentsOf(selPhase.phase) : [];
     if (width < LW_MIN + RW_MIN - 1) {
-        return renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, bodyCap, inAgents);
+        return renderSinglePane(state, phases, selPhaseIdx, agents, agentsOf, width, theme, bodyCap, inAgents);
     }
     const leftW = computeLeftWidth(phases, width);
     const rightW = width - leftW + 1; // shared divider overlaps 1 cell
     const leftInner = leftW - 2;
     const rightInner = rightW - 2;
     // Each pane scrolls on its own so its active item stays visible; the frame pads the shorter one.
-    const left = listPaneRows(phases.length, selPhaseIdx, bodyCap, (i) => leftPhaseRow(phases[i], i, !inAgents && i === state.cursor, agentsOf(phases[i].title), leftInner, theme), moreRow(leftInner, theme));
+    const left = listPaneRows(phases.length, selPhaseIdx, bodyCap, (i) => leftPhaseRow(phases[i], i, !inAgents && i === state.cursor, agentsOf(phases[i].phase), leftInner, theme), moreRow(leftInner, theme));
     const modelColStart = computeModelColStart(agents, rightInner);
     const right = agents.length === 0
         ? [truncateToWidth(theme.fg("dim", "no agents"), rightInner, "", true)]
@@ -102,7 +102,7 @@ function renderPhasesAgents(state, model, runId, phases, width, theme, bodyCap) 
     });
 }
 /** Narrow terminals show only the active pane, full width. */
-function renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, bodyCap, inAgents) {
+function renderSinglePane(state, phases, selPhaseIdx, agents, agentsOf, width, theme, bodyCap, inAgents) {
     const innerW = Math.max(1, width - 2);
     const bc = (s) => theme.fg("muted", s);
     let title;
@@ -114,7 +114,7 @@ function renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, body
     }
     else {
         title = "Phases";
-        rows = listPaneRows(phases.length, state.cursor, bodyCap, (i) => leftPhaseRow(phases[i], i, i === state.cursor, [], innerW, theme), moreRow(innerW, theme));
+        rows = listPaneRows(phases.length, state.cursor, bodyCap, (i) => leftPhaseRow(phases[i], i, i === state.cursor, agentsOf(phases[i].phase), innerW, theme), moreRow(innerW, theme));
     }
     if (rows.length === 0)
         rows.push(" ".repeat(innerW));

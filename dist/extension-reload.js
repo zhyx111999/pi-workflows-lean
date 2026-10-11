@@ -1,4 +1,4 @@
-import packageJson from "../package.json" with { type: "json" };
+import { LOADED_BUILD } from "./build-identity.js";
 /**
  * Live extension state that Pi may hand from one extension generation to the
  * next during any in-process session replacement: `/reload`, `/new`, resume,
@@ -14,7 +14,7 @@ import packageJson from "../package.json" with { type: "json" };
  * session project cwd (ctx.cwd). A cwd-keyed map made those two paths miss
  * each other. One slot + post-claim project checks is the correct model.
  */
-export const WORKFLOW_EXTENSION_VERSION = packageJson.version;
+export const WORKFLOW_EXTENSION_BUILD = LOADED_BUILD;
 const RELOAD_HANDOFF_KEY = Symbol.for("@quintinshaw/pi-dynamic-workflows:reload-handoff-slot");
 const RELOAD_HANDOFF_TTL_MS = 30_000;
 function getSlot() {
@@ -85,10 +85,11 @@ export function takeWorkflowRuntime() {
     return slot.runtime;
 }
 /**
- * Claim a staged runtime and compare its package version with this extension
- * generation. Any package update falls back to a fresh manager; only
- * replacements within the exact same installed version retain live workflow
- * state (and the delivery listener / pending queue on that manager).
+ * Claim a staged runtime and compare its build with this extension
+ * generation. A different build (another installed copy of the package) falls
+ * back to a fresh manager; only the exact same code retains live workflow
+ * state (and the delivery listener / pending queue on that manager), so two
+ * builds never act on one manager.
  *
  * Independent of cwd: the factory only knows process.cwd(), which may differ
  * from the session project the manager was bound to. Project identity is
@@ -98,14 +99,12 @@ export function claimWorkflowRuntime() {
     const runtime = takeWorkflowRuntime();
     if (!runtime)
         return {};
-    return runtime.extensionVersion === WORKFLOW_EXTENSION_VERSION
-        ? { compatible: runtime }
-        : { versionMismatch: runtime };
+    return runtime.extensionBuild === WORKFLOW_EXTENSION_BUILD ? { compatible: runtime } : { buildMismatch: runtime };
 }
 /**
  * Move a runtime's live runs onto the existing journal recovery path when no
- * compatible manager will carry them forward — process exit, a replaced
- * extension version, a cross-project handoff rejection, or a staged handoff
+ * compatible manager will carry them forward — process exit, a different
+ * extension build, a cross-project handoff rejection, or a staged handoff
  * that expired unclaimed — and release what its generation still holds, since
  * no later generation will rebind it. An extension disabled before a reload
  * reaches this path through the expiry.

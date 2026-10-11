@@ -43,9 +43,10 @@ export function runRow(record, live) {
 }
 /** One row per phase, in the shared phase order (see groupAgentsByPhase). */
 export function phaseRows(snap) {
-    return groupAgentsByPhase(snap).map(({ title, agents, counts }) => {
+    return groupAgentsByPhase(snap).map(({ phase, title, agents, counts }) => {
         const usage = aggregateAgentUsage(agents);
         return {
+            phase,
             title,
             done: counts.done,
             total: agents.length,
@@ -60,5 +61,5 @@ export function agentRowsInPhase(snap, phase) {
 }
 /** Every agent row keyed by phase title, for views that show all phases at once. */
 export function agentRowsByPhase(snap) {
-    return new Map(groupAgentsByPhase(snap).map((group) => [group.title, group.agents.map(toAgentRow)]));
+    return new Map(groupAgentsByPhase(snap).map((group) => [group.phase, group.agents.map(toAgentRow)]));
 }

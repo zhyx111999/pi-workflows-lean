@@ -34,7 +34,7 @@ export function readMetaExport(script) {
     const meta = evaluateLiteral(declarator.init, "meta");
     validateMeta(meta);
     assertDeterministicProgram(program);
-    return { meta, start: first.start, end: first.end };
+    return { meta, start: first.start, end: first.end, program };
 }
 function parseScript(script) {
     try {
@@ -103,6 +103,9 @@ function propertyKey(node, path) {
     }
     throw invalidScript(`unsupported key type in ${path}: ${node.type}`);
 }
+function isNonEmptyString(value) {
+    return typeof value === "string" && value.trim().length > 0;
+}
 function validateMeta(meta) {
     if (!meta || typeof meta !== "object")
         throw invalidScript("meta must be an object");
@@ -112,14 +115,22 @@ function validateMeta(meta) {
     if (typeof value.description !== "string" || !value.description.trim()) {
         throw invalidScript("meta.description must be a non-empty string");
     }
-    if (value.model !== undefined && typeof value.model !== "string")
-        throw invalidScript("meta.model must be a string");
+    if (value.model !== undefined && !isNonEmptyString(value.model)) {
+        throw invalidScript("meta.model must be a non-empty string");
+    }
     if (value.phases !== undefined) {
         if (!Array.isArray(value.phases))
             throw invalidScript("meta.phases must be an array");
         for (const phase of value.phases) {
-            if (!phase || typeof phase !== "object" || typeof phase.title !== "string") {
-                throw invalidScript("each meta phase must have a title string");
+            if (!phase || typeof phase !== "object")
+                throw invalidScript("each meta phase must be an object");
+            const { title, detail, model } = phase;
+            if (!isNonEmptyString(title))
+                throw invalidScript("each meta phase must have a non-empty title string");
+            if (detail !== undefined && typeof detail !== "string")
+                throw invalidScript(`meta phase "${title}" detail must be a string`);
+            if (model !== undefined && !isNonEmptyString(model)) {
+                throw invalidScript(`meta phase "${title}" model must be a non-empty string`);
             }
         }
     }

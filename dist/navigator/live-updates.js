@@ -1,5 +1,7 @@
 /** Redraws an open navigator when the workflow manager reports run progress. */
 const RUN_EVENTS = [
+    "started",
+    "deleted",
     "agentStart",
     "agentModel",
     "agentEnd",

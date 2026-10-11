@@ -2,8 +2,11 @@
  * Save and load reusable workflow commands.
  */
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { errorMessage } from "./errors.js";
+import { newLockToken, pidIsAlive, releaseFileLock, tryClaimFileLock } from "./file-lock.js";
 import { ensureDir as ensureDirFs, listJsonFilesSafe, readJsonWithBackupRecovery, resolvePersistenceFs, writeJsonAtomicPreservingPreviousBackup, writeJsonAtomicWithBackupStrict, } from "./fs-persistence.js";
+import { reportDiagnostic } from "./host-diagnostics.js";
 import { workflowProjectPaths, workflowUserSavedDir } from "./workflow-paths.js";
 /** Stable content fingerprint used to guard mutations against same-path races. */
 export function savedWorkflowRevision(workflow) {
@@ -13,6 +16,7 @@ export function savedWorkflowRevision(workflow) {
         description: workflow.description,
         script: workflow.script,
         parameters: workflow.parameters ?? null,
+        toolset: workflow.toolset ?? null,
         savedAt: workflow.savedAt,
     }))
         .digest("hex");
@@ -41,7 +45,7 @@ export function isSafeSavedWorkflowName(name) {
         !name.endsWith(".") &&
         !WINDOWS_DEVICE_NAME.test(name));
 }
-export function assertSafeSavedWorkflowName(name) {
+function assertSafeSavedWorkflowName(name) {
     if (!isSafeSavedWorkflowName(name))
         throw new Error(SAVED_WORKFLOW_NAME_RULE);
 }
@@ -70,13 +74,15 @@ function checkSavedWorkflowFile(data) {
     const problem = (text) => ({ ok: false, problem: text });
     if (!isJsonObject(data))
         return problem("the file does not hold a JSON object");
-    const { name, description = "", savedAt = "", parameters, script, scriptPath } = data;
+    const { name, description = "", savedAt = "", parameters, toolset, script, scriptPath } = data;
     if (!isSafeSavedWorkflowName(name))
         return problem(`"name" is not valid. ${SAVED_WORKFLOW_NAME_RULE}`);
     if (typeof description !== "string")
         return problem('"description" must be a string');
     if (typeof savedAt !== "string")
         return problem('"savedAt" must be a string');
+    if (toolset != null && typeof toolset !== "string")
+        return problem('"toolset" must be a string');
     if (parameters != null) {
         if (!isJsonObject(parameters))
             return problem('"parameters" must be an object');
@@ -103,6 +109,7 @@ function checkSavedWorkflowFile(data) {
             description,
             savedAt,
             ...(parameters != null && { parameters: parameters }),
+            ...(typeof toolset === "string" && { toolset }),
             source,
         },
     };
@@ -159,7 +166,7 @@ export function createWorkflowStorage(cwd, fsOverride) {
         const key = `${path}\n${problem}`;
         if (!reported.has(key)) {
             reported.add(key);
-            console.warn(`[workflow] Skipped saved workflow ${path}: ${problem}`);
+            reportDiagnostic(`Skipped saved workflow ${path}: ${problem}`);
         }
         return null;
     };
@@ -171,6 +178,11 @@ export function createWorkflowStorage(cwd, fsOverride) {
         const checked = checkSavedWorkflowFile(data);
         if (!checked.ok)
             return skipInvalid(path, checked.problem);
+        // The file name is how load, rename and delete find a workflow, so a
+        // different "name" (even one differing only in case) could never be acted on.
+        if (checked.file.name !== basename(path, ".json")) {
+            return skipInvalid(path, `"name" is "${checked.file.name}" but the file is ${basename(path)}; they must match exactly`);
+        }
         const { source, ...fields } = checked.file;
         if ("script" in source)
             return { ...fields, script: source.script, location, path };
@@ -181,7 +193,7 @@ export function createWorkflowStorage(cwd, fsOverride) {
             return { ...fields, script: fs.readFileSync(scriptFile, "utf-8"), location, path };
         }
         catch (error) {
-            return skipInvalid(path, `cannot read "scriptPath": ${error instanceof Error ? error.message : String(error)}`);
+            return skipInvalid(path, `cannot read "scriptPath": ${errorMessage(error)}`);
         }
     };
     const exactCurrent = (workflow) => {
@@ -191,7 +203,7 @@ export function createWorkflowStorage(cwd, fsOverride) {
             expected = locationPath(workflow.name, location);
         }
         catch (error) {
-            return { ok: false, code: "invalid", message: error instanceof Error ? error.message : String(error) };
+            return { ok: false, code: "invalid", message: errorMessage(error) };
         }
         if (workflow.path !== expected) {
             return {
@@ -224,9 +236,9 @@ export function createWorkflowStorage(cwd, fsOverride) {
             fs.unlinkSync(snapshot.path);
     };
     const cleanupTarget = (path) => {
-        // Failure injection is intentionally transient. Retry cleanup so a failed
-        // transaction cannot leave a target that blocks the next attempt.
-        for (const candidate of [`${path}.tmp`, path, `${path}.bak`]) {
+        // Retry once, so a transient failure cannot leave a target that blocks
+        // the next attempt.
+        for (const candidate of [path, `${path}.bak`]) {
             for (let attempt = 0; attempt < 2; attempt++) {
                 try {
                     if (!fs.existsSync(candidate))
@@ -249,7 +261,7 @@ export function createWorkflowStorage(cwd, fsOverride) {
             backup = snapshotFile(`${path}.bak`);
         }
         catch (error) {
-            return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+            return { ok: false, code: "io-error", message: errorMessage(error) };
         }
         if (!primary.existed && !backup.existed)
             return { ok: false, code: "missing", message: "Saved workflow no longer exists." };
@@ -271,24 +283,82 @@ export function createWorkflowStorage(cwd, fsOverride) {
                 // Preserve the original I/O error; the source is restored when the
                 // injected failure is transient, and retry remains safe either way.
             }
-            return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+            return { ok: false, code: "io-error", message: errorMessage(error) };
         }
     };
-    return {
-        save(workflow, location = "project") {
-            assertSafeSavedWorkflowName(workflow.name);
-            ensureDir(dirs[location]);
-            const path = locationPath(workflow.name, location);
-            const saved = {
-                ...workflow,
-                location,
-                path,
-                savedAt: new Date().toISOString(),
+    /**
+     * Run one change under the lock of both saved directories, taken in a fixed
+     * order. A change reads what is on disk, checks it against what its caller
+     * read, and writes, with no other Pi process changing saved workflows in
+     * between. A lock held by a live process is reported, not waited for.
+     */
+    const locked = (change) => {
+        const token = newLockToken();
+        const held = [];
+        try {
+            for (const location of LOCATIONS) {
+                ensureDir(dirs[location]);
+                const lock = join(dirs[location], ".saved-workflows.lock");
+                if (!tryClaimFileLock(fs, lock, { pid: process.pid, token }, (owner) => !pidIsAlive(owner.pid))) {
+                    return { ok: false, code: "busy", message: "Another Pi window is changing saved workflows; try again." };
+                }
+                held.push(lock);
+            }
+            return change();
+        }
+        catch (error) {
+            return { ok: false, code: "io-error", message: errorMessage(error) };
+        }
+        finally {
+            for (const lock of held.reverse())
+                releaseFileLock(fs, lock, token);
+        }
+    };
+    /** The target of a save is free, or holds exactly the workflow the caller agreed to replace. */
+    const checkTarget = (path, location, replacing) => {
+        if (!replacing) {
+            if (!hasRecord(path))
+                return { ok: true };
+            const readable = loadFromFile(path, location) !== null;
+            return {
+                ok: false,
+                code: "conflict",
+                message: readable
+                    ? `A saved workflow already exists at ${path}.`
+                    : `${path} exists but is not a readable saved workflow; fix or remove it first.`,
             };
-            // Overwrite-safe save: keep the PREVIOUS version as .bak —
-            // an accidental same-name save must not destroy the old script.
-            writeJsonAtomicPreservingPreviousBackup(fs, path, saved);
-            return saved;
+        }
+        if (replacing.path !== path || replacing.location !== location) {
+            return { ok: false, code: "stale", message: "The workflow to replace is not at the save target." };
+        }
+        return exactCurrent(replacing);
+    };
+    return {
+        save(draft, { location = "project", replacing } = {}) {
+            if (!isSafeSavedWorkflowName(draft.name))
+                return { ok: false, code: "invalid", message: SAVED_WORKFLOW_NAME_RULE };
+            const path = locationPath(draft.name, location);
+            return locked(() => {
+                const target = checkTarget(path, location, replacing);
+                if (!target.ok) {
+                    return target.code === "stale" || target.code === "missing"
+                        ? { ok: false, code: "stale", message: `/${draft.name} changed after it was read; nothing was saved.` }
+                        : target;
+                }
+                const saved = {
+                    name: draft.name,
+                    description: draft.description,
+                    script: draft.script,
+                    ...(draft.parameters && { parameters: draft.parameters }),
+                    ...(draft.toolset && { toolset: draft.toolset }),
+                    location,
+                    path,
+                    savedAt: new Date().toISOString(),
+                };
+                // The replaced version stays as .bak, so even an agreed replace can be undone.
+                writeJsonAtomicPreservingPreviousBackup(fs, path, saved);
+                return { ok: true, workflow: saved };
+            });
         },
         load(name) {
             if (!isSafeSavedWorkflowName(name))
@@ -309,80 +379,66 @@ export function createWorkflowStorage(cwd, fsOverride) {
             }
             return workflows.sort((a, b) => a.name.localeCompare(b.name));
         },
-        delete(workflow, location) {
-            if (typeof workflow === "string") {
-                if (!isSafeSavedWorkflowName(workflow))
-                    return false;
-                let deleted = false;
-                for (const tier of location ? [location] : LOCATIONS) {
-                    const current = loadFromFile(locationPath(workflow, tier), tier);
-                    if (!current)
-                        continue;
-                    const result = removeSource(current.path);
-                    if (!result.ok)
-                        return false;
-                    deleted = true;
-                }
-                return deleted;
-            }
-            const current = exactCurrent(workflow);
-            if (!current.ok)
-                return current;
-            return removeSource(current.workflow.path);
+        delete(workflow) {
+            return locked(() => {
+                const current = exactCurrent(workflow);
+                return current.ok ? removeSource(current.workflow.path) : current;
+            });
         },
         rename(workflow, name) {
             if (!isSafeSavedWorkflowName(name))
                 return { ok: false, code: "invalid", message: SAVED_WORKFLOW_NAME_RULE };
-            const current = exactCurrent(workflow);
-            if (!current.ok)
-                return current;
-            if (name === current.workflow.name)
-                return { ok: true, workflow: current.workflow };
-            // A command name is globally resolved by precedence, so a target that is
-            // occupied in any tier is ambiguous even when the current row is hidden by
-            // another tier. Reject before writing instead of mutating a fallback by name.
-            for (const tier of LOCATIONS) {
-                const target = locationPath(name, tier);
-                if (hasRecord(target)) {
-                    return { ok: false, code: "conflict", message: `A saved workflow named /${name} already exists.` };
-                }
-            }
-            const { location } = current.workflow;
-            const targetPath = locationPath(name, location);
-            const renamed = {
-                ...current.workflow,
-                name,
-                path: targetPath,
-                savedAt: new Date().toISOString(),
-            };
-            let sourcePrimary;
-            let sourceBackup;
-            try {
-                ensureDir(dirs[location]);
-                sourcePrimary = snapshotFile(current.workflow.path);
-                sourceBackup = snapshotFile(`${current.workflow.path}.bak`);
-                // The replacement must have both primary and backup before the source
-                // can be touched. A failed strict write is cleaned before returning.
-                writeJsonAtomicWithBackupStrict(fs, targetPath, renamed);
-            }
-            catch (error) {
-                cleanupTarget(targetPath);
-                return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
-            }
-            const removed = removeSource(current.workflow.path);
-            if (!removed.ok) {
-                cleanupTarget(targetPath);
-                try {
-                    restoreFile(sourcePrimary);
-                    restoreFile(sourceBackup);
-                }
-                catch {
-                    // The original bytes are restored whenever the injected failure is
-                    // transient; cleanup makes the next retry deterministic.
-                }
-                return removed;
-            }
-            return { ok: true, workflow: renamed };
+            return locked(() => renameLocked(workflow, name));
         },
     };
+    function renameLocked(workflow, name) {
+        const current = exactCurrent(workflow);
+        if (!current.ok)
+            return current;
+        if (name === current.workflow.name)
+            return { ok: true, workflow: current.workflow };
+        // A command name is globally resolved by precedence, so a target that is
+        // occupied in any tier is ambiguous even when the current row is hidden by
+        // another tier. Reject before writing instead of mutating a fallback by name.
+        for (const tier of LOCATIONS) {
+            if (hasRecord(locationPath(name, tier))) {
+                return { ok: false, code: "conflict", message: `A saved workflow named /${name} already exists.` };
+            }
+        }
+        const { location } = current.workflow;
+        const targetPath = locationPath(name, location);
+        const renamed = {
+            ...current.workflow,
+            name,
+            path: targetPath,
+            savedAt: new Date().toISOString(),
+        };
+        let sourcePrimary;
+        let sourceBackup;
+        try {
+            sourcePrimary = snapshotFile(current.workflow.path);
+            sourceBackup = snapshotFile(`${current.workflow.path}.bak`);
+            // The replacement must have both primary and backup before the source
+            // can be touched. A failed strict write is cleaned before returning.
+            writeJsonAtomicWithBackupStrict(fs, targetPath, renamed);
+        }
+        catch (error) {
+            cleanupTarget(targetPath);
+            return { ok: false, code: "io-error", message: errorMessage(error) };
+        }
+        const removed = removeSource(current.workflow.path);
+        if (!removed.ok) {
+            cleanupTarget(targetPath);
+            try {
+                restoreFile(sourcePrimary);
+                restoreFile(sourceBackup);
+            }
+            catch {
+                // The original bytes are restored whenever the failure is transient;
+                // cleanup makes the next retry deterministic.
+            }
+            return removed;
+        }
+        return { ok: true, workflow: renamed };
+    }
 }

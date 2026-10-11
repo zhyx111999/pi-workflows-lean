@@ -158,11 +158,13 @@ function slug(name) {
 }
 /**
  * Create an isolated worktree at `<repoRoot>/.pi/worktrees/<id>` on branch
- * `pi/wf/<name slug>-<id>`. Each live execution owns a fresh id, so retained
- * results from earlier executions are never reused or overwritten. Journal
- * identity is independent of this path. Returns a failed Worktree on error.
+ * `pi/wf/<label slug>-<id>`. The fresh random id makes every live execution's
+ * tree and branch unique, so retained results are never reused or overwritten,
+ * and leaves the slug free for the agent's label; the run's log names the tree
+ * and branch it kept. Journal identity is independent of this path. Returns a
+ * failed Worktree on error.
  */
-export async function createWorktree(baseCwd, name, execOptions) {
+export async function createWorktree(baseCwd, label, execOptions) {
     const exec = gitExec(execOptions);
     let repoRoot;
     try {
@@ -174,7 +176,7 @@ export async function createWorktree(baseCwd, name, execOptions) {
     let path;
     let branch;
     try {
-        ({ path, branch } = await reserveWorktree(repoRoot, name, exec));
+        ({ path, branch } = await reserveWorktree(repoRoot, label, exec));
     }
     catch (error) {
         return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
@@ -203,7 +205,7 @@ const WORKTREE_ID_ATTEMPTS = 8;
  * claim the same id; skipping an id whose branch survives (its tree deleted by
  * hand) means failure cleanup only ever removes what this execution created.
  */
-async function reserveWorktree(repoRoot, name, exec) {
+async function reserveWorktree(repoRoot, label, exec) {
     const parent = join(repoRoot, ".pi", "worktrees");
     await mkdir(parent, { recursive: true });
     for (let attempt = 0; attempt < WORKTREE_ID_ATTEMPTS; attempt++) {
@@ -217,7 +219,7 @@ async function reserveWorktree(repoRoot, name, exec) {
                 continue;
             throw error;
         }
-        const branch = `pi/wf/${slug(name)}-${id}`;
+        const branch = `pi/wf/${slug(label)}-${id}`;
         let free = false;
         try {
             free = !(await git(["-C", repoRoot, "for-each-ref", "--format=%(refname)", `refs/heads/${branch}`], exec)).trim();
@@ -241,7 +243,7 @@ function describeGitFailure(error, fallback) {
  * branch and any partial checkout left by a killed git. All steps short-timeout
  * and failure-tolerant — the spawn path must not hang on cleanup. */
 async function cleanupFailedWorktreeAdd(repoRoot, path, branch, exec) {
-    // Order matters (r3 MAJOR): if the killed `worktree add` had already
+    // Order matters: if the killed `worktree add` had already
     // REGISTERED the worktree, `branch -D` is refused ("used by worktree")
     // until the registration is gone. Deregister first, then delete the branch.
     try {

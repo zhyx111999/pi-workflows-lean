@@ -2,10 +2,13 @@
  * `/workflows` slash command: list, inspect, and control background workflow runs.
  * Shares the extension's single WorkflowManager so background runs are reachable.
  */
+import { isCommandTaken } from "./command-registry.js";
 import { fmtFull, fmtTokenSegment, recomputeWorkflowSnapshot, renderWorkflowText, runStatusIcon, tokenFigures, } from "./display.js";
+import { errorMessage } from "./errors.js";
 import { runSummary } from "./run-record-store.js";
-import { commitRunSave, planRunSave, replacedWorkflowLabel } from "./run-save.js";
-import { registerSavedWorkflow } from "./saved-commands.js";
+import { commitRunSave, planRunSave, replacedWorkflowLabel, runSaveDraft } from "./run-save.js";
+import { watchRun } from "./run-watchers.js";
+import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "./saved-commands.js";
 import { SUBAGENTS_TOOL_NAME } from "./subagents-tool.js";
 import { buildForcedWorkflowPrompt } from "./workflow-editor.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
@@ -17,69 +20,6 @@ function summarizeRun(run) {
     const segment = fmtTokenSegment(tokenFigures(run.tokenUsage), fmtFull);
     const tokens = segment ? ` · ${segment}` : "";
     return `${icon} ${run.runId}  ${run.workflowName} [${run.status}] ${done}/${total} agents${tokens}`;
-}
-function oneLineProgress(snapshot) {
-    const total = snapshot.agents.length;
-    const done = snapshot.agents.filter((a) => a.status === "done").length;
-    const running = snapshot.agents.filter((a) => a.status === "running").length;
-    const errs = snapshot.agents.filter((a) => a.status === "error").length;
-    const phase = snapshot.currentPhase ? ` · ${snapshot.currentPhase}` : "";
-    return `◆ ${snapshot.name}: ${done}/${total} done${running ? `, ${running} running` : ""}${errs ? `, ${errs} err` : ""}${phase}`;
-}
-/**
- * Subscribe to a running run's events and stream live progress to the status bar,
- * printing the final snapshot when it finishes. Non-blocking: returns true if the
- * run was active and is now being watched, false otherwise. Listeners clean up on
- * completion so nothing leaks.
- */
-function watchRun(manager, pi, ctx, id) {
-    const active = manager.getRun(id);
-    if (active?.status !== "running")
-        return false;
-    const key = `wf:${id}`;
-    const update = () => {
-        const run = manager.getRun(id);
-        if (run)
-            ctx.ui.setStatus(key, oneLineProgress(run.snapshot));
-    };
-    const onEvent = (e) => {
-        if (!e || e.runId === id)
-            update();
-    };
-    let settled = false;
-    const progressEvents = ["agentStart", "agentEnd", "phase", "log", "tokenUsage"];
-    const finalEvents = ["complete", "error", "stopped", "paused", "deleted"];
-    const finish = (e) => {
-        if (e && e.runId !== id)
-            return;
-        if (settled)
-            return;
-        settled = true;
-        for (const ev of progressEvents)
-            manager.off(ev, onEvent);
-        for (const ev of finalEvents)
-            manager.off(ev, finish);
-        try {
-            ctx.ui.setStatus(key, undefined);
-            const run = manager.getRun(id);
-            if (run) {
-                pi.sendMessage({
-                    customType: "workflows",
-                    content: renderWorkflowText(recomputeWorkflowSnapshot(run.snapshot), true),
-                    display: true,
-                });
-            }
-        }
-        catch {
-            // Listeners are already removed; a stale-ctx/UI failure is not actionable.
-        }
-    };
-    for (const ev of progressEvents)
-        manager.on(ev, onEvent);
-    for (const ev of finalEvents)
-        manager.on(ev, finish);
-    update();
-    return true;
 }
 function renderPersistedStatus(run) {
     const lines = [`${runStatusIcon(run.status)} ${run.workflowName} (${run.runId}) — ${run.status}`];
@@ -122,13 +62,22 @@ async function confirmReplace(ctx, plan, runId) {
  */
 async function saveRunCommand(pi, { getManager, getStorage }, ctx, name, runIdArg) {
     const storage = getStorage();
-    const runs = getManager().listRuns();
-    const run = runIdArg ? runs.find((r) => r.runId === runIdArg) : runs.find((r) => r.script);
-    if (!run?.script) {
+    const manager = getManager();
+    // A named run is found in any session; without one, the latest run of this session.
+    const run = runIdArg ? manager.findRun(runIdArg) : manager.listRuns().find((r) => r.script);
+    const draft = run ? runSaveDraft(run, name) : undefined;
+    if (!run || !draft) {
         ctx.ui.notify(runIdArg ? `No run ${runIdArg} with a script` : "No saved run to save", "error");
         return;
     }
-    const plan = planRunSave(storage, { name, description: run.workflowName, script: run.script });
+    // A name Pi or another extension answers could never run as /name; refuse it
+    // before anything reaches disk, as the navigator does.
+    const availability = savedWorkflowCommandAvailability(pi, name);
+    if (!availability.ok) {
+        ctx.ui.notify(`Not saved: ${availability.message}`, "error");
+        return;
+    }
+    const plan = planRunSave(storage, draft);
     let saved;
     if (plan.kind === "unchanged") {
         saved = plan.existing;
@@ -138,7 +87,7 @@ async function saveRunCommand(pi, { getManager, getStorage }, ctx, name, runIdAr
             return;
         const result = commitRunSave(storage, plan);
         if (!result.ok) {
-            ctx.ui.notify(result.message, result.code === "stale" ? "warning" : "error");
+            ctx.ui.notify(result.message, result.code === "stale" || result.code === "busy" ? "warning" : "error");
             return;
         }
         saved = result.workflow;
@@ -147,28 +96,14 @@ async function saveRunCommand(pi, { getManager, getStorage }, ctx, name, runIdAr
     // instance from this save call, or a later project switch leaves
     // the loader pointed at the source project's store.
     const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage().load(name));
-    const unchanged = plan.kind === "unchanged";
-    // Surface a refused registration: the file persisted,
-    // but a host/extension-owned name never becomes a slash command —
-    // reporting plain success would silently mislead.
-    if (registration.ok) {
-        ctx.ui.notify(`${unchanged ? `/${name} is already saved with this script` : `Saved /${name}`} (from ${run.runId})`, "info");
-    }
-    else {
-        ctx.ui.notify(`${unchanged ? `"${name}" is already in the library` : `Saved "${name}" to the library`}, but it cannot be registered as a slash command: ${registration.message}`, "warning");
-    }
+    const summary = plan.kind === "unchanged" ? `/${name} is already saved with this script` : `Saved /${name}`;
+    ctx.ui.notify(registration.ok ? `${summary} (from ${run.runId})` : `${summary}, but ${registration.message}`, registration.ok ? "info" : "error");
 }
 /** Register the `/workflows` command against the shared manager. Idempotent. */
 export function registerWorkflowCommands(pi, deps) {
     const { getManager, getStorage } = deps;
-    try {
-        const taken = (pi.getCommands?.() ?? []).some((c) => c.name === "workflows");
-        if (taken)
-            return;
-    }
-    catch {
-        // getCommands may be unavailable in some hosts; fall through and try to register.
-    }
+    if (isCommandTaken(pi, "workflows"))
+        return;
     pi.registerCommand("workflows", {
         description: "Manage workflow runs — no args (opens navigator) | run <prompt> | status/stop/pause/resume <id> | rm <id> | save <name> [runId]",
         async handler(args, ctx) {
@@ -278,15 +213,21 @@ export function registerWorkflowCommands(pi, deps) {
                 case "rm": {
                     if (!id)
                         return ctx.ui.notify(USAGE, "warning");
-                    if (manager.deleteRun(id)) {
+                    let removed;
+                    try {
+                        removed = manager.deleteRun(id);
+                    }
+                    catch (error) {
+                        ctx.ui.notify(`Could not fully remove ${id}: ${errorMessage(error)}`, "error");
+                        return;
+                    }
+                    if (removed) {
                         ctx.ui.notify(`Removed ${id}`, "info");
                         return;
                     }
-                    // Distinguish a lease refusal from "no such run": the run may exist
-                    // but be leased by a live process
-                    // (resumed/running in another session) — saying "No run" would lie
-                    // while that process burns tokens.
-                    const known = manager.getRun(id) ?? manager.getPersistence().loadPreview(id);
+                    // A refused lease is not "no such run": another live process may be
+                    // running it, and saying "No run" would hide that it is still spending.
+                    const known = manager.getRun(id) ?? manager.findRun(id);
                     ctx.ui.notify(known ? `Cannot remove ${id}: it is active in another live session` : `No run ${id}`, known ? "warning" : "info");
                     return;
                 }

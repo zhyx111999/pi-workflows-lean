@@ -2,7 +2,7 @@
 import { agentDefinitionKey, resolveAgentType } from "../agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { resolveModelForPhase } from "../model-routing.js";
-import { isEmptyTextAgentResult, runLiveAgent } from "./agent-execution.js";
+import { runLiveAgent } from "./agent-execution.js";
 import { parseAgentCall, resolveIsolation } from "./agent-options.js";
 import { agentCallId, hashAgentCall } from "./call-identity.js";
 import { currentCallSequence, currentFanoutBatch } from "./fanout.js";
@@ -32,6 +32,11 @@ export function createAgent(ctx) {
         // Invalid local configuration must fail before a slot is reserved, so it
         // cannot change the run's capacity or scheduling state.
         const definition = resolveAgentType(agentOptions.agentType, ctx.agentRegistry);
+        // A misspelled or removed type must not quietly run as an untyped agent
+        // with the default tools and model; that is a different agent.
+        if (agentOptions.agentType && !definition) {
+            throw new WorkflowError(`unknown agentType "${agentOptions.agentType}"`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
+        }
         const isolation = resolveIsolation(agentOptions.isolation, definition?.isolation);
         // Already resolved to its real path by parseAgentCall.
         const cwd = agentOptions.cwd;
@@ -47,9 +52,6 @@ export function createAgent(ctx) {
         const requestedLabel = agentOptions.label?.trim();
         if (agentOptions.thread && isolation === "worktree") {
             throw new WorkflowError(`agent thread "${agentOptions.thread}" cannot use worktree isolation`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
-        }
-        if (agentOptions.agentType && !definition) {
-            ctx.log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
         }
         // Precedence: explicit model > agentType model > tier > phase model. With
         // only a tier set, modelSpec stays undefined so the agent layer resolves the tier.
@@ -88,24 +90,10 @@ export function createAgent(ctx) {
             batch,
             displayModel: modelSpec ?? ctx.options.mainModel,
         };
-        // Longest-unchanged-prefix resume: replay only while no earlier call has
-        // missed, so an edited upstream call never leaves stale downstream results.
-        // Independent calls have no downstream, so each replays on its own match.
-        // A thread's conversation cannot be replayed, so it ends replay for the run.
         if (agentOptions.thread)
             state.resumeBarrierReached = true;
-        const cached = agentOptions.thread ? undefined : ctx.options.resumeJournal?.get(index);
-        const hashMatches = cached != null && cached.hash === hash;
-        const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-        const withinReplay = ctx.options.independentCalls || !state.journalMissed;
-        if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && withinReplay) {
-            return replayFromJournal(ctx, call, cached);
-        }
-        // A genuine miss marks where the unchanged prefix ends.
-        if (!hashMatches || cachedEmptyOutput) {
-            state.journalMissed = true;
-        }
-        return runLiveAgent(ctx, call);
+        const cached = ctx.replayable(index, hash);
+        return cached ? replayFromJournal(ctx, call, cached) : runLiveAgent(ctx, call);
     };
     // runWorkflow exposes this through trackScriptCalls, which also turns a synchronous validation throw into a rejection.
     return (prompt, agentOptions = {}) => startAgentCall(prompt, agentOptions);

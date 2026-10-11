@@ -59,14 +59,9 @@ export function dispatchAttempt(ctx, call, cwd, scope, usage) {
             call.displayModel = model;
             options.onAgentModel?.({ id, label, phase, model });
         },
-        onModelFallback: ({ tier, requestedSpec, source, }) => {
-            if (!scope.isOpen())
-                return;
-            // Only an untagged agent's implicit route degrades (an explicit model or
-            // tier fails with MODEL_NOT_FOUND instead); log it so the run shows it.
-            ctx.log(source === "inherit-main"
-                ? `inherited main model "${requestedSpec}" unavailable — using the session default`
-                : `default "${tier}" tier model "${requestedSpec}" unavailable — using the session default`);
+        onNotice: (message) => {
+            if (scope.isOpen())
+                ctx.log(message);
         },
         // The usage tracker ignores an attempt once its usage is committed.
         onUsageProgress: usage.reportProgress,

@@ -31,7 +31,7 @@ class ScriptPromise extends Promise {
     }
 }
 export function createScriptCalls() {
-    return { pending: new Set(), failures: [] };
+    return { pending: new Set(), failures: [], ownRejections: new Map() };
 }
 /**
  * Route a promise-returning workflow global through the run's tracker. Every
@@ -53,9 +53,11 @@ export function trackScriptCalls(calls, global, start) {
 }
 /** The failures whose promise the script never handled, in the order they happened. Final once nothing is pending. */
 export function unobservedFailures(calls) {
-    return calls.failures
+    const fromGlobals = calls.failures
         .filter(({ promise }) => !observedPromises.has(promise))
         .map(({ global, error }) => ({ global, error }));
+    const own = [...calls.ownRejections.values()].map((error) => ({ error }));
+    return [...fromGlobals, ...own];
 }
 function track(calls, global, source) {
     const promise = new ScriptPromise((resolve) => resolve(source), (derived) => track(calls, global, derived));

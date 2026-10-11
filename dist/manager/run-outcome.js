@@ -1,14 +1,28 @@
 // Decides how a finished execution is reported: failure cause, final status, empty-result warning.
 import { emptyFleetSummary } from "../display.js";
-import { isProviderUsageLimit, WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, workflowAbortedError, } from "../errors.js";
-/** The escaped error as a WorkflowError. A checkpoint suspension during an abort is just the abort. */
+import { errorMessage, isProviderUsageLimit, WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode, workflowAbortedError, } from "../errors.js";
+/**
+ * The escaped error as a WorkflowError. A checkpoint suspension during an abort
+ * is just the abort. Any other foreign error is an abort only when the run was
+ * aborted; otherwise it is a failure of unknown cause (a throwing toolset
+ * factory, a script bug), which a resume may still get past.
+ */
 function asWorkflowError(error, aborted) {
     if (error instanceof WorkflowCheckpointSuspensionError && aborted)
         return workflowAbortedError();
     if (error instanceof WorkflowError)
         return error;
-    const message = error instanceof Error ? error.message : String(error);
-    return new WorkflowError(message, WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+    const message = errorMessage(error);
+    const code = aborted ? WorkflowErrorCode.WORKFLOW_ABORTED : WorkflowErrorCode.UNKNOWN;
+    return new WorkflowError(message, code, { recoverable: true });
+}
+/**
+ * The user pause()/stop() that aborted this execution, if one did. Its action
+ * decides how the execution settles, whatever the script did afterwards.
+ */
+export function controllingLifecycleAction(managed) {
+    const control = managed.lifecycleControl;
+    return control && managed.controller.signal.reason === control.abortReason ? control.action : undefined;
 }
 /**
  * Classify an error that escaped runWorkflow. Several causes can race: a
@@ -22,7 +36,7 @@ export function classifyFailure(managed, error) {
     const usageLimitPaused = isProviderUsageLimit(workflowError) &&
         (managed.usageLimitEscapedBeforeLifecycleControl === workflowError ||
             (!signal.aborted && managed.lifecycleControl === undefined));
-    const lifecycleControlOwnsExecution = managed.lifecycleControl !== undefined && signal.reason === managed.lifecycleControl.abortReason;
+    const lifecycleControlOwnsExecution = controllingLifecycleAction(managed) !== undefined;
     // pause()/stop() already reported its own AbortError, and a provider result
     // that arrives after it must not revive a stop or arm quota auto-resume.
     const announced = lifecycleControlOwnsExecution &&

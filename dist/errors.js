@@ -72,6 +72,20 @@ export class RunRecordDeletedError extends Error {
         this.runId = runId;
     }
 }
+/**
+ * A run's record files exist but cannot be read: a damaged head and backup, or
+ * a log that does not match its committed head. The files are left as they are
+ * for diagnosis, and the run is never treated as missing, which would let a
+ * later write replace it.
+ */
+export class RunRecordUnreadableError extends Error {
+    path;
+    constructor(path, reason) {
+        super(`workflow run record ${path} cannot be read: ${reason}`);
+        this.name = "RunRecordUnreadableError";
+        this.path = path;
+    }
+}
 /** Contract failure that retains every definition or assembly diagnostic. */
 export class WorkflowCapabilityContractError extends Error {
     diagnostics;
@@ -81,13 +95,25 @@ export class WorkflowCapabilityContractError extends Error {
         this.diagnostics = diagnostics;
     }
 }
-/** Narrow an unknown failure to WorkflowError. */
 /** The error of a workflow stopped by an abort. Recoverable: its journal can resume. */
 export function workflowAbortedError() {
     return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
 }
+/** Narrow an unknown failure to WorkflowError. */
 export function isWorkflowError(error) {
     return error instanceof WorkflowError;
+}
+/**
+ * The text of an unknown failure, for messages and logs. Never throws: a thrown
+ * value can be anything, including an object whose conversion to text throws.
+ */
+export function errorMessage(error) {
+    try {
+        return error instanceof Error ? error.message : String(error);
+    }
+    catch {
+        return "unprintable error";
+    }
 }
 /** Report whether an unknown failure is a provider usage-limit checkpoint condition. */
 export function isProviderUsageLimit(error) {
@@ -155,5 +181,9 @@ export function wrapError(error, context) {
             });
         }
     }
-    return new WorkflowError(error instanceof Error ? error.message : String(error), WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: true, agentLabel: context?.agentLabel, details: error });
+    return new WorkflowError(errorMessage(error), WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
+        recoverable: true,
+        agentLabel: context?.agentLabel,
+        details: error,
+    });
 }

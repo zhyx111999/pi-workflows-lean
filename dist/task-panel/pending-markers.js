@@ -8,16 +8,18 @@ import { warnDelivery } from "./delivery-endpoints.js";
 import { cancelDeliveryRetry } from "./delivery-retry.js";
 /** Confirmed deliveries whose pending marker still needs to be cleared durably. */
 export const deliveredAwaitingClear = new Map();
-function sameDelivery(a, b) {
-    return a?.kind === b.kind && (a.kind !== "text" || (b.kind === "text" && a.text === b.text));
-}
-/** Reuse the existing id for the same delivery so host history can deduplicate retries. */
-export function markerWithId(marker, existing) {
-    const deliveryId = sameDelivery(existing, marker) ? existing?.deliveryId : undefined;
-    return { ...marker, deliveryId: deliveryId ?? marker.deliveryId ?? randomUUID() };
+/**
+ * A marker with its delivery id. A retry passes the marker it is retrying and
+ * keeps that id, so host history can deduplicate the resend. A new
+ * notification passes a marker without one and always gets a fresh id: two
+ * results of one run (say, a resume after an earlier completion) are two
+ * deliveries even when they are of the same kind.
+ */
+export function markerWithId(marker) {
+    return marker.deliveryId ? marker : { ...marker, deliveryId: randomUUID() };
 }
 export function markRunPending(run, marker) {
-    const identified = markerWithId(marker, run.pendingDelivery);
+    const identified = markerWithId(marker);
     if (run.pendingDelivery?.deliveryId !== identified.deliveryId)
         deliveredAwaitingClear.delete(run.runId);
     run.pendingDelivery = identified;
@@ -49,15 +51,24 @@ export function clearRunPending(manager, runId, deliveryId, run) {
  * Make a live run's delivery marker durable before sending it. A run that has
  * never been written is seeded with a minimal record; persistence refuses to
  * recreate a record that another process deleted, which reports "deleted".
+ *
+ * A new notification comes from the execution this process just settled, so it
+ * replaces whatever the record carries. A retry re-saves its marker only while
+ * the record carries that same delivery or none: by then another process may
+ * have resumed and finished the run, and its newer marker must not be
+ * overwritten by this copy's older one.
  */
-export function persistRunPending(manager, run) {
+export function persistRunPending(manager, run, mode) {
     try {
         // Merge into an existing on-disk record so we don't clobber the
         // manager's richer write that follows the complete/error emit, nor its
         // session owner, which only a session move changes.
         const persistence = manager.getPersistence();
-        if (persistence.updateMetadata(run.runId, { pendingDelivery: run.pendingDelivery }))
+        const expected = mode === "retry" ? run.pendingDelivery?.deliveryId : undefined;
+        if (persistence.updateMetadata(run.runId, { pendingDelivery: run.pendingDelivery }, expected))
             return "saved";
+        if (persistence.loadPreview(run.runId))
+            return "stale";
         if (run.pendingDelivery) {
             persistence.save({
                 runId: run.runId,

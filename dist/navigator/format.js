@@ -5,11 +5,6 @@ export const ELLIPSIS = "…";
 export function pluralize(word, n) {
     return n === 1 ? word : `${word}s`;
 }
-/** A phase title as drawn in a cell. Scripts may call phase(""), and a blank
- *  title would leave the row and the agents-pane heading with no visible name. */
-export function phaseLabel(title) {
-    return title.trim() ? title : "(unnamed phase)";
-}
 /** Short, human-friendly model label: drop the provider prefix for display. */
 export function shortModel(model) {
     if (!model)

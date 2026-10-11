@@ -78,7 +78,7 @@ const WORKFLOW_AUTHORING_PROFILES = [
 const SOURCES = [
     "src/subagents-tool.ts",
     "src/subagents-control-tool.ts",
-    "skills/workflow-authoring",
+    SKILL_ROOT,
     "package.json#pi.skills",
 ];
 function bytes(value) {
@@ -205,7 +205,7 @@ export function measureWorkflowContextSurfaces(root = ROOT) {
                 bytes: promptBytes + toolBytes + registeredSkillsDiscoveryBytes,
             },
             workflowAuthoringSkillCorpus: {
-                serialization: "sum of UTF-8 bytes for every file under skills/workflow-authoring",
+                serialization: `sum of UTF-8 bytes for every file under ${SKILL_ROOT}`,
                 files: corpusFiles.length,
                 bytes: corpusBytes,
             },
@@ -225,14 +225,11 @@ function serializeMeasurement(measurement) {
 export function renderWorkflowContextMeasurement(root = ROOT) {
     return serializeMeasurement(measureWorkflowContextSurfaces(root));
 }
-/** Write the generated measurement under root and return the measured values. */
-export function writeWorkflowContextMeasurement(root) {
-    const measurement = measureWorkflowContextSurfaces(root);
+/** Write a measurement of the package at root (by default a fresh one) as its committed artifact. */
+export function writeWorkflowContextMeasurement(root, measurement = measureWorkflowContextSurfaces(root)) {
     writeFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), serializeMeasurement(measurement));
-    return measurement;
 }
-/** Report whether committed or supplied measurement JSON matches the current bytes of the package at root. */
-export function checkWorkflowContextMeasurement(root, actual) {
-    const committed = actual ?? readFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8");
-    return committed === renderWorkflowContextMeasurement(root);
+/** Report whether the artifact committed under root matches a measurement of it (by default a fresh one). */
+export function checkWorkflowContextMeasurement(root, measurement = measureWorkflowContextSurfaces(root)) {
+    return readFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8") === serializeMeasurement(measurement);
 }

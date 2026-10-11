@@ -20,6 +20,7 @@
  */
 import { getMarkdownTheme, } from "@earendil-works/pi-coding-agent";
 import { parseKey } from "@earendil-works/pi-tui";
+import { errorMessage } from "./errors.js";
 import { asText } from "./navigator/as-text.js";
 import { sameConfirmationContext, } from "./navigator/confirmation.js";
 import { FrameMemo } from "./navigator/frame-memo.js";
@@ -86,12 +87,7 @@ export class NavigatorModel {
         const storage = this.getStorage();
         if (!storage)
             return { ok: false, code: "io-error", message: "Saving is not available (no storage)." };
-        const result = storage.delete(workflow);
-        return typeof result === "boolean"
-            ? result
-                ? { ok: true }
-                : { ok: false, code: "missing", message: "Saved workflow no longer exists." }
-            : result;
+        return storage.delete(workflow);
     }
     /** Rename exactly the currently visible saved source. */
     renameSaved(workflow, name) {
@@ -184,9 +180,33 @@ export class NavigatorState {
         if (snapshot.items.length)
             top.selected = snapshot.items[top.cursor]?.identity;
     }
+    /** The selected item for drawing; a vanished selection moves to its nearest row. */
     currentItem(snapshot) {
         this.reconcile(snapshot);
-        return snapshot.items.find((item) => sameIdentity(this.top().selected, item.identity));
+        return this.selectedItem(snapshot);
+    }
+    /**
+     * The item an action applies to: exactly the one the user last saw selected.
+     * Unlike currentItem() it never moves the selection, so a run or workflow
+     * that vanished since the last redraw (deleted, renamed, filtered out) gives
+     * no target rather than its neighbour.
+     */
+    selectedItem(snapshot) {
+        // Nothing is selected before the first draw; the row under the cursor is then the selection.
+        if (!this.top().selected)
+            this.reconcile(snapshot);
+        const selected = this.top().selected;
+        return selected ? snapshot.items.find((item) => sameIdentity(selected, item.identity)) : undefined;
+    }
+    /** The kind of the row selected in the runs list, whether or not it is still listed. */
+    selectedKind(snapshot) {
+        if (this.kind !== "runs")
+            return undefined;
+        return this.selectedItem(snapshot)?.kind ?? this.top().selected?.kind;
+    }
+    /** Whether the runs list's selection names an item that is no longer listed. */
+    selectionVanished(snapshot) {
+        return this.kind === "runs" && this.top().selected !== undefined && !this.selectedItem(snapshot);
     }
     clamp(count) {
         const top = this.top();
@@ -285,7 +305,7 @@ export class NavigatorState {
         const top = this.top();
         if (top.kind === "runs") {
             const snapshot = provided ?? model.visible(this.filter);
-            const item = this.currentItem(snapshot);
+            const item = this.selectedItem(snapshot);
             if (!item)
                 return false;
             this.cancelConfirmation();
@@ -311,7 +331,7 @@ export class NavigatorState {
             const phase = model.phases(top.runId)[top.cursor];
             if (!phase)
                 return false;
-            this.stack.push({ kind: "agents", cursor: 0, runId: top.runId, phase: phase.title });
+            this.stack.push({ kind: "agents", cursor: 0, runId: top.runId, phase: phase.phase });
             return true;
         }
         // phase("") is a legal phase, so test for presence rather than truthiness.
@@ -359,12 +379,12 @@ export class NavigatorState {
             return this.runId;
         if (this.kind !== "runs")
             return undefined;
-        const item = this.currentItem(snapshot ?? model.visible(this.filter));
+        const item = this.selectedItem(snapshot ?? model.visible(this.filter));
         return item?.kind === "run" ? item.row.runId : undefined;
     }
     activeSaved(snapshot, allSaved) {
         if (this.kind === "runs") {
-            const item = this.currentItem(snapshot);
+            const item = this.selectedItem(snapshot);
             return item?.kind === "saved" ? item.workflow : undefined;
         }
         if (this.kind === "savedDetail") {
@@ -477,8 +497,7 @@ export class NavigatorState {
             return sameIdentity(this.top().savedIdentity, request.target) ? request : undefined;
         }
         if (this.kind === "runs") {
-            const current = this.currentItem(snapshot);
-            return sameIdentity(current?.identity, request.target) ? request : undefined;
+            return sameIdentity(this.selectedItem(snapshot)?.identity, request.target) ? request : undefined;
         }
         // Drilled views are bound to the immutable frame runId, not runs selection.
         return request.target.kind === "run" && request.target.runId === this.runId ? request : undefined;
@@ -585,13 +604,13 @@ export function openWorkflowNavigator(pi, manager, ui, opts = {}) {
                 else if (state.mode === "confirm")
                     handleConfirmKey(session, key);
                 else {
-                    const item = state.kind === "runs" ? state.currentItem(currentSnapshot(session)) : undefined;
-                    if (!runBrowseAction(session, keyToAction(key, state.kind, item?.kind), close))
+                    // The key means what it meant for the row the user saw, even if that row has since gone.
+                    if (!runBrowseAction(session, keyToAction(key, state.kind, state.selectedKind(currentSnapshot(session))), close))
                         return;
                 }
             }
             catch (error) {
-                ui.notify(`Workflow action failed: ${error instanceof Error ? error.message : error}`, "error");
+                ui.notify(`Workflow action failed: ${errorMessage(error)}`, "error");
             }
             rerender();
         };
