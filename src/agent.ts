@@ -377,7 +377,9 @@ export class WorkflowAgent {
         options.onModelResolved?.(formatModelSpecWithThinking(canonicalModelSpec(session.model), choice.thinkingLevel));
       }
       if (options.signal?.aborted) throw workflowAbortedError();
-      unregisterSteer = options.registerSteer?.((text) => session.steer(text));
+      unregisterSteer = options.registerSteer?.(async (text) => {
+        await session.steer(text);
+      });
       if (options.signal) {
         const onAbort = () => void session.abort();
         options.signal.addEventListener("abort", onAbort, { once: true });

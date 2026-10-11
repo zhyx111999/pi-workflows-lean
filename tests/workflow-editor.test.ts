@@ -1,23 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, it } from "node:test";
-import { type Context, createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
-import {
-  createAgentSession,
-  DefaultResourceLoader,
-  type ExtensionAPI,
-  ModelRuntime,
-  SessionManager,
-  SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import type { Context } from "@earendil-works/pi-ai";
+import type { AgentSession, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
 import {
   buildForcedWorkflowPrompt,
   installParentPromptHook,
   registerWorkflowProgressCommands,
 } from "../src/workflow-editor.js";
+import { withRealSession } from "./helpers/real-session.js";
 
 type InputEvent = {
   source: "interactive" | "rpc" | "extension";
@@ -137,62 +128,8 @@ describe("installParentPromptHook", () => {
 
 describe("installParentPromptHook in a real Pi session", () => {
   /** Run `drive` against a faux-model session with only the parent-prompt hook installed. */
-  async function withHookedSession(
-    drive: (session: Awaited<ReturnType<typeof createAgentSession>>["session"]) => Promise<void>,
-  ): Promise<Context[]> {
-    const root = await mkdtemp(join(tmpdir(), "pi-dw-parent-prompt-"));
-    const provider = "fauxtest-parent-prompt";
-    const core = createFauxCore({ provider, models: [{ id: "faux-model" }] });
-    const contexts: Context[] = [];
-    try {
-      const modelRuntime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null });
-      modelRuntime.registerProvider(provider, {
-        name: "Faux parent prompt",
-        baseUrl: "http://127.0.0.1:9/faux",
-        apiKey: "faux-dummy-key-not-used",
-        api: core.api,
-        streamSimple: (model, context, options) => {
-          contexts.push(structuredClone(context));
-          return core.streamSimple(model, context, options);
-        },
-        models: core.models.map((model) => ({
-          ...model,
-          input: ["text"] as ("text" | "image")[],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128000,
-          maxTokens: 4096,
-        })),
-      });
-      core.setResponses(Array.from({ length: 8 }, () => fauxAssistantMessage("ok", { stopReason: "stop" })));
-      const resourceLoader = new DefaultResourceLoader({
-        cwd: root,
-        agentDir: root,
-        extensionFactories: [(pi) => installParentPromptHook(pi)],
-        noSkills: true,
-        noPromptTemplates: true,
-        noContextFiles: true,
-      });
-      await resourceLoader.reload();
-      const { session } = await createAgentSession({
-        cwd: root,
-        agentDir: root,
-        modelRuntime,
-        model: core.getModel(),
-        tools: [],
-        resourceLoader,
-        sessionManager: SessionManager.inMemory(root),
-        settingsManager: SettingsManager.inMemory(),
-      });
-      try {
-        await drive(session);
-      } finally {
-        session.dispose();
-      }
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-    return contexts;
-  }
+  const withHookedSession = (drive: (session: AgentSession) => Promise<void>): Promise<Context[]> =>
+    withRealSession({ extensionFactories: [(pi) => installParentPromptHook(pi)] }, ({ session }) => drive(session));
 
   const lastTurnTexts = (context: Context | undefined) =>
     (context?.messages ?? []).slice(-3).map((message) => {
@@ -207,17 +144,21 @@ describe("installParentPromptHook in a real Pi session", () => {
       stored = session.messages.slice();
     });
     assert.equal(contexts.length, 1);
-    const sent = contexts[0].messages;
+    // The system prompt and tool declarations travel as a leading system message.
+    const sent = contexts[0].messages.filter((message) => message.role !== "system");
     assert.deepEqual(
       sent.map((message) => message.role),
       ["user", "user"],
     );
     assert.deepEqual(lastTurnTexts(contexts[0]).slice(-2), ["audit src/", PARENT_WORKFLOW_PROMPT]);
     assert.deepEqual(
-      stored.slice(0, 2).map((message) => {
-        const { role, content, customType, display } = message as Record<string, unknown>;
-        return { role, content, customType, display };
-      }),
+      stored
+        .filter((message) => (message as { role?: string }).role !== "system")
+        .slice(0, 2)
+        .map((message) => {
+          const { role, content, customType, display } = message as Record<string, unknown>;
+          return { role, content, customType, display };
+        }),
       [
         { role: "user", content: [{ type: "text", text: "audit src/" }], customType: undefined, display: undefined },
         { role: "custom", content: PARENT_WORKFLOW_PROMPT, customType: PARENT_PROMPT_MESSAGE_TYPE, display: false },

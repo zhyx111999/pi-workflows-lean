@@ -153,7 +153,7 @@ test("createWorktree checks out a deep tree that fits the main checkout without 
     git("commit", "-q", "-m", "init");
 
     const wt = await createWorktreeLive(repo, "run-1700000000000-abcdef-12-implement-the-feature");
-    assert.equal(wt.isolated, true, wt.reason);
+    assert.equal(wt.isolated, true, wt.reason ?? "not isolated");
     assert.ok(wt.cwd.length - repo.length <= 24, `worktree path adds ${wt.cwd.length - repo.length} characters`);
     assert.ok(existsSync(join(wt.cwd, deepDir, "f.txt")), "the deep file is checked out");
     await removeWorktree(wt);
@@ -189,7 +189,7 @@ test("createWorktree skips an id whose directory or branch is still taken", asyn
       syncBuiltinESMExports();
     });
 
-    assert.equal(wt.isolated, true, wt.reason);
+    assert.equal(wt.isolated, true, wt.reason ?? "not isolated");
     assert.equal(wt.cwd, join(repo, ".pi", "worktrees", "cccccccc"));
     assert.equal(wt.branch, "pi/wf/run-taken-cccccccc");
     assert.equal(existsSync(join(repo, ".pi", "worktrees", "aaaaaaaa")), false, "a skipped id releases its directory");

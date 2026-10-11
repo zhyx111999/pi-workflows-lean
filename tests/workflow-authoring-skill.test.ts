@@ -83,7 +83,7 @@ test("workflow-authoring skill links resolve and every skill file is reachable f
     if (!sourcePath.endsWith(".md")) continue;
     const source = readFileSync(join(ROOT, sourcePath), "utf8");
     for (const [, linkPath, anchor] of source.matchAll(MARKDOWN_LINK)) {
-      const target = linkPath ? posix.normalize(posix.join(posix.dirname(sourcePath), linkPath)) : sourcePath;
+      const target: string = linkPath ? posix.normalize(posix.join(posix.dirname(sourcePath), linkPath)) : sourcePath;
       assert.ok(files.has(target), `${sourcePath} links to ${target}, which is not a file in the skill`);
       if (anchor) {
         assert.ok(

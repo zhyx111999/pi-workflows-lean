@@ -14,6 +14,7 @@ import { UsageLimitScheduler } from "../src/usage-limit-scheduler.js";
 import type { WorkflowRunResult } from "../src/workflow.js";
 import { type ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
 import type { WorkflowSettings } from "../src/workflow-settings.js";
+import { withRealSession } from "./helpers/real-session.js";
 
 type DeliveryCall = { content: string; customType?: string; triggerTurn?: boolean };
 type StableSend = (
@@ -2130,83 +2131,31 @@ describe("installResultDelivery", () => {
     );
   });
 
-  it("triggerTurn non-streaming routes through _runAgentPrompt (T4)", async () => {
+  it("an idle host's triggerTurn delivery starts a real turn and is acknowledged once persisted", async () => {
     const pi = createMockPi();
-    const manager = createMockManager(makeRun());
-    const prompted: unknown[] = [];
-    const settled: string[] = [];
-    const history = createPersistedDeliveryHistory();
+    await withRealSession({ persist: true }, async ({ session, contexts }) => {
+      const sid = session.sessionManager.getSessionId();
+      const run = makeRun({ sessionId: sid });
+      const manager = createMockManager(run);
+      useHostSessionClass(AgentSession);
+      routePiTo(pi, session as unknown as { sendCustomMessage: (m: never, o: never) => unknown });
 
-    // An IDLE host session: isStreaming=false, so the real sendCustomMessage
-    // with triggerTurn:true takes the _runAgentPrompt branch — the branch real
-    // host deliveries actually hit. The fake supplies the internals that path
-    // touches; agent.prompt is a stub so no real LLM call is made.
-    const idleSession = Object.create(AgentSession.prototype) as object & {
-      agent: unknown;
-      sessionManager: unknown;
-      _resourceLoader: unknown;
-      _isAgentRunActive: boolean;
-      _pendingBashMessages: unknown[];
-      _pendingNextTurnMessages: unknown[];
-      _pendingCustomMessages: unknown[];
-      _extensionRunner: unknown;
-      _emit: () => void;
-    };
-    idleSession.agent = {
-      state: { messages: [] },
-      prompt: async (messages: unknown) => {
-        prompted.push(messages);
-        const message = messages as { customType?: string; details?: unknown };
-        if (message.customType === "workflow-result") {
-          history.append({
-            id: `entry-${history.branch.length}`,
-            type: "custom_message",
-            customType: message.customType,
-            details: message.details,
-          });
-        }
-        return { stopReason: "end_turn" };
-      },
-      continue: async () => {},
-    };
-    idleSession.sessionManager = {
-      persist: true,
-      getSessionId: () => SESSION,
-      getBranch: () => history.branch,
-      getSessionFile: () => history.sessionFile,
-      appendCustomMessageEntry: (customType: string, _content: unknown, _display: boolean, details?: unknown) => {
-        history.append({ id: `entry-${history.branch.length}`, type: "custom_message", customType, details });
-        return "";
-      },
-    };
-    idleSession._resourceLoader = { noExtensions: false };
-    idleSession._isAgentRunActive = false;
-    idleSession._pendingBashMessages = [];
-    idleSession._pendingNextTurnMessages = [];
-    idleSession._pendingCustomMessages = [];
-    Object.assign(idleSession, { subscribe: () => () => {} });
-    idleSession._extensionRunner = {
-      emit: async (e: { type: string }) => {
-        settled.push(e.type);
-      },
-    };
-    idleSession._emit = () => {};
-    useHostSessionClass(AgentSession);
-    routePiTo(pi, idleSession as unknown as { sendCustomMessage: (m: never, o: never) => unknown });
+      mod.installResultDelivery(pi, manager);
+      manager.setSessionId(sid);
+      mod.bindSessionDelivery(sid, pi, { manager });
+      manager.emit("complete", { runId: "test-run-1" });
 
-    mod.installResultDelivery(pi as unknown as ExtensionAPI, manager);
-    manager.setSessionId(SESSION);
-    mod.bindSessionDelivery(SESSION, pi as unknown as ExtensionAPI, { manager });
-    manager.emit("complete", { runId: "test-run-1" });
-
-    // The thenable ACK resolves only after _runAgentPrompt settles.
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    assert.equal(prompted.length, 1, "triggerTurn delivery must start an agent prompt");
-    const appMessage = prompted[0] as { customType?: string; content?: unknown; display?: boolean };
-    assert.equal(appMessage.customType, "workflow-result", "the prompt receives the delivered app message");
-    assert.equal(appMessage.display, true);
-    assert.ok(settled.includes("agent_settled"), "the run settles after the prompt");
-    assert.equal(manager.getPersistence?.().load("test-run-1")?.pendingDelivery, undefined, "cleared after prompt ACK");
+      for (let i = 0; i < 400 && run.pendingDelivery; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.equal(run.pendingDelivery, undefined, "cleared once the host persisted the result");
+      assert.equal(manager.getPersistence().load("test-run-1")?.pendingDelivery, undefined);
+      const delivered = session.messages.find(
+        (message) => (message as { customType?: string }).customType === "workflow-result",
+      ) as { display?: boolean } | undefined;
+      assert.ok(delivered, "the result is in the host's transcript");
+      assert.equal(delivered.display, true);
+      assert.equal(contexts.length, 1, "triggerTurn started exactly one model turn");
+      assert.match(JSON.stringify(contexts[0].messages), /All tests passed/, "the turn sees the delivered result");
+    });
   });
 
   it("non-thenable captured send fails closed: pending stays (no false ACK)", async () => {

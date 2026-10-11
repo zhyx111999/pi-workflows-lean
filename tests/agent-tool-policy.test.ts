@@ -3,10 +3,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { createFauxCore, fauxAssistantMessage, type Message } from "@earendil-works/pi-ai";
 import { WorkflowAgent } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { fauxRegistry } from "./helpers/faux-registry.js";
+
+/** The tools a request's system messages leave available, sorted. */
+function offeredToolNames(messages: readonly Message[]): string[] {
+  const available = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+    for (const tool of message.toolsAdded ?? []) available.add(tool.name);
+    for (const tool of message.toolsRemoved ?? []) available.delete(tool.name);
+  }
+  return [...available].sort();
+}
 
 /** Run one subagent turn and return the tool names its provider request offered. */
 async function offeredTools(policy: { toolNames?: string[]; disallowedToolNames?: string[] }): Promise<string[]> {
@@ -23,7 +34,7 @@ async function offeredTools(policy: { toolNames?: string[]; disallowedToolNames?
       let names: string[] = [];
       core.setResponses([
         (context) => {
-          names = (context.tools ?? []).map((tool) => tool.name).sort();
+          names = offeredToolNames(context.messages);
           return fauxAssistantMessage("done", { stopReason: "stop" });
         },
       ]);
