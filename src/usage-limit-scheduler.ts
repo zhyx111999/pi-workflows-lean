@@ -21,6 +21,7 @@
  * rely on manager.stop(), which only operates on in-memory runs.
  */
 
+import { reportDiagnostic } from "./host-diagnostics.js";
 import type { PersistedRunState, RunPersistence } from "./run-persistence.js";
 import { sanitizeAutoResumeAttempts } from "./run-persistence.js";
 
@@ -77,7 +78,7 @@ export interface UsageLimitSchedulerOptions {
    * lifetime.
    */
   maxRefusals?: number;
-  /** Diagnostics sink; defaults to console.warn. Never throws back into the caller. */
+  /** Diagnostics sink; defaults to reportDiagnostic. Never throws back into the caller. */
   onDiagnostic?: (message: string, detail?: unknown) => void;
 }
 
@@ -282,11 +283,7 @@ export class UsageLimitScheduler {
     this.jitterRatio = options.jitterRatio ?? 0.1;
     this.random = options.random ?? Math.random;
     this.maxRefusals = options.maxRefusals ?? DEFAULT_MAX_REFUSALS;
-    this.diagnostic =
-      options.onDiagnostic ??
-      ((message, detail) => {
-        console.warn(message, detail ?? "");
-      });
+    this.diagnostic = options.onDiagnostic ?? reportDiagnostic;
 
     this.manager.on("paused", this.onPaused);
     this.manager.on("resumed", this.onResumed);

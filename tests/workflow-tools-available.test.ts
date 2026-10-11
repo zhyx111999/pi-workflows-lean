@@ -16,6 +16,7 @@ import {
   takeWorkflowRuntime,
   WORKFLOW_EXTENSION_BUILD,
 } from "../src/extension-reload.js";
+import { reportDiagnostic } from "../src/host-diagnostics.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
 import { useHostSessionClass } from "../src/task-panel/host-session-capture.js";
 import { _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
@@ -24,7 +25,7 @@ import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { FakeHostSession, type HostMessage, sendMessageTo } from "./helpers/fake-host-session.js";
 
 describe("workflow extension - tool availability", () => {
-  it("registers exactly the two subagents tools and hands the live runtime across reload", async () => {
+  it("registers exactly the two subagents tools and hands the live runtime across reload", async (t) => {
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
@@ -67,6 +68,7 @@ describe("workflow extension - tool availability", () => {
         });
         handlers.input[0]({ source: "interactive", text: "/workflows list" });
         assert.equal(handlers.before_agent_start[0]({ prompt: "/workflows list" }), undefined);
+        const notified: string[] = [];
         handlers.session_start[0](
           {},
           {
@@ -74,15 +76,22 @@ describe("workflow extension - tool availability", () => {
             model: undefined,
             modelRegistry: {},
             sessionManager: { getSessionId: () => "session-1" },
-            ui: { setWidget: () => {}, notify: () => {} },
+            ui: { setWidget: () => {}, notify: (message: string) => notified.push(message) },
           },
         );
+        reportDiagnostic("while the session is bound");
+        assert.deepEqual(notified, ["while the session is bound"], "diagnostics go to the session's UI");
 
         assert.deepEqual(activeTools, ["bash", "read", "subagents", "subagents_control"]);
         assert.equal(handlers.input.length, 1, "session_start does not add another input hook");
         assert.equal(handlers.before_agent_start.length, 1, "session_start does not add another start hook");
 
         handlers.session_shutdown?.[0]?.({ reason: "reload" });
+        const stderr = t.mock.method(console, "warn", () => {});
+        reportDiagnostic("after shutdown");
+        assert.deepEqual(notified, ["while the session is bound"], "a shut-down session's UI gets nothing more");
+        assert.equal(stderr.mock.callCount(), 1);
+        stderr.mock.restore();
         const staged = takeWorkflowRuntime();
         assert.ok(staged, "session_shutdown(reload) stages the live manager for the next extension generation");
         handoffWorkflowRuntime(staged);

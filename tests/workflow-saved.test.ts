@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import test, { type TestContext } from "node:test";
+import { bindDiagnosticSink } from "../src/host-diagnostics.js";
 import { workflowProjectPaths } from "../src/workflow-paths.js";
 import {
   createWorkflowStorage,
@@ -54,10 +55,11 @@ function save(
   return result.workflow;
 }
 
-/** Silence `console.warn` for one test and return the messages logged so far. */
+/** Collect the diagnostics reported during one test. */
 function captureWarnings(t: TestContext): () => string[] {
-  const warn = t.mock.method(console, "warn", () => {});
-  return () => warn.mock.calls.map((call) => String(call.arguments[0]));
+  const messages: string[] = [];
+  t.after(bindDiagnosticSink((message) => messages.push(message)));
+  return () => [...messages];
 }
 
 test(
@@ -312,7 +314,7 @@ test(
 
     assert.deepEqual(storage.list(), []);
     assert.deepEqual(warnings(), [
-      `[workflow] Skipped saved workflow ${join(projectDir, "unsafe.json")}: "name" is not valid. ${SAVED_WORKFLOW_NAME_RULE}`,
+      `Skipped saved workflow ${join(projectDir, "unsafe.json")}: "name" is not valid. ${SAVED_WORKFLOW_NAME_RULE}`,
     ]);
   }),
 );

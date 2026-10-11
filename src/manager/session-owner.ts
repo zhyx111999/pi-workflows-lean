@@ -4,6 +4,7 @@
 // ManagedRun's sessionId is only this process's copy, refreshed from the record
 // whenever this process moves, saves, or delivers the run.
 
+import { reportDiagnostic } from "../host-diagnostics.js";
 import type { RunPersistence } from "../run-persistence.js";
 import type { ManagedRun } from "../workflow-manager.js";
 
@@ -29,7 +30,7 @@ export function moveRunSession(
   try {
     after = persistence.moveSession(run.runId, sessionId, from);
   } catch (error) {
-    console.warn(`[workflow-manager] Could not move run ${run.runId} to session ${sessionId}:`, error);
+    reportDiagnostic(`Could not move workflow run ${run.runId} to session ${sessionId}`, error);
     return "failed";
   }
   if (!after) {

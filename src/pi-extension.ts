@@ -13,6 +13,7 @@ import {
   WORKFLOW_EXTENSION_BUILD,
   type WorkflowReloadRuntime,
 } from "./extension-reload.js";
+import { bindDiagnosticSink } from "./host-diagnostics.js";
 import { stopRunWatchers } from "./run-watchers.js";
 import { registerAllSavedWorkflows } from "./saved-commands.js";
 import { createSubagentsControlTool } from "./subagents-control-tool.js";
@@ -188,7 +189,12 @@ export default function extension(pi: ExtensionAPI) {
 
   let usageLimitScheduler = new UsageLimitScheduler(manager);
 
+  let releaseDiagnostics: (() => void) | undefined;
+
   pi.on("session_shutdown", (event?: SessionShutdownEvent) => {
+    // This session's UI is about to go stale.
+    releaseDiagnostics?.();
+    releaseDiagnostics = undefined;
     usageLimitScheduler.dispose();
     // Watchers report through this session's context, which is about to go stale.
     stopRunWatchers();
@@ -227,6 +233,8 @@ export default function extension(pi: ExtensionAPI) {
     // launching directory across /resume into another project; ctx.cwd is
     // the session header's project path.
     const sessionCwd = resolve(ctx.cwd || process.cwd());
+    releaseDiagnostics?.();
+    releaseDiagnostics = bindDiagnosticSink((message) => ctx.ui.notify(message, "warning"));
 
     // Another spelling of the same project (Windows) keeps the manager and
     // its path. A different project gets a manager of its own; the old one's

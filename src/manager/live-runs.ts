@@ -2,6 +2,7 @@
 
 import type { EventEmitter } from "node:events";
 import { RunRecordDeletedError } from "../errors.js";
+import { reportDiagnostic } from "../host-diagnostics.js";
 import type { RunPersistence } from "../run-persistence.js";
 import type { ManagedRun } from "../workflow-manager.js";
 import { PersistThrottle } from "./persist-throttle.js";
@@ -92,7 +93,7 @@ export class LiveRuns {
       const deleted = err instanceof RunRecordDeletedError;
       if (deleted) this.forget(managed);
       if (required) throw err;
-      if (!deleted) console.warn("[workflow-manager] Persist run failed:", err);
+      if (!deleted) reportDiagnostic(`Could not save workflow run ${managed.runId}`, err);
     }
   }
 

@@ -15,6 +15,7 @@ import {
   writeJsonAtomicPreservingPreviousBackup,
   writeJsonAtomicWithBackupStrict,
 } from "./fs-persistence.js";
+import { reportDiagnostic } from "./host-diagnostics.js";
 import { workflowProjectPaths, workflowUserSavedDir } from "./workflow-paths.js";
 
 /** Where a saved workflow lives: this project's directory or the user's. */
@@ -258,7 +259,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
     const key = `${path}\n${problem}`;
     if (!reported.has(key)) {
       reported.add(key);
-      console.warn(`[workflow] Skipped saved workflow ${path}: ${problem}`);
+      reportDiagnostic(`Skipped saved workflow ${path}: ${problem}`);
     }
     return null;
   };
