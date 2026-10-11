@@ -9,7 +9,7 @@ metadata:
 
 Edit these files for the user. Every file is optional; invalid values are ignored.
 
-**Install:** `pi install git:github.com/zhyx111999/pi-workflows-lean`, then `/reload`. The repo is private, so git needs credentials, e.g. SSH: `git:git@github.com:zhyx111999/pi-workflows-lean`.
+**Install:** `pi install git:github.com/zhyx111999/pi-workflows-lean`, then `/reload`.
 
 **`<key>`:** project folder name in lowercase with runs of characters outside `a-z0-9._-` turned into `-`, then `-`, then the first 12 hex digits of SHA-256 of the absolute project path. After a first run it exists under `~/.pi/workflows/projects/`.
 
@@ -72,4 +72,5 @@ Role instructions.
 
 - Next `subagents` run: tiers, roles, saved scripts, run limits.
 - Live: progress panel; `deliveredResultMaxChars` on the next result.
-- After `/reload` or a new session: the other settings, run limits for slash-command runs, a new saved workflow's `/<name>`, and plugin updates.
+- After `/reload` or a new session: the other settings, run limits for slash-command runs, and a new saved workflow's `/<name>`.
+- After restarting Pi: plugin updates. `/reload` keeps the loaded build and warns that it changed.

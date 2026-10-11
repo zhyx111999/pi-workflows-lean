@@ -15,7 +15,7 @@ Built for work that is too broad for one agent and one context window. The built
 
 ## Install
 
-`dist/` is committed, so Pi installs and runs it straight from git (the repository is private, so git needs credentials for it):
+`dist/` is committed, so Pi installs and runs it straight from git:
 
 ```bash
 pi install git:github.com/zhyx111999/pi-workflows-lean
@@ -23,7 +23,7 @@ pi install git:github.com/zhyx111999/pi-workflows-lean
 
 A local clone works too: `pi install /absolute/path/to/pi-workflows-lean`.
 
-Run `/reload` in Pi, then ask naturally:
+Restart Pi (or run `/reload` after a first install), then ask naturally:
 
 ```text
 Run a workflow to audit every route under src/routes/ for missing auth checks.
@@ -238,9 +238,9 @@ Subagents are in-memory by default. Set `persistAgentSessions: true` to retain f
 
 Run storage uses a small versioned `<runId>.json` index head plus a `<runId>.json.events.jsonl` change log that is appended to, and rewritten as one snapshot once its history outgrows the run. Only bytes committed by the head participate in replay. A record in any other format is refused rather than guessed at. See [the storage protocol](docs/run-storage.md) for recovery details.
 
-Completed background runs retain their full result in run storage. Conversation delivery also creates an immutable JSON result artifact (`<runId>.json.result-<content-hash>`) and links to it, so a shortened summary still has a directly readable full result. These artifacts are removed with the run. Other Pi extensions can subscribe to the exported `WORKFLOW_LIFECYCLE_EVENT` through `pi.events`. Background workflows emit `{ status, runId, name }` and include `sessionId` when the originating Pi session is known, where `status` is `started`, `resumed`, `paused`, `completed`, `failed`, or `stopped`.
+Completed background runs retain their full result in run storage. Conversation delivery also creates an immutable JSON result artifact (`<runId>.json.result-<content-hash>`) and links to it, so a shortened summary still has a directly readable full result. These artifacts are removed with the run.
 
-In-process session replacements (`/reload`, `/new`, resume, fork) keep the live workflow manager when the installed extension version has not changed. Active background runs therefore continue streaming progress, remain controllable, and deliver their result into the replacement session. If the package version changes, or the process is exiting, active runs are paused onto the journal recovery path instead of mixing extension versions or burning tokens after teardown. A process restart uses the same durable journal path, recovering an interrupted running workflow as paused so it can be resumed safely.
+In-process session replacements (`/reload`, `/new`, resume, fork) keep the live workflow manager. Active background runs therefore continue streaming progress, remain controllable, and deliver their result into the replacement session. Node keeps the extension's module graph for the life of the Pi process, so `/reload` keeps running the build Pi started with; after updating the package, restart Pi to load it (the extension warns when the package on disk has changed). A handoff between two different builds, such as two installed copies, or a process exit pauses active runs onto the journal recovery path instead of mixing code or burning tokens after teardown. A process restart uses the same durable journal path, recovering an interrupted running workflow as paused so it can be resumed safely.
 
 Finished runs (completed, failed, or aborted) are retained in full on disk, capped at the 300 most recent per project — older ones are evicted first; running, paused, leased and undelivered runs are protected. Only a smaller number (20 by default) also stay fully loaded in the live manager. History listings and startup recovery read small index heads; details hydrate on demand through a cache capped at eight records and a 16 MiB serialized-weight budget. The navigator retains only its most recently selected historical snapshot. Library embedders can tune `maxTerminalRunsInMemory` on `WorkflowManager` and `maxTerminalRunsOnDisk` on the run-persistence layer.
 

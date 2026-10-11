@@ -9,7 +9,7 @@ import {
   handoffWorkflowRuntime,
   pauseStrandedWorkflowRuntime,
   takeWorkflowRuntime,
-  WORKFLOW_EXTENSION_VERSION,
+  WORKFLOW_EXTENSION_BUILD,
   type WorkflowReloadRuntime,
 } from "../src/extension-reload.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
@@ -54,7 +54,7 @@ function withTempCwd(fn: (cwd: string) => Promise<void>) {
 function runtime(cwd: string): WorkflowReloadRuntime {
   return {
     cwd,
-    extensionVersion: WORKFLOW_EXTENSION_VERSION,
+    extensionBuild: WORKFLOW_EXTENSION_BUILD,
     manager: { marker: cwd } as unknown as WorkflowReloadRuntime["manager"],
   };
 }
@@ -69,12 +69,12 @@ test("reload handoff transfers the exact live runtime once", () => {
   assert.equal(takeWorkflowRuntime(), undefined, "a second extension generation cannot claim it twice");
 });
 
-test("a changed package version is rejected and its live runs are paused for recovery", () => {
+test("another extension build is rejected and its live runs are paused for recovery", () => {
   const cwd = `/tmp/reload-handoff-${process.pid}-version`;
   const paused: string[] = [];
   const value: WorkflowReloadRuntime = {
     ...runtime(cwd),
-    extensionVersion: `${WORKFLOW_EXTENSION_VERSION}-next`,
+    extensionBuild: `${WORKFLOW_EXTENSION_BUILD}-next`,
     manager: {
       // Stranded pause must walk live in-memory runs, not the session-filtered
       // listRuns() view (which hides runs whose frozen sessionId no longer
@@ -99,9 +99,9 @@ test("a changed package version is rejected and its live runs are paused for rec
   const claim = claimWorkflowRuntime();
 
   assert.equal(claim.compatible, undefined);
-  assert.ok(claim.versionMismatch);
-  assert.equal(claim.versionMismatch, value);
-  assert.equal(pauseStrandedWorkflowRuntime(claim.versionMismatch), 1);
+  assert.ok(claim.buildMismatch);
+  assert.equal(claim.buildMismatch, value);
+  assert.equal(pauseStrandedWorkflowRuntime(claim.buildMismatch), 1);
   assert.deepEqual(paused, ["running-1"]);
 });
 
@@ -189,7 +189,7 @@ test(
 
     const value: WorkflowReloadRuntime = {
       cwd,
-      extensionVersion: WORKFLOW_EXTENSION_VERSION,
+      extensionBuild: WORKFLOW_EXTENSION_BUILD,
       manager: manager as unknown as WorkflowReloadRuntime["manager"],
     };
     discardWorkflowRuntime();
@@ -239,7 +239,7 @@ test("handoff staged under a session project cwd is claimable via process.cwd() 
   };
   const value: WorkflowReloadRuntime = {
     cwd: project,
-    extensionVersion: WORKFLOW_EXTENSION_VERSION,
+    extensionBuild: WORKFLOW_EXTENSION_BUILD,
     manager: mgr as unknown as WorkflowReloadRuntime["manager"],
   };
   handoffWorkflowRuntime(value);
@@ -256,7 +256,7 @@ test("overwriting a staged handoff pauses the displaced runtime's live runs", ()
   const paused: string[] = [];
   const first: WorkflowReloadRuntime = {
     cwd: `/tmp/reload-handoff-${process.pid}-overwrite-a`,
-    extensionVersion: WORKFLOW_EXTENSION_VERSION,
+    extensionBuild: WORKFLOW_EXTENSION_BUILD,
     manager: {
       listLiveRuns: () => [{ runId: "running-a", status: "running" }],
       listRuns: () => [],

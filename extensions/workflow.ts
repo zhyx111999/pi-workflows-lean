@@ -1,17 +1,10 @@
 // Resolve the host SDK through Pi's loader, but load our compiled ESM graph
 // with import semantics. Requiring the graph makes import-only SDK subpaths
 // fall through the host's prefix aliases as invalid file-system paths.
-// The mtime query bypasses Node's module cache so /reload picks up a rebuilt dist.
-import { statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const distPath = join(here, "../dist/pi-extension.js");
-const distUrl = `${pathToFileURL(distPath).href}?v=${statSync(distPath).mtimeMs}`;
-
+// Node caches that graph for the life of the process, so /reload keeps the
+// loaded build; the extension warns when the package on disk has changed.
 const host = await import("@earendil-works/pi-coding-agent");
-const extension = await import(distUrl);
+const extension = await import("../dist/pi-extension.js");
 extension.useHostSessionClass(host.AgentSession);
 export const sessionFileCwd = extension.sessionFileCwd;
 export default extension.default;

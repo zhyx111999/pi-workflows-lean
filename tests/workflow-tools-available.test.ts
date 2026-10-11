@@ -14,7 +14,7 @@ import {
   discardWorkflowRuntime,
   handoffWorkflowRuntime,
   takeWorkflowRuntime,
-  WORKFLOW_EXTENSION_VERSION,
+  WORKFLOW_EXTENSION_BUILD,
 } from "../src/extension-reload.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
 import { useHostSessionClass } from "../src/task-panel/host-session-capture.js";
@@ -805,7 +805,7 @@ describe("workflow extension - tool availability", () => {
               paused.push(id);
               return true;
             }) as typeof manager.pause;
-            handoffWorkflowRuntime({ cwd: project, extensionVersion: WORKFLOW_EXTENSION_VERSION, manager });
+            handoffWorkflowRuntime({ cwd: project, extensionBuild: WORKFLOW_EXTENSION_BUILD, manager });
 
             const handlers: Record<string, Array<(...args: any[]) => any>> = {};
             installExtension({
@@ -839,6 +839,58 @@ describe("workflow extension - tool availability", () => {
       rmSync(fakeHome, { recursive: true, force: true });
       rmSync(sessionDir, { recursive: true, force: true });
       rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("a switch to another project releases the delivery of the session the old manager served", async () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-control-extension-release-"));
+    const otherProject = mkdtempSync(join(tmpdir(), "pi-dw-other-project-"));
+    try {
+      await withFakeHomeAsync(fakeHome, async () => {
+        discardWorkflowRuntime();
+        const piFor = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
+          ({
+            registerTool: () => {},
+            registerCommand: () => {},
+            getCommands: () => [],
+            on: (event: string, handler: (...args: any[]) => any) => {
+              if (!handlers[event]) handlers[event] = [];
+              handlers[event].push(handler);
+            },
+            getActiveTools: () => [],
+            setActiveTools: () => {},
+            sendMessage: () => {},
+          }) as unknown as ExtensionAPI;
+        const ctxFor = (cwd: string, sessionId: string) => ({
+          cwd,
+          model: undefined,
+          modelRegistry: {},
+          sessionManager: { getSessionId: () => sessionId },
+          ui: { setWidget: () => {}, notify: () => {} },
+        });
+        const { default: installExtension } = await import("../src/pi-extension.js");
+        const { _getSessionDeliveryEndpointForTests } = await import("../src/task-panel.js");
+
+        const first: Record<string, Array<(...args: any[]) => any>> = {};
+        installExtension(piFor(first));
+        first.session_start?.[0]?.({ reason: "startup" }, ctxFor(process.cwd(), "home-session"));
+        assert.ok(_getSessionDeliveryEndpointForTests("home-session"), "the first session is bound");
+        first.session_shutdown?.[0]?.({ reason: "new" });
+
+        const second: Record<string, Array<(...args: any[]) => any>> = {};
+        installExtension(piFor(second));
+        second.session_start?.[0]?.({ reason: "new" }, ctxFor(otherProject, "other-session"));
+        assert.equal(
+          _getSessionDeliveryEndpointForTests("home-session"),
+          undefined,
+          "the session of the replaced manager no longer holds a delivery endpoint",
+        );
+        second.session_shutdown?.[0]?.({ reason: "quit" });
+        discardWorkflowRuntime();
+      });
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      rmSync(otherProject, { recursive: true, force: true });
     }
   });
 
