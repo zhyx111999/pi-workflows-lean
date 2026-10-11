@@ -39,7 +39,8 @@ export function handleConfirmKey(session: NavigatorSession, key: string | undefi
 function currentCount(state: NavigatorState, model: NavigatorModel): number {
   if (state.kind === "runs") return model.visible(state.filter).items.length;
   if (state.kind === "phases" && state.runId) return model.phases(state.runId).length;
-  if (state.kind === "agents" && state.runId && state.phase) return model.agents(state.runId, state.phase).length;
+  if (state.kind === "agents" && state.runId && state.phase !== undefined)
+    return model.agents(state.runId, state.phase).length;
   return 0;
 }
 

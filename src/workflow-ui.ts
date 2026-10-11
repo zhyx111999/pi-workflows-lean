@@ -252,11 +252,6 @@ export class NavigatorState {
     this.reconcile(snapshot);
     return snapshot.items.find((item) => sameIdentity(this.top().selected, item.identity));
   }
-  itemKindAt(model: NavigatorModel, cursor: number): ItemKind {
-    const snapshot = model.visible(this.filter);
-    this.reconcile(snapshot);
-    return snapshot.items[cursor]?.kind ?? "run";
-  }
   clamp(count: number) {
     const top = this.top();
     top.cursor = count <= 0 ? 0 : Math.max(0, Math.min(top.cursor, count - 1));
@@ -366,7 +361,8 @@ export class NavigatorState {
       this.stack.push({ kind: "agents", cursor: 0, runId: top.runId, phase: phase.title });
       return true;
     }
-    if (top.kind === "agents" && top.runId && top.phase) {
+    // phase("") is a legal phase, so test for presence rather than truthiness.
+    if (top.kind === "agents" && top.runId && top.phase !== undefined) {
       const agent = model.agents(top.runId, top.phase)[top.cursor];
       if (!agent) return false;
       this.scroll = 0;
@@ -568,7 +564,7 @@ export type NavAction =
   | { type: "none" };
 
 /** Pure mapping from a parsed key id to an action; a key's meaning depends on the view and the selected item's kind. */
-export function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?: "run" | "saved"): NavAction {
+export function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?: ItemKind): NavAction {
   switch (keyId) {
     case "up":
     case "k":
@@ -694,7 +690,8 @@ export function openWorkflowNavigator(
           return boxOverlayLines(lines, width, theme, focused);
         },
         handleInput: (data: string) => act(data),
-        invalidate: () => {},
+        // The host invalidates on theme changes; cached rich text holds the old colors.
+        invalidate: () => renderCache.clear(),
         dispose: () => unsubscribe(),
       };
       return component;
