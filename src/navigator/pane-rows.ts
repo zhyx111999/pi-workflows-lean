@@ -1,4 +1,4 @@
-/** Lays out single phase and agent rows, and the column widths they share, inside the run view's panes. */
+/** Lays out single phase, agent, and overflow-marker rows, and the column widths they share, inside the run view's panes. */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeLike } from "../display.js";
@@ -138,6 +138,11 @@ export function rightAgentRow(
     out += " ".repeat(Math.max(0, statsStart - afterName)) + statsStyled;
   }
   return truncateToWidth(out, innerW, "", true);
+}
+
+/** The row marking more items below a pane's window (content field, exact width = innerW). */
+export function moreRow(innerW: number, theme: ThemeLike): string {
+  return truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
 }
 
 /** Model column start aligned across agent rows, clamped to the field. */
