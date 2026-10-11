@@ -1,7 +1,7 @@
-/** Implements parallel() and pipeline(): fan-outs that turn recoverable branch failures into null. */
+/** Implements parallel() and pipeline(): fan-outs that turn recoverable workflow failures into null. */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { WorkflowCheckpointSuspensionError, WorkflowErrorCode, wrapError } from "../errors.js";
+import { isWorkflowError, WorkflowErrorCode } from "../errors.js";
 import type { RunContext } from "./run-context.js";
 
 /**
@@ -64,17 +64,17 @@ export function createPipeline(ctx: RunContext) {
     return fanoutScope.run(batch, () =>
       Promise.all(
         items.map(async (item, index) => {
-          let value: unknown = item;
-          for (const stage of stages) {
-            try {
+          try {
+            let value: unknown = item;
+            for (const stage of stages) {
               ctx.throwIfAborted();
               value = await stage(value, item, index);
-              ctx.throwIfAborted();
-            } catch (error) {
-              return settleBranchFailure(ctx, batch, error, `pipeline[${index}]`);
             }
+            ctx.throwIfAborted();
+            return value;
+          } catch (error) {
+            return settleBranchFailure(ctx, batch, error, `pipeline[${index}]`);
           }
-          return value;
         }),
       ),
     );
@@ -82,19 +82,19 @@ export function createPipeline(ctx: RunContext) {
 }
 
 /**
- * A recoverable branch failure becomes null so the other branches still count.
- * Suspensions, aborts and non-recoverable errors propagate and halt the run,
- * exactly like a directly awaited agent(); only a breached agent cap also
- * cancels the rest of this batch, since other errors do not doom it.
+ * Only a recoverable WorkflowError becomes null, the same value agent() itself
+ * resolves to after such a failure, so the other branches still count. Every
+ * other error propagates unchanged, exactly as if the branch were awaited
+ * directly: a checkpoint suspension, an abort, a nonrecoverable failure, or a
+ * bug in the script's own thunk or stage, which must fail the run instead of
+ * passing for missing coverage. Only a breached agent cap also cancels the rest
+ * of this batch, since other errors do not doom its queued agents.
  */
 function settleBranchFailure(ctx: RunContext, batch: FanoutBatch, error: unknown, branch: string): null {
-  if (error instanceof WorkflowCheckpointSuspensionError) throw error;
-  if (ctx.isAborted()) throw error;
-  const workflowError = wrapError(error);
-  if (!workflowError.recoverable) {
-    if (workflowError.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED) batch.cancelled = true;
-    throw workflowError;
+  if (isWorkflowError(error) && error.recoverable && !ctx.isAborted()) {
+    ctx.log(`${branch} failed: ${error.message}`);
+    return null;
   }
-  ctx.log(`${branch} failed: ${workflowError.message}`);
-  return null;
+  if (isWorkflowError(error) && error.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED) batch.cancelled = true;
+  throw error;
 }

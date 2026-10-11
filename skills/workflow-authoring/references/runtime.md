@@ -18,6 +18,8 @@ The runtime supplies `agent`, `parallel`, `pipeline`, `checkpoint`, `phase`, `lo
 
 Call `agent(prompt, { label, schema? })`; it returns text, a schema-validated value, or recoverable `null`. Nonrecoverable limit and validation failures throw. Record each intended work ID before filtering. A `null` means missing coverage, never a negative finding.
 
+In `parallel()` and `pipeline()`, a branch becomes `null` only through a recoverable workflow failure, as with `agent()`. A nonrecoverable failure, or an error thrown by the thunk or stage code itself (such as a `TypeError` from reading a field of `null`), rejects the whole call and fails the run unless the script catches it.
+
 Use `agent(prompt, { thread: "implementer" })` when the same subagent must receive a later follow-up with its complete conversation intact, such as implementer → separate reviewer → implementer revision. Reuse a thread name sequentially; never put same-thread calls in one `parallel()` batch. Later turns on one thread may change `model`, `tier`, or `agentType`: the transcript is kept and the next turn runs on the newly resolved model, which is intended for mid-loop escalation. Threads exist only during the current uninterrupted workflow invocation, cannot use worktree isolation, and restart from the beginning after pause/resume because threaded results are not journaled.
 
 When JavaScript reads fields, pass a small plain JSON Schema. Schema noncompliance after repair throws and bypasses agent retries. Catch it only to return an explicit incomplete outcome without reading missing fields. Return objects, arrays, strings, numbers, booleans, and `null`—not functions, promises, cycles, `BigInt`, or runtime handles.

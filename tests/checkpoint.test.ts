@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { WorkflowCheckpointSuspensionError } from "../src/errors.js";
+import { cloneDurableJsonValue } from "../src/runtime/durable-json.js";
 import type { JournalEntry, WorkflowCheckpoint } from "../src/workflow.js";
 import { runWorkflow } from "../src/workflow.js";
 
@@ -134,6 +135,42 @@ await checkpoint({ kind: 'proposal-ready', checkpointId: 'accessor', payload: { 
   for (const script of scripts) {
     await assert.rejects(() => runWorkflow(script, { agent: noopAgent, persistLogs: false }), /lossless JSON value/);
   }
+});
+
+test("cloneDurableJsonValue(): the copy equals the JSON round trip, including -0", () => {
+  const value = { zero: -0, nested: [-0, { deep: -0 }], kept: -1.5 };
+  const copy = cloneDurableJsonValue(value, "payload");
+  assert.deepStrictEqual(copy, JSON.parse(JSON.stringify(value)));
+  assert.ok(Object.is((copy as { zero: number }).zero, 0));
+});
+
+test("checkpoint(): a -0 payload still matches after the waiting checkpoint is persisted as JSON", async () => {
+  const script = `export const meta = { name: 'negative_zero', description: 'negative zero payload' }
+return await checkpoint({ kind: 'approval', checkpointId: 'gate', payload: { v: -0, list: [-0] } })`;
+  let waiting: WorkflowCheckpoint | undefined;
+  await assert.rejects(
+    () =>
+      runWorkflow(script, {
+        agent: noopAgent,
+        persistLogs: false,
+        runId: "negative-zero-run",
+        onWorkflowCheckpoint: (checkpoint) => {
+          waiting = checkpoint;
+        },
+      }),
+    WorkflowCheckpointSuspensionError,
+  );
+  assert.ok(waiting);
+  const persisted = JSON.parse(JSON.stringify(waiting)) as WorkflowCheckpoint;
+  assert.deepStrictEqual(waiting.payload, persisted.payload, "what is persisted is what the run compares against");
+
+  const resumed = await runWorkflow<unknown>(script, {
+    agent: noopAgent,
+    persistLogs: false,
+    runId: "negative-zero-run",
+    resumeCheckpoint: { ...persisted, status: "resuming", response: "approved" },
+  });
+  assert.equal(resumed.result, "approved");
 });
 
 test("checkpoint(): durable object accepts an open checkpoint kind", async () => {
