@@ -18,7 +18,7 @@ npm test
 
 CI also runs `npm run check:dist`, which fails when the committed `dist/` differs from a fresh build.
 
-Run one test file with `npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`; the import keeps the test off your real home directory. `tests/extension-host-modules.test.ts` loads the built extension, so run `npm run build` before running it alone. After changing `src/`, run `npm run build` and `/reload` in Pi to load the new `dist/`. If Pi loads this same checkout, its dev dependencies include copies of Pi's own packages, and the extension resolves those instead of the running Pi's (Pi maps them only when the package has none of its own); keep the dev dependencies at the Pi version you run, or point Pi at a separate checkout installed with `npm install --omit=dev`.
+Run one test file with `npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`; the import keeps the test off your real home directory. `tests/extension-host-modules.test.ts` loads the built extension, so run `npm run build` before running it alone. After changing `src/`, run `npm run build`. Pi keeps the loaded modules until it restarts, so restart Pi to run a rebuilt `dist/`. The extension imports Pi's packages from the running Pi (`src/host-modules.ts`), so a checkout with dev dependencies installed is safe to load.
 
 ## Generated files
 

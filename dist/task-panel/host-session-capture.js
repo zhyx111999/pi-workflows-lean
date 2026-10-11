@@ -18,8 +18,9 @@ import { confirmedSessionSend } from "./confirmed-send.js";
 export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
 let hostSessionClass = AgentSession;
 /**
- * Probe through the host loader's AgentSession class rather than a sibling SDK
- * copy this module may resolve: only the class Pi instantiates sees the probe.
+ * Probe through another session class. The default is the AgentSession of the
+ * running Pi (host-modules.ts routes this module's import to it); tests
+ * substitute a session double.
  */
 export function useHostSessionClass(sessionClass) {
     hostSessionClass = sessionClass;

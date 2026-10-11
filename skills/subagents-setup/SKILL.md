@@ -73,4 +73,4 @@ Role instructions.
 - Next `subagents` run: tiers, roles, saved scripts, run limits.
 - Live: progress panel; `deliveredResultMaxChars` on the next result.
 - After `/reload` or a new session: the other settings, run limits for slash-command runs, and a new saved workflow's `/<name>`.
-- After `/reload`: plugin updates. Runs still active across the update pause; resume them from `/workflows`.
+- After restarting Pi: plugin updates. `/reload` keeps the loaded build and warns that it changed; runs active across the restart pause and resume from `/workflows`.

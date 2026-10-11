@@ -28,8 +28,9 @@ export interface HostSessionClass {
 let hostSessionClass: HostSessionClass = AgentSession;
 
 /**
- * Probe through the host loader's AgentSession class rather than a sibling SDK
- * copy this module may resolve: only the class Pi instantiates sees the probe.
+ * Probe through another session class. The default is the AgentSession of the
+ * running Pi (host-modules.ts routes this module's import to it); tests
+ * substitute a session double.
  */
 export function useHostSessionClass(sessionClass: HostSessionClass): void {
   hostSessionClass = sessionClass;

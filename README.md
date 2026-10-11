@@ -21,9 +21,9 @@ Requires Pi 0.84.0 or newer. `dist/` is committed, so Pi installs and runs it st
 pi install git:github.com/zhyx111999/pi-workflows-lean
 ```
 
-A local clone works too: `pi install /absolute/path/to/pi-workflows-lean`. Pi loads a local package as it is, so keep its dev dependencies out of it: a clone that ran `npm install` holds its own copies of Pi's packages, and the extension then runs on those copies instead of the Pi you are using. Develop in a separate checkout, or run `npm install --omit=dev` in the clone Pi loads.
+A local clone works too: `pi install /absolute/path/to/pi-workflows-lean`. The extension always runs on the Pi that loads it, even when the clone has its own copies of Pi's packages installed for development.
 
-Run `/reload` (or restart Pi), then ask naturally:
+Run `/reload` after a first install (restart Pi after an update), then ask naturally:
 
 ```text
 Run a workflow to audit every route under src/routes/ for missing auth checks.
@@ -240,7 +240,7 @@ Run storage uses a small versioned `<runId>.json` index head plus a `<runId>.jso
 
 Completed background runs retain their full result in run storage. Conversation delivery also creates an immutable JSON result artifact (`<runId>.json.result-<content-hash>`) and links to it, so a shortened summary still has a directly readable full result. These artifacts are removed with the run.
 
-In-process session replacements (`/reload`, `/new`, resume, fork) keep the live workflow manager. Active background runs therefore continue streaming progress, remain controllable, and deliver their result into the replacement session. Pi loads extensions with its module cache off, so `/reload` evaluates the package afresh and picks up an updated build; until then, a new session warns when the package on disk differs from the code it is running. A handoff between two different builds, such as an updated package or two installed copies, or a process exit pauses active runs onto the journal recovery path instead of mixing code or burning tokens after teardown. A process restart uses the same durable journal path, recovering an interrupted running workflow as paused so it can be resumed safely.
+In-process session replacements (`/reload`, `/new`, resume, fork) keep the live workflow manager. Active background runs therefore continue streaming progress, remain controllable, and deliver their result into the replacement session. Node keeps the extension's compiled modules for the life of the Pi process, so `/reload` keeps running the build Pi started with; after updating the package, restart Pi to load it (a new session warns when the package on disk differs from the code it is running). A handoff between two different builds, such as an updated package or two installed copies, or a process exit pauses active runs onto the journal recovery path instead of mixing code or burning tokens after teardown. A process restart uses the same durable journal path, recovering an interrupted running workflow as paused so it can be resumed safely.
 
 Finished runs (completed, failed, or aborted) are retained in full on disk, capped at the 300 most recent per project — older ones are evicted first; running, paused, leased and undelivered runs are protected. Only a smaller number (20 by default) also stay fully loaded in the live manager. History listings and startup recovery read small index heads; details hydrate on demand through a cache capped at eight records and a 16 MiB serialized-weight budget. The navigator retains only its most recently selected historical snapshot. Library embedders can tune `maxTerminalRunsInMemory` on `WorkflowManager` and `maxTerminalRunsOnDisk` on the run-persistence layer.
 

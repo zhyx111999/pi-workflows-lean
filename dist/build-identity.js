@@ -32,9 +32,10 @@ export function buildIdentityOnDisk(root = CODE_ROOT) {
     return hash.digest("hex").slice(0, 16);
 }
 /**
- * The build these modules were evaluated from. Pi imports extensions with its
- * module cache off, so /reload evaluates the package afresh; a session started
- * before a rebuild keeps running the code it loaded until then.
+ * The build these modules were loaded from. Pi loads the compiled modules
+ * with Node's import, which keeps them for the life of the process: /reload
+ * re-runs the extension with this code, and a rebuilt package takes effect
+ * only after Pi restarts.
  */
 export const LOADED_BUILD = buildIdentityOnDisk() ?? "unknown";
 /** Whether the package on disk differs from the build this process is running. */

@@ -1,12 +1,22 @@
-// Resolve the host SDK through Pi's loader, but load our compiled ESM graph
-// with import semantics. Requiring the graph makes import-only SDK subpaths
-// fall through the host's prefix aliases as invalid file-system paths. The
-// graph reaches Pi's own packages only when this package has no copies of them
-// (a git install has none); the host session class is passed in either way.
-// Pi imports extensions with its module cache off, so /reload evaluates this
-// graph afresh, including an updated build.
-const host = await import("@earendil-works/pi-coding-agent");
+// Pi's extension loader evaluates this file and supplies its own packages for
+// the imports below. The compiled graph in dist/ is loaded with Node's import
+// instead, so before the first dist/ module loads, bindHostModules routes the
+// graph's imports of these packages to the same modules: the extension runs on
+// the Pi that loaded it, never on copies in this package's node_modules.
+// Node keeps that graph for the life of the process: /reload re-runs the
+// extension with the code already loaded, and an updated build loads when Pi
+// restarts (the extension warns when the package on disk has changed).
+import * as codingAgent from "@earendil-works/pi-coding-agent";
+import * as tui from "@earendil-works/pi-tui";
+import * as typebox from "typebox";
+import * as typeboxValue from "typebox/value";
+
+const { bindHostModules } = await import("../dist/host-modules.js");
+bindHostModules(new URL("../dist/", import.meta.url), {
+  "@earendil-works/pi-coding-agent": codingAgent,
+  "@earendil-works/pi-tui": tui,
+  typebox,
+  "typebox/value": typeboxValue,
+});
 const extension = await import("../dist/pi-extension.js");
-extension.useHostSessionClass(host.AgentSession);
-export const sessionFileCwd = extension.sessionFileCwd;
 export default extension.default;

@@ -56,8 +56,9 @@ WorkflowAgent.run()                          agent.ts
 
 | 文件 | 职责 |
 |---|---|
-| `extensions/workflow.ts` | Pi 加载的入口：导入编译后的 `dist/pi-extension.js`。Pi 加载扩展时关闭模块缓存，`/reload` 会重新求值整个包，更新后的构建随之生效 |
-| `build-identity.ts` | 已加载代码的构建标识（模块内容哈希）：会话交接只在同一构建之间进行；磁盘上的包与正在运行的代码不同时，新会话提示 `/reload` |
+| `extensions/workflow.ts` | Pi 加载的入口：从 Pi 的加载器拿到 Pi 自带的包（pi-coding-agent、pi-tui、typebox），交给 `host-modules.ts`，再用 Node 的 import 加载编译后的 `dist/pi-extension.js`。Node 在进程存活期间保留这些模块，`/reload` 不会加载新构建，更新插件后需要重启 Pi |
+| `host-modules.ts` | 模块钩子：`dist/` 里对 Pi 自带包的引用一律接到正在运行的 Pi 上，不会用到插件目录 `node_modules` 里的副本（开发目录装了开发依赖时也一样） |
+| `build-identity.ts` | 已加载代码的构建标识（模块内容哈希）：会话交接只在同一构建之间进行；磁盘上的包变了就提示重启 Pi |
 | `pi-extension.ts` | 装配一切：注册两个工具和斜杠命令，安装隐藏提示钩子、结果投递、额度暂停后的自动恢复；`session_start` 时绑定会话、处理跨项目切换 |
 | `extension-reload.ts` | `/reload`、`/new`、resume、fork 时，把正在运行的管理器交给同一构建的下一代扩展，后台运行不中断；没人接管（例如扩展已停用）或构建不同时暂停运行，并释放上一代占用的会话 |
 | `workflow-editor.ts` / `parent-prompt.ts` | 隐藏的主模型提示词、`/workflows run` 的指令文字、`/workflows-progress` 命令 |
@@ -251,5 +252,5 @@ npm run check:dist   # 提交前：dist/ 必须与源码一致
 
 - 单元测试会给每个测试进程一个临时 home（`tests/helpers/isolated-home.ts`），不会写入真实的 `~/.pi`。
 - 单独跑一个测试文件时也要带上：`npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`。`tests/extension-host-modules.test.ts` 加载构建好的扩展，单独跑之前先 `npm run build`。
-- 开发依赖固定在 Pi 1.1.0（当前在用的宿主），测试按它的行为运行。
+- 开发依赖固定在 Pi 1.1.0（当前在用的宿主），测试按它的行为运行；扩展运行时用的始终是加载它的那个 Pi（见 `host-modules.ts`）。
 - 全仓统一使用 LF 换行。

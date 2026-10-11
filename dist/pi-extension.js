@@ -221,7 +221,7 @@ export default function extension(pi) {
             usageLimitScheduler = new UsageLimitScheduler(manager);
         }
         if (loadedBuildIsStale()) {
-            ctx.ui.notify("pi-workflows-lean changed on disk since it was loaded. Run /reload to load the new build.", "warning");
+            ctx.ui.notify("pi-workflows-lean changed on disk since Pi started. Restart Pi to load it; /reload keeps running the loaded build.", "warning");
         }
         // First registration (and post-rebuild catch-up for target-only names).
         // Handlers load by name from the live storage, so a later same-session
