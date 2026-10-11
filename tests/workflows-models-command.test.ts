@@ -23,6 +23,15 @@ async function loadCommand() {
   return mod;
 }
 
+/** A registry offering the models the editSingleTier pickers below choose from. */
+const PICKER_MODELS = {
+  getAvailable: () => [
+    { provider: "openai", id: "gpt-4.1-mini" },
+    { provider: "openai", id: "gpt-4.1" },
+    { provider: "openai", id: "gpt-5" },
+  ],
+};
+
 describe("workflows-models-command", () => {
   describe("registerWorkflowModelsCommand", () => {
     it("registers the workflows-models command with Pi", async () => {
@@ -67,6 +76,7 @@ describe("workflows-models-command", () => {
       // Mock ctx.ui.custom to return null (simulating user cancelling)
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => null),
           notify: mock.fn(),
@@ -83,6 +93,7 @@ describe("workflows-models-command", () => {
       // Mock ctx.ui.custom to return the same model that's already selected
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => "gpt-4.1-mini"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -100,6 +111,7 @@ describe("workflows-models-command", () => {
       // Mock ctx.ui.custom to return a different model
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => "gpt-5"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -119,6 +131,7 @@ describe("workflows-models-command", () => {
       let thinkingOptions: string[] = [];
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.5"),
           select: mock.fn(async (_title: string, options: string[]) => {
@@ -143,6 +156,7 @@ describe("workflows-models-command", () => {
       let thinkingOptions: string[] = [];
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.6-sol"),
           select: mock.fn(async (_title: string, options: string[]) => {
@@ -164,6 +178,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.5"),
           select: mock.fn(async () => "xhigh"),
@@ -180,6 +195,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const ctx = {
         mode: "tui",
+        modelRegistry: PICKER_MODELS,
         ui: {
           custom: mock.fn(async () => "openai/gpt-4.1-mini"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -197,6 +213,16 @@ describe("workflows-models-command", () => {
   describe("editSingleTier outside the TUI", () => {
     // RPC hosts implement select/confirm/notify over the extension-UI protocol,
     // but ui.custom() resolves undefined there because it needs a real terminal.
+    it("says no model is available instead of opening an empty picker", async () => {
+      const { editSingleTier } = await import("../src/workflows-models-command.js");
+      const notify = mock.fn();
+      const select = mock.fn(async () => undefined);
+      const ctx = { mode: "rpc", modelRegistry: { getAvailable: () => [] }, ui: { select, notify, custom: mock.fn() } };
+      assert.equal(await editSingleTier(ctx as never, { small: "x/y" }, "small"), null);
+      assert.equal(select.mock.callCount(), 0);
+      assert.match(String(notify.mock.calls[0]?.arguments[0]), /No models are available/);
+    });
+
     function rpcCtx(answers: (string | undefined)[]) {
       const models = [
         { provider: "openai", id: "gpt-4.1-mini" },
