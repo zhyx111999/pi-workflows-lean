@@ -22,7 +22,7 @@ function deferredAgent() {
   return {
     resolve: (index: number, value: unknown = "done") => pending.get(index)?.resolve(value),
     runner: {
-      async run(_prompt: string, _options?: { onUsage?: (u: unknown) => void }) {
+      async run(_prompt: string, _options: unknown) {
         const index = callIndex++;
         return new Promise((resolve) => {
           pending.set(index, { resolve });

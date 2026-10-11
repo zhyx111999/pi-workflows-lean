@@ -389,7 +389,7 @@ test("cold journal rehydration keeps a legacy nested frame's call indexes apart 
     script: "",
     startedAt: "",
     updatedAt: "",
-  } as PersistedRunState;
+  } as unknown as PersistedRunState;
   const model = new NavigatorModel({ listRuns: () => [persisted], getRun: () => undefined });
 
   assert.equal(model.agentDetail("parent-run", 1)?.result, "nested result");

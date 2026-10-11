@@ -58,7 +58,7 @@ describe("captureSessionSend", () => {
     const send = captureSessionSend(piBoundTo(session), "bound");
 
     assert.ok(send, "the bound session is captured");
-    assert.deepEqual(session.received, [], "the probe never reaches the session's real send");
+    assert.equal(session.received.length, 0, "the probe never reaches the session's real send");
     assert.deepEqual(sendDescriptor(FakeHostSession.prototype), before, "no hook remains after the probe");
     await send(result("delivery-1"), { triggerTurn: true, deliverAs: "followUp" });
     assert.deepEqual(

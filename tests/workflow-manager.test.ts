@@ -1760,7 +1760,7 @@ test(
     const manager = new WorkflowManager({ cwd, agent: da.runner });
     manager.on("error", () => {});
 
-    let stoppedEvent: { runId: string } | null = null;
+    let stoppedEvent = null as { runId: string } | null;
     manager.on("stopped", (ev: { runId: string }) => {
       stoppedEvent = ev;
     });
@@ -1804,7 +1804,7 @@ test(
     const manager = new WorkflowManager({ cwd, agent: da.runner });
     manager.on("error", () => {});
 
-    let pausedEvent: { runId: string } | null = null;
+    let pausedEvent = null as { runId: string } | null;
     manager.on("paused", (ev: { runId: string }) => {
       pausedEvent = ev;
     });
@@ -1891,7 +1891,11 @@ test(
 
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed", "resumed run should complete successfully");
-    assert.equal(finalRun?.result?.result?.a, "resumed-done", "resumed run should have the agent result");
+    assert.equal(
+      (finalRun?.result?.result as Record<string, unknown> | undefined)?.a,
+      "resumed-done",
+      "resumed run should have the agent result",
+    );
 
     // The run should also appear in listRuns as completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
@@ -1954,7 +1958,7 @@ return { a, b }`;
 
       const finalRun = manager.getRun(runId);
       assert.equal(finalRun?.status, "completed", "resumed multi-agent run should complete");
-      assert.equal(finalRun?.result?.result?.a, "first-result");
+      assert.equal((finalRun?.result?.result as Record<string, unknown> | undefined)?.a, "first-result");
     }
 
     await origPromise.catch(() => {});
@@ -2140,8 +2144,8 @@ return { a, b }`;
     await new Promise((r) => setTimeout(r, 50));
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed", "resumed run completes once the limit clears");
-    assert.equal(finalRun?.result?.result?.a, "first-result");
-    assert.equal(finalRun?.result?.result?.b, "second-result");
+    assert.equal((finalRun?.result?.result as Record<string, unknown> | undefined)?.a, "first-result");
+    assert.equal((finalRun?.result?.result as Record<string, unknown> | undefined)?.b, "second-result");
   }),
 );
 
@@ -2417,7 +2421,11 @@ test(
     const run = manager.getRun(runId);
     assert.ok(run, "run should be in memory after resume");
     assert.equal(run?.status, "completed", "cold-start resumed run should complete");
-    assert.equal(run?.result?.result?.a, "ok", "agent result should be present");
+    assert.equal(
+      (run?.result?.result as Record<string, unknown> | undefined)?.a,
+      "ok",
+      "agent result should be present",
+    );
 
     // Verify persistence was updated to completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
@@ -3794,7 +3802,7 @@ test(
     const manager = new WorkflowManager({ cwd, agent: da.runner });
     manager.on("error", () => {});
 
-    let resumedEvent: { runId: string } | null = null;
+    let resumedEvent = null as { runId: string } | null;
     manager.on("resumed", (ev: { runId: string }) => {
       resumedEvent = ev;
     });
@@ -4452,8 +4460,16 @@ return { a, b }`;
 
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed", "resumed run completes");
-    assert.equal(finalRun?.result?.result?.a, "ran:FIRST", "agent 1 replays its cached journal result");
-    assert.equal(finalRun?.result?.result?.b, "ran:SECOND-EDITED", "edited agent 2 re-runs live");
+    assert.equal(
+      (finalRun?.result?.result as Record<string, unknown> | undefined)?.a,
+      "ran:FIRST",
+      "agent 1 replays its cached journal result",
+    );
+    assert.equal(
+      (finalRun?.result?.result as Record<string, unknown> | undefined)?.b,
+      "ran:SECOND-EDITED",
+      "edited agent 2 re-runs live",
+    );
 
     // Cache proof: during the resume, the runner was NOT called for the unchanged
     // agent 1, and WAS called for the edited agent 2.
@@ -4489,8 +4505,16 @@ test(
 
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed");
-    assert.equal(finalRun?.result?.result?.a, "ran:FIRST", "agent 1 still replays from journal");
-    assert.equal(finalRun?.result?.result?.b, "ran:SECOND-ORIGINAL", "persisted (unedited) script runs agent 2");
+    assert.equal(
+      (finalRun?.result?.result as Record<string, unknown> | undefined)?.a,
+      "ran:FIRST",
+      "agent 1 still replays from journal",
+    );
+    assert.equal(
+      (finalRun?.result?.result as Record<string, unknown> | undefined)?.b,
+      "ran:SECOND-ORIGINAL",
+      "persisted (unedited) script runs agent 2",
+    );
 
     const promptsDuringResume = seen.slice(seenBeforeResume);
     assert.ok(!promptsDuringResume.includes("FIRST"), "agent 1 replayed from journal");
@@ -4547,7 +4571,7 @@ return { first, third }`;
       journal: [
         { ...own, runId },
         { index: 0, runId: `${runId}-nested1`, hash: "child-frame-hash", result: "child-frame-result" },
-      ] as typeof paused.journal,
+      ] as unknown as typeof paused.journal,
     });
 
     state.failThird = false;
@@ -4559,7 +4583,7 @@ return { first, third }`;
 
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed");
-    assert.equal(finalRun?.result?.result?.first, "ran:first-call");
+    assert.equal((finalRun?.result?.result as Record<string, unknown> | undefined)?.first, "ran:first-call");
     assert.deepEqual(seen.slice(seenBeforeResume), ["third-call"], "the run's own journaled call replays");
     assert.deepEqual(
       finalRun?.journal.map((entry) => [entry.index, Object.keys(entry).includes("runId")]),
@@ -5147,10 +5171,7 @@ test(
 void agent('hung', { label: 'hung' })
 void agent('queued', { label: 'queued' })
 return 'script-done'`;
-    const { runId, promise } = manager.startInBackground(script, undefined, {
-      concurrency: 1,
-      drainAbortGraceMs: 5,
-    });
+    const { runId, promise } = manager.startInBackground(script, undefined, { drainAbortGraceMs: 5 });
     await hungStarted;
 
     for (let i = 0; i < 2_000; i++) {
@@ -5642,9 +5663,10 @@ test(
       status: "running",
       agents: [
         {
-          id: "foreign-agent",
+          id: 9001,
           callId: "foreign-call",
           label: "foreign",
+          prompt: "foreign",
           status: "running",
           tokens: 17,
         },
@@ -5668,9 +5690,10 @@ test(
     assert.equal(current?.status, "running", "foreign lifecycle state must not be overwritten");
     assert.deepEqual(current?.agents, [
       {
-        id: "foreign-agent",
+        id: 9001,
         callId: "foreign-call",
         label: "foreign",
+        prompt: "foreign",
         status: "running",
         tokens: 17,
       },

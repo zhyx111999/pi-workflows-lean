@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionUIContext, initTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, parseKey } from "@earendil-works/pi-tui";
+import type { AgentHistoryEntry } from "../src/agent-history.js";
 import type { WorkflowSnapshot } from "../src/display.js";
 import { WorkflowErrorCode } from "../src/errors.js";
 import { safeInputText, typedText } from "../src/navigator/input-text.js";
@@ -158,40 +159,46 @@ function persistedRunManager(): Pick<WorkflowManager, "listRuns" | "getRun"> {
   };
 }
 
-function savedStorage(): { list(): SavedWorkflow[]; delete(name: string, location?: string): boolean } {
+/** A navigator storage double: the given list, and mutations that report success. */
+function fakeNavigatorStorage(list: () => SavedWorkflow[]): Pick<WorkflowStorage, "list" | "delete" | "rename"> {
   return {
-    list: () => [
-      {
-        name: "deploy",
-        description: "Deploy to prod",
-        location: "project",
-        path: "/x",
-        savedAt: "2025-01-01",
-        script: "export const meta = { name: 'deploy', description: 'Deploy to prod' }",
-      } as SavedWorkflow,
-      {
-        name: "analyze",
-        description: "Analyze deps",
-        location: "user",
-        path: "/y",
-        savedAt: "2025-01-02",
-        script: "export const meta = { name: 'analyze', description: 'Analyze deps' }",
-      } as SavedWorkflow,
-      {
-        name: "backup",
-        description: "Full backup",
-        location: "user",
-        path: "/z",
-        savedAt: "2025-01-03",
-        script: "export const meta = { name: 'backup', description: 'Full backup' };",
-      },
-    ],
-    delete: () => true,
+    list,
+    delete: (workflow) => ({ ok: true, workflow }),
+    rename: (workflow, name) => ({ ok: true, workflow: { ...workflow, name } }),
   };
 }
 
-function emptySavedStorage(): { list(): SavedWorkflow[]; delete(name: string, location?: string): boolean } {
-  return { list: () => [], delete: () => true };
+function savedStorage(): Pick<WorkflowStorage, "list" | "delete" | "rename"> {
+  return fakeNavigatorStorage(() => [
+    {
+      name: "deploy",
+      description: "Deploy to prod",
+      location: "project",
+      path: "/x",
+      savedAt: "2025-01-01",
+      script: "export const meta = { name: 'deploy', description: 'Deploy to prod' }",
+    } as SavedWorkflow,
+    {
+      name: "analyze",
+      description: "Analyze deps",
+      location: "user",
+      path: "/y",
+      savedAt: "2025-01-02",
+      script: "export const meta = { name: 'analyze', description: 'Analyze deps' }",
+    } as SavedWorkflow,
+    {
+      name: "backup",
+      description: "Full backup",
+      location: "user",
+      path: "/z",
+      savedAt: "2025-01-03",
+      script: "export const meta = { name: 'backup', description: 'Full backup' };",
+    } as SavedWorkflow,
+  ]);
+}
+
+function emptySavedStorage(): Pick<WorkflowStorage, "list" | "delete" | "rename"> {
+  return fakeNavigatorStorage(() => []);
 }
 
 test("NavigatorModel reads runs, phases, agents, and detail", () => {
@@ -468,7 +475,7 @@ test("a null/primitive element in a corrupt agent history doesn't crash the deta
         prompt: "do it",
         status: "error",
         history: [
-          null as unknown as { role: string; kind: string; text: string },
+          null as unknown as AgentHistoryEntry,
           { role: "tool", kind: "toolResult", toolName: "read", text: "ok" },
         ],
       },
@@ -1094,7 +1101,7 @@ test("restarting a run with a corrupt persisted script notifies an error instead
   await Promise.resolve();
 
   assert.ok(capturedComponent, "openWorkflowNavigator should have produced a component");
-  assert.doesNotThrow(() => capturedComponent?.handleInput("r"), "restart must not throw/crash the overlay");
+  assert.doesNotThrow(() => capturedComponent?.handleInput?.("r"), "restart must not throw/crash the overlay");
 
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, "error");
@@ -1151,7 +1158,7 @@ test("deleting a saved workflow whose storage.delete throws (e.g. EACCES) notifi
     delete: () => {
       throw new Error("EACCES: permission denied, unlink '/x'");
     },
-  };
+  } as unknown as WorkflowStorage;
 
   openWorkflowNavigator({} as ExtensionAPI, fakeManager, ui, { getStorage: () => storage }).catch(() => {});
   await Promise.resolve();
@@ -1159,8 +1166,8 @@ test("deleting a saved workflow whose storage.delete throws (e.g. EACCES) notifi
 
   const component = getComponent();
   assert.ok(component, "openWorkflowNavigator should have produced a component");
-  assert.doesNotThrow(() => component?.handleInput("x"), "first delete only asks for confirmation");
-  assert.doesNotThrow(() => component?.handleInput("x"), "confirmed delete must not throw/crash the overlay");
+  assert.doesNotThrow(() => component?.handleInput?.("x"), "first delete only asks for confirmation");
+  assert.doesNotThrow(() => component?.handleInput?.("x"), "confirmed delete must not throw/crash the overlay");
 
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, "error");
@@ -1190,8 +1197,8 @@ test("stopping a run whose manager.stop throws (cold-run lease/persistence failu
 
   const component = getComponent();
   assert.ok(component, "openWorkflowNavigator should have produced a component");
-  assert.doesNotThrow(() => component?.handleInput("x"), "first stop only asks for confirmation");
-  assert.doesNotThrow(() => component?.handleInput("x"), "confirmed stop must not throw/crash the overlay");
+  assert.doesNotThrow(() => component?.handleInput?.("x"), "first stop only asks for confirmation");
+  assert.doesNotThrow(() => component?.handleInput?.("x"), "confirmed stop must not throw/crash the overlay");
 
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0].type, "error");
@@ -1254,7 +1261,7 @@ test("navigator save registers via manager + live loadWorkflow so a same-name ov
   assert.ok(component, "openWorkflowNavigator should have produced a component");
 
   // First save — registers /scan against SCRIPT_V1.
-  component?.handleInput("s");
+  component?.handleInput?.("s");
   assert.ok(notifications.some((n) => n.message.includes("Saved /scan")));
   assert.equal(commands.filter((c) => c.name === "scan").length, 1);
   assert.equal(storage.load("scan")?.script, "export SCRIPT_V1");
@@ -1263,9 +1270,9 @@ test("navigator save registers via manager + live loadWorkflow so a same-name ov
   // replace); registration is idempotent but the live loader must pick up
   // storage's latest value.
   run.script = "export SCRIPT_V2";
-  component?.handleInput("s");
+  component?.handleInput?.("s");
   assert.equal(storage.load("scan")?.script, "export SCRIPT_V1", "a replace waits for confirmation");
-  component?.handleInput("s");
+  component?.handleInput?.("s");
   assert.equal(storage.load("scan")?.script, "export SCRIPT_V2");
   assert.equal(commands.filter((c) => c.name === "scan").length, 1, "must not double-register the command");
 
@@ -1314,22 +1321,22 @@ test("component input keeps filtered and jumped selection identity and confirms 
   const component = getComponent();
   assert.ok(component);
 
-  component.handleInput("/");
-  component.handleInput("d");
-  component.handleInput("\r");
+  component.handleInput?.("/");
+  component.handleInput?.("d");
+  component.handleInput?.("\r");
   assert.match((component.render?.(80) ?? []).join("\n"), /❯ ◆ run-d/);
-  component.handleInput("G");
+  component.handleInput?.("G");
   assert.match((component.render?.(80) ?? []).join("\n"), /❯ ◆ run-d/);
 
-  component.handleInput("\r");
+  component.handleInput?.("\r");
   assert.equal((component.render?.(80) ?? []).join("\n").includes("P"), true);
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.match((component.render?.(80) ?? []).join("\n"), /confirm stop/);
-  component.handleInput("p");
+  component.handleInput?.("p");
   assert.equal(stopped, 0, "a different key cannot confirm stop");
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.equal(stopped, 0, "the mismatched key cancels instead of confirming");
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.equal(stopped, 1, "the drilled frame run is stopped by matching x/x");
   assert.equal(
     notifications.some((notice) => notice.message.includes("Stopped run-d")),
@@ -1368,26 +1375,26 @@ test("component filter renders the draft live, commits on Enter, and Esc preserv
   const component = getComponent();
   assert.ok(component);
 
-  component.handleInput("/");
-  component.handleInput("b");
+  component.handleInput?.("/");
+  component.handleInput?.("b");
   let text = (component.render?.(80) ?? []).join("\n");
   assert.match(text, /Workflows {2}\/ b/);
   assert.match(text, /run-beta/);
   assert.doesNotMatch(text, /run-alpha/);
 
-  component.handleInput("\r");
+  component.handleInput?.("\r");
   text = (component.render?.(80) ?? []).join("\n");
   assert.match(text, /Workflows {2}\/ b/);
   assert.match(text, /run-beta/);
 
   // A draft that has no matches must not erase the already-applied query when
   // Esc cancels editing, nor should it lose the selected identity.
-  component.handleInput("/");
-  component.handleInput("x");
+  component.handleInput?.("/");
+  component.handleInput?.("x");
   const unmatchedDraft = (component.render?.(80) ?? []).join("\n");
   assert.doesNotMatch(unmatchedDraft, /run-beta/);
   assert.match(unmatchedDraft, /No matching workflows\./);
-  component.handleInput(String.fromCharCode(0x1b));
+  component.handleInput?.(String.fromCharCode(0x1b));
   text = (component.render?.(80) ?? []).join("\n");
   assert.match(text, /Workflows {2}\/ b/);
   assert.match(text, /❯ .*run-beta/);
@@ -1422,10 +1429,10 @@ test("component filter ignores SS3 arrows, function keys, and chords instead of 
   const esc = String.fromCharCode(0x1b);
   const component = await navigatorOverRuns({ "run-alpha": "alpha", "run-beta": "beta" });
 
-  component.handleInput("/");
-  for (const key of [`${esc}OA`, `${esc}OB`, `${esc}OP`, `${esc}a`, `${esc}[1;5A`, "\t"]) component.handleInput(key);
-  component.handleInput("b");
-  component.handleInput(`${esc}[101u`); // Kitty CSI-u for a plain "e"
+  component.handleInput?.("/");
+  for (const key of [`${esc}OA`, `${esc}OB`, `${esc}OP`, `${esc}a`, `${esc}[1;5A`, "\t"]) component.handleInput?.(key);
+  component.handleInput?.("b");
+  component.handleInput?.(`${esc}[101u`); // Kitty CSI-u for a plain "e"
   const text = (component.render?.(80) ?? []).join("\n");
   assert.match(text, /Workflows {2}\/ be /);
   assert.match(text, /run-beta/);
@@ -1438,8 +1445,8 @@ test("component filter keeps ZWJ so an emoji sequence matches its exact name", a
     "run-apart": "apart 👩💻",
   });
 
-  component.handleInput("/");
-  component.handleInput("👩\u200d💻");
+  component.handleInput?.("/");
+  component.handleInput?.("👩\u200d💻");
   const text = (component.render?.(80) ?? []).join("\n");
   assert.ok(text.includes("/ 👩\u200d💻"), "the draft keeps the joiner");
   assert.match(text, /run-pair/);
@@ -1532,9 +1539,9 @@ test("component rename keeps typed format characters and leaves rejecting them t
   const component = getComponent();
   assert.ok(component);
 
-  component.handleInput("r");
-  component.handleInput("\u200d");
-  component.handleInput("\r");
+  component.handleInput?.("r");
+  component.handleInput?.("\u200d");
+  component.handleInput?.("\r");
   assert.equal(renameCalls, 0, "an unsafe name must not reach storage");
   assert.deepEqual(
     notifications.map((notice) => notice.type),
@@ -1544,9 +1551,9 @@ test("component rename keeps typed format characters and leaves rejecting them t
   assert.ok((component.render?.(80) ?? []).join("\n").includes("Rename: safe\u200d"), "the draft stays open");
 
   // Backspace removes the joiner with the letter it extends, one grapheme.
-  component.handleInput(String.fromCharCode(0x7f));
-  component.handleInput("e");
-  component.handleInput("\r");
+  component.handleInput?.(String.fromCharCode(0x7f));
+  component.handleInput?.("e");
+  component.handleInput?.("\r");
   assert.equal(renameCalls, 0, "same-name rename should not reach storage");
   assert.equal(notifications.at(-1)?.message, "Kept /safe");
 });
@@ -1604,16 +1611,16 @@ test("component manager refresh invalidates a stale confirmation instead of acti
   const component = getComponent();
   assert.ok(component);
 
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.match((component.render?.(80) ?? []).join("\n"), /confirm stop/);
   rows = [];
   listeners.get("agentEnd")?.();
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.equal(stopped, 0, "the second x must not stop the replacement row");
   assert.equal(deleted, 0, "the second x must not delete the replacement row");
 });
 
-test("component rename handles a legacy source and live-loads only the new slash command", async () => {
+test("component rename live-loads only the new slash command", async () => {
   const { ui, getComponent } = fakeUiCapturingComponent();
   type Stored = SavedWorkflow;
   const oldWorkflow: Stored = {
@@ -1621,7 +1628,6 @@ test("component rename handles a legacy source and live-loads only the new slash
     description: "legacy",
     script: "export LEGACY_OLD",
     location: "project",
-    source: "legacy",
     path: "/legacy-old.json",
     savedAt: "2025-01-01",
   };
@@ -1671,19 +1677,19 @@ test("component rename handles a legacy source and live-loads only the new slash
   const component = getComponent();
   assert.ok(component);
 
-  component.handleInput("r");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("\b");
-  component.handleInput("renamed");
-  component.handleInput("\r");
+  component.handleInput?.("r");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("\b");
+  component.handleInput?.("renamed");
+  component.handleInput?.("\r");
 
   const oldCommand = commands.find((command) => command.name === "legacy-old");
   const newCommand = commands.find((command) => command.name === "renamed");
@@ -1727,11 +1733,11 @@ test("component saved detail exposes confirmation before delete", async () => {
   await Promise.resolve();
   const component = getComponent();
   assert.ok(component);
-  component.handleInput("\r");
-  component.handleInput("x");
+  component.handleInput?.("\r");
+  component.handleInput?.("x");
   const confirming = component.render?.(80) ?? [];
   assert.match(confirming.join("\n"), /confirm delete/);
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.equal(deleted, 1);
 });
 
@@ -1771,13 +1777,13 @@ test("a manager event with the target unchanged does NOT cancel a pending confir
   const component = getComponent();
   assert.ok(component);
 
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.match((component.render?.(80) ?? []).join("\n"), /confirm stop/);
   // Streaming progress events (the row unchanged) must not cancel the pending
   // confirmation — previously ANY manager event did, making double-x unusable.
   listeners.get("tokenUsage")?.();
   listeners.get("agentModel")?.();
-  component.handleInput("x");
+  component.handleInput?.("x");
   assert.equal(stopped, 1, "the second x confirms after unrelated manager events");
 });
 
@@ -1876,7 +1882,7 @@ test("invalidate drops cached rich text so a theme switch recolors an open detai
   );
   const openDetail = async () => {
     const component = await openedComponent(manager);
-    for (let i = 0; i < 3; i++) component.handleInput("\r");
+    for (let i = 0; i < 3; i++) component.handleInput?.("\r");
     return component;
   };
   initTheme("dark");
@@ -1906,17 +1912,17 @@ test("an empty-named phase opens, lists its agents, and drills into them", async
       ],
     ),
   );
-  component.handleInput("\r");
+  component.handleInput?.("\r");
   assert.match(component.render(100).join("\n"), /1 \(unnamed phase\)/);
 
-  component.handleInput("\r");
+  component.handleInput?.("\r");
   const agents = component.render(100).join("\n");
   assert.match(agents, /\(unnamed phase\) · 2 agents/);
   assert.match(agents, /first/);
   assert.match(agents, /second/);
 
-  component.handleInput("j");
-  component.handleInput("\r");
+  component.handleInput?.("j");
+  component.handleInput?.("\r");
   const detail = component.render(100).join("\n");
   assert.match(detail, /second/);
   assert.match(detail, /result two/);

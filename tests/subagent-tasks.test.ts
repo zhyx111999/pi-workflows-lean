@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import type { AgentRunOptions } from "../src/agent.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import {
@@ -73,7 +74,7 @@ test("unchangedTaskMoves maps every task whose label, task, and model all match,
 function taskAgent(fail?: { prompt: string }) {
   const live: string[] = [];
   const runner = {
-    async run(prompt: string, options?: AgentRunOptions<undefined>) {
+    async run(prompt: string, options?: AgentRunOptions<TSchema>) {
       live.push(prompt);
       if (fail && prompt === fail.prompt) {
         await new Promise((resolve) => setTimeout(resolve, 30));
@@ -195,7 +196,7 @@ test(
     // Reused rows moved with their task; the edited task's old row stays as history without a call id.
     const rows = (record?.agents ?? []).map(({ label, prompt, callId }) => ({ label, prompt, callId }));
     assert.deepEqual(
-      rows.filter((row) => row.callId !== undefined).sort((x, y) => (x.callId < y.callId ? -1 : 1)),
+      rows.filter((row) => row.callId !== undefined).sort((x, y) => (String(x.callId) < String(y.callId) ? -1 : 1)),
       [
         { label: "c", prompt: "do c", callId: `${runId}:0` },
         { label: "b", prompt: "do b, smaller", callId: `${runId}:1` },

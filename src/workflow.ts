@@ -83,7 +83,7 @@ export interface JournalEntry {
 
 /** Minimal injected agent surface used by the workflow runtime and deterministic tests. */
 export interface WorkflowAgentRunner {
-  run(prompt: string, options?: AgentRunOptions<TSchema>): Promise<unknown>;
+  run(prompt: string, options: AgentRunOptions<TSchema>): Promise<unknown>;
 }
 
 export interface WorkflowCheckpointInput {
@@ -262,8 +262,8 @@ export interface WorkflowRunResult<T = unknown> {
   phases: string[];
   agentCount: number;
   durationMs: number;
-  runId?: string;
-  tokenUsage?: AgentUsage;
+  runId: string;
+  tokenUsage: AgentUsage;
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {

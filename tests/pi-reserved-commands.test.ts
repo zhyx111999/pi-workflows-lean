@@ -69,7 +69,9 @@ function navigatorSession(
   const session = {
     pi,
     manager,
-    ui: { notify: (message: string, type?: string) => notified.push({ message, type }) } as ExtensionUIContext,
+    ui: {
+      notify: (message: string, type?: string) => notified.push({ message, type }),
+    } as unknown as ExtensionUIContext,
     options: { getStorage: () => storage, getManager: () => manager },
     model: {
       saved: () => saved,

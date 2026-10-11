@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
@@ -17,11 +18,11 @@ import {
 } from "../src/workflow-capability-contract.js";
 
 function recordingRunner() {
-  const calls: Array<{ prompt: string; options: AgentRunOptions }> = [];
+  const calls: Array<{ prompt: string; options: AgentRunOptions<TSchema> }> = [];
   return {
     calls,
     runner: {
-      async run(prompt: string, options: AgentRunOptions) {
+      async run(prompt: string, options: AgentRunOptions<TSchema>) {
         calls.push({ prompt, options });
         return "ran";
       },

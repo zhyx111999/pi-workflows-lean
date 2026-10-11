@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import type { AgentRunOptions } from "../src/agent.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 
@@ -20,7 +21,7 @@ function steerableAgent() {
     steered,
     release: () => release(),
     runner: {
-      async run(prompt: string, options?: AgentRunOptions<undefined>) {
+      async run(prompt: string, options?: AgentRunOptions<TSchema>) {
         const unregister = options?.registerSteer?.(async (text) => {
           steered.push(text);
         });

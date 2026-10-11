@@ -8,7 +8,6 @@
 import { EventEmitter } from "node:events";
 import { isDeepStrictEqual } from "node:util";
 import type { ModelRegistry, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { WorkflowAgent } from "./agent.js";
 import { DEFAULT_MAX_AGENTS } from "./config.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
@@ -37,7 +36,7 @@ import {
   sanitizeAutoResumeAttempts,
 } from "./run-persistence.js";
 import type { SubagentTask } from "./subagent-tasks.js";
-import type { JournalEntry, WorkflowCheckpoint, WorkflowRunResult } from "./workflow.js";
+import type { JournalEntry, WorkflowAgentRunner, WorkflowCheckpoint, WorkflowRunResult } from "./workflow.js";
 
 export interface ManagedRun {
   runId: string;
@@ -145,7 +144,7 @@ export interface WorkflowManagerOptions {
   /** Retry attempts after recoverable agent failures. Default 0. */
   agentRetries?: number;
   /** Inject a custom agent runner (tests); defaults to a real subagent session. */
-  agent?: Pick<WorkflowAgent, "run">;
+  agent?: WorkflowAgentRunner;
   /** The session's main model (provider/id), for auto-tiering explore agents and inheritMainModel routing. */
   mainModel?: string;
   /** Route agents without `model`/`tier` to the session's main model. Default false. */
@@ -209,7 +208,7 @@ export class WorkflowManager extends EventEmitter {
   private persistence: RunPersistence;
   private cwd: string;
   private concurrency: number;
-  private agent?: Pick<WorkflowAgent, "run">;
+  private agent?: WorkflowAgentRunner;
   private mainModel?: string;
   private modelRegistry?: ModelRegistry;
   /** The current pi session id; new runs are tagged with it and listRuns() filters by it. */

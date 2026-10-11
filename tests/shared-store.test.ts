@@ -1,8 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { TSchema } from "typebox";
+import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition, AgentRegistry } from "../src/agent-registry.js";
 import { SharedStore } from "../src/shared-store.js";
 import { runWorkflow } from "../src/workflow.js";
+
+/** Call a store tool the runtime handed an agent, the way the agent's session would. */
+async function callStoreTool(
+  opts: AgentRunOptions<TSchema>,
+  name: "store_put" | "store_get",
+  params: Record<string, unknown>,
+): Promise<{ details?: { found?: boolean; value?: unknown } } | undefined> {
+  const tool = opts.systemTools?.find((candidate) => candidate.name === name);
+  return (await tool?.execute("", params, undefined, undefined, undefined as never)) as
+    | { details?: { found?: boolean; value?: unknown } }
+    | undefined;
+}
 
 // ─── SharedStore unit tests ───────────────────────────────────────────────────
 
@@ -236,18 +250,13 @@ test("each runWorkflow call gets an isolated SharedStore: run 2 does not see run
   const readsByRun: Record<string, boolean> = {};
 
   const agent = {
-    async run(
-      prompt: string,
-      opts: { systemTools?: { name: string; execute: (...args: unknown[]) => Promise<unknown> }[] },
-    ) {
+    async run(prompt: string, opts: AgentRunOptions<TSchema>) {
       if (prompt === "put") {
-        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key: "shared_key", value: "run1" });
+        await callStoreTool(opts, "store_put", { key: "shared_key", value: "run1" });
         return "wrote";
       }
       // prompt === "get"
-      const res = (await opts.systemTools?.find((t) => t.name === "store_get")?.execute("", { key: "shared_key" })) as {
-        details?: { found?: boolean };
-      };
+      const res = await callStoreTool(opts, "store_get", { key: "shared_key" });
       readsByRun[prompt] = res?.details?.found ?? false;
       return "read";
     },
@@ -275,7 +284,7 @@ test("store_put/store_get are injected as systemTools even under a restrictive a
   let observedSystemToolNames: string[] | undefined;
 
   const agent = {
-    async run(_prompt: string, opts: { toolNames?: string[]; systemTools?: { name: string }[] }) {
+    async run(_prompt: string, opts: AgentRunOptions<TSchema>) {
       observedToolNames = opts.toolNames;
       observedSystemToolNames = opts.systemTools?.map((t) => t.name);
       return "ok";
@@ -319,29 +328,22 @@ test("a failed retry attempt's store writes are rolled back: absent from the rec
   // in both the live map and the delta, masking the leak entirely.
   let callAttempts = 0;
   const agent = {
-    async run(
-      prompt: string,
-      opts: { systemTools?: Array<{ name: string; execute: (id: string, p: unknown) => Promise<unknown> }> },
-    ) {
+    async run(prompt: string, opts: AgentRunOptions<TSchema>) {
       if (prompt === "call") {
         callAttempts++;
         if (callAttempts === 1) {
-          await opts.systemTools
-            ?.find((t) => t.name === "store_put")
-            ?.execute("", { key: "poisonedOnly", value: "should-never-survive" });
+          await callStoreTool(opts, "store_put", { key: "poisonedOnly", value: "should-never-survive" });
           throw new Error("transient failure");
         }
-        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key: "shared", value: "good" });
+        await callStoreTool(opts, "store_put", { key: "shared", value: "good" });
         return "call-done";
       }
       // "check": read the live store from a SEPARATE, later agent() call —
       // proves the failed attempt's write is gone from the LIVE store, not
       // merely absent from the journaled delta.
-      const found = (await opts.systemTools
-        ?.find((t) => t.name === "store_get")
-        ?.execute("", {
-          key: "poisonedOnly",
-        })) as { details?: { found?: boolean } };
+      const found = await callStoreTool(opts, "store_get", {
+        key: "poisonedOnly",
+      });
       return found?.details?.found;
     },
   };
@@ -378,26 +380,19 @@ test("a failed retry attempt's rolled-back write matches what resume replay reco
   // run ended up with — not a state polluted by a discarded failed attempt.
   let callAttempts = 0;
   const agent = {
-    async run(
-      prompt: string,
-      opts: { systemTools?: Array<{ name: string; execute: (id: string, p: unknown) => Promise<unknown> }> },
-    ) {
+    async run(prompt: string, opts: AgentRunOptions<TSchema>) {
       if (prompt === "call") {
         callAttempts++;
         if (callAttempts === 1) {
-          await opts.systemTools
-            ?.find((t) => t.name === "store_put")
-            ?.execute("", { key: "poisonedOnly", value: "should-never-survive" });
+          await callStoreTool(opts, "store_put", { key: "poisonedOnly", value: "should-never-survive" });
           throw new Error("transient failure");
         }
-        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key: "shared", value: "good" });
+        await callStoreTool(opts, "store_put", { key: "shared", value: "good" });
         return "call-done";
       }
-      const found = (await opts.systemTools
-        ?.find((t) => t.name === "store_get")
-        ?.execute("", {
-          key: "poisonedOnly",
-        })) as { details?: { found?: boolean } };
+      const found = await callStoreTool(opts, "store_get", {
+        key: "poisonedOnly",
+      });
       return found?.details?.found;
     },
   };
@@ -449,22 +444,15 @@ test("resume replays parallel-agent deltas additively so no writes are lost", as
   // Agent that either writes to the store (put agent) or reads from it (check agent).
   const writeCalls: Record<string, string> = {};
   const agent = {
-    async run(
-      prompt: string,
-      opts: {
-        systemTools?: Array<{ name: string; execute: (id: string, p: unknown) => Promise<unknown> }>;
-      },
-    ) {
+    async run(prompt: string, opts: AgentRunOptions<TSchema>) {
       if (prompt.startsWith("put:")) {
         const [, key, val] = prompt.split(":");
-        await opts.systemTools?.find((t) => t.name === "store_put")?.execute("", { key, value: val });
+        await callStoreTool(opts, "store_put", { key, value: val });
         return `wrote ${key}`;
       }
       if (prompt.startsWith("get:")) {
         const [, key] = prompt.split(":");
-        const res = (await opts.systemTools?.find((t) => t.name === "store_get")?.execute("", { key })) as {
-          details?: { value?: unknown; found?: boolean };
-        };
+        const res = await callStoreTool(opts, "store_get", { key });
         writeCalls[key] = String(res?.details?.value ?? "MISSING");
         return `got ${key}:${writeCalls[key]}`;
       }

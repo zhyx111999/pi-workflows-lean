@@ -232,7 +232,7 @@ test("checkpoint(): durable checkpoint IDs cannot be reused within one run", asy
 await checkpoint({ kind: 'proposal-ready', checkpointId: 'same-id', payload: { cycle: 1 } })
 await checkpoint({ kind: 'waiting-for-gitlab', checkpointId: 'same-id', payload: { cycle: 2 } })
 return 'unreachable'`;
-  let waiting: WorkflowCheckpoint | undefined;
+  let waiting = undefined as WorkflowCheckpoint | undefined;
   await assert.rejects(
     () =>
       runWorkflow(script, {
@@ -246,6 +246,7 @@ return 'unreachable'`;
     WorkflowCheckpointSuspensionError,
   );
   assert.ok(waiting);
+  const resuming: WorkflowCheckpoint = { ...waiting, status: "resuming", response: {} };
 
   await assert.rejects(
     () =>
@@ -253,7 +254,7 @@ return 'unreachable'`;
         agent: noopAgent,
         persistLogs: false,
         runId: "duplicate-checkpoint-run",
-        resumeCheckpoint: { ...waiting, status: "resuming", response: {} },
+        resumeCheckpoint: resuming,
       }),
     /must be unique within the run/,
   );

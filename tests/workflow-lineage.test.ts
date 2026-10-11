@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentUsage } from "../src/agent-usage.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
@@ -18,7 +19,7 @@ const zeroUsage: AgentUsage = {
 };
 
 type SessionAwareRunner = {
-  run(prompt: string, options?: AgentRunOptions): Promise<string>;
+  run(prompt: string, options?: AgentRunOptions<TSchema>): Promise<string>;
 };
 
 function withTempCwd(fn: (cwd: string) => Promise<void>) {
@@ -40,7 +41,7 @@ return results`;
 
 function runnerWithSessions(
   onUsageAt?: (prompt: string, timestamp: number) => void,
-  sessionFile = (prompt: string) => `/children/${prompt}.jsonl`,
+  sessionFile: (prompt: string) => string | undefined = (prompt) => `/children/${prompt}.jsonl`,
 ): SessionAwareRunner {
   return {
     async run(prompt, options) {

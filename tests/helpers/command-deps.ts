@@ -10,7 +10,7 @@ function emptyStorage(): WorkflowStorage {
     save: () => {
       throw new Error("this test has no saved-workflow storage");
     },
-    delete: () => false,
+    delete: () => ({ ok: false, code: "missing", message: "this test has no saved-workflow storage" }),
     rename: () => ({ ok: false, code: "missing", message: "this test has no saved-workflow storage" }),
   };
 }

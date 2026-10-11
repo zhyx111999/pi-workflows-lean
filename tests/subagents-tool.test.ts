@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import { Check } from "typebox/value";
 import type { AgentRunOptions } from "../src/agent.js";
 import { BUILTIN_WORKFLOW_NAMES } from "../src/builtin-workflows.js";
@@ -149,7 +150,7 @@ async function finished(manager: WorkflowManager, runId: string): Promise<void> 
 }
 
 const echoAgent = {
-  async run(prompt: string, options?: AgentRunOptions<undefined>) {
+  async run(prompt: string, options?: AgentRunOptions<TSchema>) {
     return `${options?.label}:${prompt}`;
   },
 };

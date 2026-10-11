@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import { Check } from "typebox/value";
 import type { AgentRunOptions } from "../src/agent.js";
 import type { WorkflowSnapshot } from "../src/display.js";
@@ -468,7 +469,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run(prompt: string, options?: AgentRunOptions<undefined>) {
+        async run(prompt: string, options?: AgentRunOptions<TSchema>) {
           live.push(prompt);
           if (limited && prompt === "do b") {
             await new Promise((resolve) => setTimeout(resolve, 20));
@@ -613,7 +614,7 @@ test(
     const manager = new WorkflowManager({
       cwd,
       agent: {
-        async run(prompt: string, options?: AgentRunOptions<undefined>) {
+        async run(prompt: string, options?: AgentRunOptions<TSchema>) {
           const unregister = options?.registerSteer?.(async (text) => {
             steered.push(text);
           });

@@ -54,7 +54,11 @@ describe("parseCommandArgs", () => {
 
   it("fills parameter defaults for missing keys", async () => {
     const { parseCommandArgs } = await load();
-    const result = parseCommandArgs("foo=bar", { foo: {}, limit: { default: 10 }, label: { default: "test" } });
+    const result = parseCommandArgs("foo=bar", {
+      foo: { type: "string" },
+      limit: { type: "number", default: 10 },
+      label: { type: "string", default: "test" },
+    });
     assert.equal(result.foo, "bar");
     assert.equal(result.limit, 10);
     assert.equal(result.label, "test");
@@ -62,7 +66,7 @@ describe("parseCommandArgs", () => {
 
   it("does NOT override explicit values with defaults", async () => {
     const { parseCommandArgs } = await load();
-    const result = parseCommandArgs("limit=5", { limit: { default: 10 } });
+    const result = parseCommandArgs("limit=5", { limit: { type: "number", default: 10 } });
     assert.equal(result.limit, "5");
   });
 
@@ -98,7 +102,11 @@ describe("registerSavedWorkflow", () => {
   it("is idempotent — second registration is skipped", async () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands } = makeCommandRegistryPi(["test-workflow"]);
-    const wf = { name: "test-workflow", script: "export const meta = { name: 't', description: 't' };" };
+    const wf = {
+      name: "test-workflow",
+      description: "t",
+      script: "export const meta = { name: 't', description: 't' };",
+    };
 
     registerSavedWorkflow(pi, wf, recordingManager().getManager, () => wf);
     assert.equal(commands.length, 0, "should not re-register when already present");
@@ -127,7 +135,7 @@ describe("registerSavedWorkflow", () => {
     const { started, getManager } = recordingManager("test-run");
 
     const { pi, commands, sent } = makeCommandRegistryPi();
-    const wf = { name: "run-via-manager", script: "export SOURCE" };
+    const wf = { name: "run-via-manager", description: "t", script: "export SOURCE" };
     registerSavedWorkflow(pi, wf, getManager, () => wf);
 
     const { ctx, notified } = makeNotifyCtx();
@@ -178,7 +186,11 @@ describe("registerSavedWorkflow", () => {
     const { registerSavedWorkflow } = await load();
     const { pi, commands, sent } = makeCommandRegistryPi();
 
-    const wf = { name: "gone", script: "export const meta = { name: 't', description: 't' };\nreturn 1;" };
+    const wf = {
+      name: "gone",
+      description: "t",
+      script: "export const meta = { name: 't', description: 't' };\nreturn 1;",
+    };
     // The loader finds nothing: the workflow has been deleted from storage.
     registerSavedWorkflow(pi, wf, recordingManager().getManager, () => null);
 

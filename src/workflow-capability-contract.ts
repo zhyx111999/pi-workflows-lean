@@ -389,7 +389,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
     signature: null,
     optionShape: null,
     constraints: [
-      "Date.now(), Date(), no-argument new Date(), Math.random(), and Intl.DateTimeFormat format()/formatToParts() without a date are unavailable",
+      "Date.now(), Date(), no-argument new Date(), Math.random(), and Intl.DateTimeFormat formatting without an explicit date are unavailable",
       "pass timestamps and randomness through args",
     ],
     runtimeBinding: null,

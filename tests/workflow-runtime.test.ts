@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import type { TSchema } from "typebox";
 import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
 import type { AgentUsage } from "../src/agent-usage.js";
@@ -75,7 +76,7 @@ test("agent cwd is normalized before dispatch and invalid cwd does not reserve c
   symlinkSync(root, linked);
   const seen: string[] = [];
   const runner = {
-    async run(_prompt: string, options: AgentRunOptions) {
+    async run(_prompt: string, options: AgentRunOptions<TSchema>) {
       seen.push(options.cwd ?? "");
       return "ok";
     },
@@ -192,7 +193,7 @@ test("agent cwd participates in resume identity while omitted cwd preserves cach
   const calls: string[] = [];
   const journal = new Map<number, JournalEntry>();
   const runner = {
-    async run(_prompt: string, options: AgentRunOptions) {
+    async run(_prompt: string, options: AgentRunOptions<TSchema>) {
       calls.push(options.cwd ?? "default");
       return `ran:${options.cwd ?? "default"}`;
     },
@@ -457,7 +458,7 @@ return await agent('short prompt', { label: 'slow' })`,
     {
       agentTimeoutMs: 5,
       agent: {
-        async run(prompt: string, options?: AgentRunOptions) {
+        async run(prompt: string, options?: AgentRunOptions<TSchema>) {
           void prompt;
           return new Promise((resolve, reject) => {
             void resolve;
@@ -526,7 +527,7 @@ return await agent('stuck', { label: 'stuck' })`,
 
 test("a timed-out runner that ignores its abort is abandoned after the grace", { timeout: 5_000 }, async () => {
   type LooseTool = { name: string; execute: (...args: unknown[]) => Promise<{ details?: { found?: boolean } }> };
-  let stuck: AgentRunOptions | undefined;
+  let stuck: AgentRunOptions<TSchema> | undefined;
   let stuckCalls = 0;
   const events: string[] = [];
   const ended: Array<{ label: string; result: unknown; errorCode?: WorkflowErrorCode }> = [];
@@ -1117,7 +1118,7 @@ return await agent('same prompt', { label: 'same', isolation: 'worktree', keepWo
   let runs = 0;
   let liveCwd = "";
   const runner = {
-    async run(_prompt: string, options: AgentRunOptions) {
+    async run(_prompt: string, options: AgentRunOptions<TSchema>) {
       runs++;
       liveCwd = options.cwd ?? "";
       return `live-${runs}`;
@@ -1224,7 +1225,7 @@ test("repeated live executions with the same run id and long slug retain indepen
 return await agent('edit', { label: 'this-is-a-very-long-label-that-shares-the-entire-slug-prefix', isolation: 'worktree' })`;
   try {
     const runner = {
-      async run(_prompt: string, options: AgentRunOptions) {
+      async run(_prompt: string, options: AgentRunOptions<TSchema>) {
         const cwd = options.cwd ?? "";
         seen.push(cwd);
         if (seen.length === 1) writeFileSync(join(cwd, "first-only.txt"), "first\n");

@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import type { RunPersistence } from "../src/run-persistence.js";
 import { stopRunWatchers } from "../src/run-watchers.js";
 import { SUBAGENTS_TOOL_NAME } from "../src/subagents-tool.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
@@ -41,12 +42,14 @@ function harness(
     registerCommand: (_name: string, opts: { handler: Handler }) => {
       handler = opts.handler;
     },
-    sendMessage:
-      sendMessageImpl ??
-      (async (m, options) => {
-        sent.push({ ...m, options });
-        if (!options && typeof m.content === "string") printed.push(m.content);
-      }),
+    sendMessage: (async (
+      m: { customType?: string; content?: string },
+      options?: { triggerTurn?: boolean; deliverAs?: string },
+    ) => {
+      if (sendMessageImpl) return sendMessageImpl(m, options);
+      sent.push({ ...m, options });
+      if (!options && typeof m.content === "string") printed.push(m.content);
+    }) as ExtensionAPI["sendMessage"],
     getActiveTools: () => [...activeTools],
     setActiveTools: (toolNames: string[]) => {
       activeTools.splice(0, activeTools.length, ...toolNames);
@@ -68,7 +71,7 @@ function harness(
     }),
     getSnapshot: () => null,
     getRun: () => undefined,
-    getPersistence: () => ({ loadPreview: () => null }),
+    getPersistence: () => ({ loadPreview: () => null }) as unknown as RunPersistence,
     stop: (id: string) => {
       calls.push(`stop:${id}`);
       return true;
@@ -226,7 +229,7 @@ test("/workflows status without id warns", async () => {
 test("registerWorkflowCommands is idempotent (skips when already registered)", () => {
   let registrations = 0;
   const pi: Partial<ExtensionAPI> = {
-    getCommands: () => [{ name: "workflows" }],
+    getCommands: () => [{ name: "workflows" } as SlashCommandInfo],
     registerCommand: () => {
       registrations++;
     },

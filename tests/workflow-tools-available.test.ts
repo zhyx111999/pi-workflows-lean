@@ -465,13 +465,11 @@ describe("workflow extension - tool availability", () => {
           name: "same",
           description: "SECRET_FROM_A",
           script: "export SOURCE_A",
-          location: "project",
         });
         createWorkflowStorage(otherProject).save({
           name: "same",
           description: "from-B",
           script: "export TARGET_B",
-          location: "project",
         });
 
         discardWorkflowRuntime();

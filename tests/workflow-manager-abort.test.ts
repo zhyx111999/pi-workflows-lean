@@ -186,7 +186,7 @@ test(
     const manager = new WorkflowManager({ cwd, agent: da.runner });
     manager.on("error", () => {});
 
-    let stoppedEvent: { runId: string } | null = null;
+    let stoppedEvent = null as { runId: string } | null;
     manager.on("stopped", (ev: { runId: string }) => {
       stoppedEvent = ev;
     });
@@ -230,7 +230,7 @@ test(
     const manager = new WorkflowManager({ cwd, agent: da.runner });
     manager.on("error", () => {});
 
-    let pausedEvent: { runId: string } | null = null;
+    let pausedEvent = null as { runId: string } | null;
     manager.on("paused", (ev: { runId: string }) => {
       pausedEvent = ev;
     });
@@ -317,7 +317,11 @@ test(
 
     const finalRun = manager.getRun(runId);
     assert.equal(finalRun?.status, "completed", "resumed run should complete successfully");
-    assert.equal(finalRun?.result?.result?.a, "resumed-done", "resumed run should have the agent result");
+    assert.equal(
+      (finalRun?.result?.result as Record<string, unknown> | undefined)?.a,
+      "resumed-done",
+      "resumed run should have the agent result",
+    );
 
     // The run should also appear in listRuns as completed
     const persisted = manager.listRuns().find((r) => r.runId === runId);
@@ -563,7 +567,7 @@ test(
     const manager = new WorkflowManager({ cwd, agent: da.runner });
 
     // Track resumed event
-    let resumedEvent: { runId: string } | null = null;
+    let resumedEvent = null as { runId: string } | null;
     manager.on("resumed", (ev: { runId: string }) => {
       resumedEvent = ev;
     });
@@ -581,7 +585,7 @@ test(
     await origPromise.catch(() => {});
 
     // A nonrecoverable agent failure fails the run and emits "error".
-    let capturedError: { runId: string; error: WorkflowError } | null = null;
+    let capturedError = null as { runId: string; error: WorkflowError } | null;
     const failing = {
       run: async () => {
         throw new WorkflowError("broken", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });

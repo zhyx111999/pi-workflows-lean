@@ -256,7 +256,6 @@ test(
       journal: [
         {
           index: 0,
-          callId: "journal-test:0",
           hash: "abc123",
           result: { ok: true },
           storeDelta: { answer: 42 },
@@ -270,7 +269,6 @@ test(
     const loaded = rp.load("journal-test");
     assert.equal(loaded?.journal?.length, 2);
     assert.equal(loaded?.journal?.[0].index, 0);
-    assert.equal(loaded?.journal?.[0].callId, "journal-test:0");
     assert.equal(loaded?.journal?.[0].hash, "abc123");
     assert.deepEqual(loaded?.journal?.[0].result, { ok: true });
     assert.deepEqual(loaded?.journal?.[0].storeDelta, { answer: 42 });
@@ -811,7 +809,10 @@ test(
       phases: [],
       agents: [],
       logs: [],
-    } as PersistedRunState);
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     const runsDir = workflowProjectPaths(cwd).runsDir;
     assert.ok(existsSync(join(runsDir, "r1.json")), "primary written");
     assert.ok(existsSync(join(runsDir, "r1.json.bak")), ".bak written");
@@ -830,7 +831,10 @@ test(
       phases: [],
       agents: [],
       logs: [],
-    } as PersistedRunState);
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     // Corrupt the primary; the .bak from the good save should still load.
     writeFileSync(join(workflowProjectPaths(cwd).runsDir, "r1.json"), "{ truncated", "utf-8");
     const loaded = rp.load("r1");
@@ -926,7 +930,10 @@ test(
       phases: [],
       agents: [],
       logs: [],
-    } as PersistedRunState);
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     rp.delete("r1");
     const runsDir = workflowProjectPaths(cwd).runsDir;
     assert.equal(existsSync(join(runsDir, "r1.json")), false);
@@ -946,7 +953,10 @@ test(
       agents: [],
       logs: [],
       tokenUsage: { input: 1, output: 2, total: 3, cost: 0.5, cacheRead: 9, cacheWrite: 4 },
-    } as PersistedRunState);
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     const loaded = rp.load("tu");
     assert.equal(loaded?.tokenUsage?.cost, 0.5, "cost survives reload");
     assert.equal(loaded?.tokenUsage?.cacheRead, 9, "cacheRead survives reload");
@@ -989,7 +999,10 @@ test(
       phases: [],
       agents: [],
       logs: [],
-    } as PersistedRunState);
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
 
     writeFileSync(
       join(runsDir, "stale-lock.lock"),
@@ -1022,7 +1035,10 @@ test(
       phases: [],
       agents: [],
       logs: [],
-    } as PersistedRunState);
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     const lease = rp.acquireRunLease("delete-lock");
     assert.ok(lease, "lease exists before delete");
     rp.delete("delete-lock");
@@ -1045,14 +1061,17 @@ test(
         unlinkSync(path);
       },
     });
-    const state = {
+    const state: PersistedRunState = {
       runId,
       workflowName: "w",
       status: "paused",
       phases: [],
       agents: [],
       logs: [],
-    } as PersistedRunState;
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    };
     rp.save(state);
 
     const { runsDir } = workflowProjectPaths(cwd);
@@ -1080,7 +1099,9 @@ test(
       phases: [],
       agents: [{ id: 1, label: "x", prompt: "x", status: "running" }],
       logs: [],
-    } as PersistedRunState);
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     // A fresh manager (the previous process died) should recover the orphan.
     new WorkflowManager({ cwd });
     const recovered = rp.load("stale");
@@ -1119,16 +1140,18 @@ test(
   "WorkflowManager.listRuns is scoped to the bound session and switches with setSessionId",
   withTempCwd(async (cwd) => {
     const rp = createRunPersistence(cwd);
-    const run = (runId: string, sessionId: string): PersistedRunState =>
-      ({
-        runId,
-        workflowName: "w",
-        status: "completed",
-        sessionId,
-        phases: [],
-        agents: [],
-        logs: [],
-      }) as PersistedRunState;
+    const run = (runId: string, sessionId: string): PersistedRunState => ({
+      runId,
+      workflowName: "w",
+      status: "completed",
+      sessionId,
+      phases: [],
+      agents: [],
+      logs: [],
+      script: "export const meta = { name: 'w', description: 'w' }",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      updatedAt: "2024-01-01T00:00:00.000Z",
+    });
     rp.save(run("a", "s1"));
     rp.save(run("b", "s2"));
 

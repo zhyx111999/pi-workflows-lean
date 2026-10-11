@@ -323,7 +323,7 @@ test("WorkflowAgent.run keeps constructor tools when its cwd is a symlink", asyn
         parameters: Type.Object({}),
         execute: async () => {
           customToolCalls++;
-          return { content: [{ type: "text", text: "sentinel reached" }] };
+          return { content: [{ type: "text", text: "sentinel reached" }], details: undefined };
         },
       });
       core.setResponses([

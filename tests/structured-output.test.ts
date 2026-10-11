@@ -3,6 +3,11 @@ import test from "node:test";
 import { Type } from "typebox";
 import { createStructuredOutputTool } from "../src/structured-output.js";
 
+/** Call the tool the way the agent session does; the tool reads only the call id and params. */
+function callTool(tool: ReturnType<typeof createStructuredOutputTool>, id: string, params: unknown) {
+  return tool.execute(id, params as never, undefined, undefined, undefined as never);
+}
+
 test("createStructuredOutputTool creates a tool with the given name", () => {
   const capture = { called: false, value: undefined };
   const tool = createStructuredOutputTool({
@@ -39,11 +44,11 @@ test("createStructuredOutputTool execute captures value and marks called", async
     schema: Type.Object({ ok: Type.Boolean() }),
     capture,
   });
-  const result = await tool.execute("call-1", { ok: true });
+  const result = await callTool(tool, "call-1", { ok: true });
   assert.equal(capture.called, true);
   assert.deepEqual(capture.value, { ok: true });
   assert.ok(result.terminate, "should terminate the agent");
-  assert.equal(result.content[0].text, "Structured output received.");
+  assert.deepEqual(result.content[0], { type: "text", text: "Structured output received." });
 });
 
 test("createStructuredOutputTool captures complex nested objects", async () => {
@@ -62,7 +67,7 @@ test("createStructuredOutputTool captures complex nested objects", async () => {
     ],
     total: 2,
   };
-  await tool.execute("call-2", data);
+  await callTool(tool, "call-2", data);
   assert.equal(capture.called, true);
   assert.deepEqual(capture.value, data);
 });
@@ -73,7 +78,7 @@ test("createStructuredOutputTool returns details with captured params", async ()
     schema: Type.Object({ x: Type.Number() }),
     capture,
   });
-  const result = await tool.execute("call-3", { x: 42 });
+  const result = await callTool(tool, "call-3", { x: 42 });
   assert.deepEqual(result.details, { x: 42 });
 });
 

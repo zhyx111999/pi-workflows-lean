@@ -30,8 +30,11 @@ function makeFakeStorage(saved: Record<string, Pick<SavedWorkflow, "script" | "p
     list() {
       return [];
     },
-    delete() {
-      return false;
+    delete(workflow) {
+      return { ok: false, code: "missing", message: `${workflow.name} is not saved in this fake` };
+    },
+    rename(workflow) {
+      return { ok: false, code: "missing", message: `${workflow.name} is not saved in this fake` };
     },
   };
 }
@@ -76,7 +79,6 @@ test("saved workflow cannot claim a built-in name occupied by a third-party comm
     {
       name: "deep-research",
       description: "third-party collision",
-      script: "export THIRD_PARTY_COLLISION",
     },
     () => makeFakeManager().manager,
     () => null,
@@ -94,7 +96,6 @@ test("saved workflow may shadow a built-in only after this extension owns its ha
     {
       name: "deep-research",
       description: "saved shadow",
-      script: "export SAVED_SHADOW",
     },
     () => makeFakeManager().manager,
     () => null,
@@ -110,7 +111,6 @@ test("saved workflow rejects an ordinary third-party command name", () => {
     {
       name: "ordinary-command",
       description: "collision",
-      script: "export COLLISION",
     },
     () => makeFakeManager().manager,
     () => null,
@@ -350,7 +350,7 @@ test("shadow positional mapping: equals-only topics and declared defaults (audit
       storage: makeFakeStorage({
         "deep-research": {
           script: "export const meta = { name: 'shadow', description: 's' }",
-          parameters: { question: { default: "DEFAULT" } },
+          parameters: { question: { type: "string", default: "DEFAULT" } },
         },
       }),
     }),

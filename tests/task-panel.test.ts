@@ -4,13 +4,16 @@ import { appendFileSync, mkdtempSync, renameSync, rmSync, truncateSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { AgentSession, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import type { PersistedRunState } from "../src/run-persistence.js";
 import { confirmedSessionSend } from "../src/task-panel/confirmed-send.js";
 import { DELIVERY_PROBE_CUSTOM_TYPE, useHostSessionClass } from "../src/task-panel/host-session-capture.js";
 import { UsageLimitScheduler } from "../src/usage-limit-scheduler.js";
-import { WorkflowManager } from "../src/workflow-manager.js";
+import type { WorkflowRunResult } from "../src/workflow.js";
+import { type ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
+import type { WorkflowSettings } from "../src/workflow-settings.js";
 
 type DeliveryCall = { content: string; customType?: string; triggerTurn?: boolean };
 type StableSend = (
@@ -175,43 +178,11 @@ function lateUsageLimitAgent() {
   };
 }
 
-type TaskPanelModule = {
-  installResultDelivery: (pi: ExtensionAPI, manager: unknown, opts?: unknown) => void;
-  bindSessionDelivery: (
-    sessionId: string,
-    pi: ExtensionAPI,
-    opts?: {
-      loadSettings?: () => unknown;
-      manager?: unknown;
-      stableSend?: StableSend;
-      sessionManager?: {
-        getSessionId?: () => string;
-        appendCustomMessageEntry?: (
-          customType: string,
-          content: string | unknown[],
-          display: boolean,
-          details?: unknown,
-        ) => string;
-      };
-    },
-  ) => void;
-  dropSessionDelivery: (sessionId: string | undefined) => void;
-  suspendResultDelivery: (manager: unknown) => void;
-  resumeResultDelivery: (manager: unknown) => void;
-  suspendSessionDelivery: (sessionId: string | undefined) => void;
-  resumeSessionDelivery: (sessionId: string | undefined, manager?: unknown) => void;
-  _resetDeliveryRegistriesForTests: () => void;
-  _getSessionDeliveryEndpointForTests: (
-    sessionId: string,
-  ) => { suspended: boolean; generation: number; hasSend: boolean } | undefined;
-  installTaskPanel: (manager: unknown, ui: unknown, loadSettings?: unknown) => void;
-};
-
 // Loaded once before all tests
-let mod: TaskPanelModule;
+let mod: typeof import("../src/task-panel.js");
 
 before(async () => {
-  mod = (await import("../src/task-panel.js")) as TaskPanelModule;
+  mod = await import("../src/task-panel.js");
 });
 
 // ─── Session-routed background result delivery ─────────────────────────────────
@@ -246,20 +217,21 @@ describe("installResultDelivery", () => {
     mod._resetDeliveryRegistriesForTests();
   });
 
-  function createMockManager(run?: Record<string, unknown>, runsDir?: string) {
+  /** A manager double over in-memory runs and a fake record store; only the members delivery uses. */
+  function createMockManager(run?: Record<string, unknown> | ManagedRun, runsDir?: string): WorkflowManager {
     let sessionId: string | undefined = SESSION;
     const runs = new Map<string, Record<string, unknown>>();
-    if (run) runs.set(String(run.runId ?? "test-run-1"), run);
+    if (run) runs.set(String(run.runId ?? "test-run-1"), run as Record<string, unknown>);
 
     const disk = new Map<string, Record<string, unknown>>();
 
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
+    const manager = new EventEmitter() as EventEmitter & {
       getRun: (id: string) => unknown;
       getPersistence: () => {
         getRunsDir: () => string;
         load: (id: string) => Record<string, unknown> | null;
         loadPreview: (id: string) => Record<string, unknown> | null;
-        save: (state: Record<string, unknown>) => void;
+        save: (state: PersistedRunState) => void;
         updateMetadata: (id: string, patch: Record<string, unknown>, expectedDeliveryId?: string) => boolean;
         exportResult: (id: string) => string;
         list: () => Record<string, unknown>[];
@@ -306,7 +278,7 @@ describe("installResultDelivery", () => {
       getRunsDir: () => runsDir ?? "/runs",
       load: (id: string) => disk.get(id) ?? null,
       loadPreview: (id: string) => disk.get(id) ?? null,
-      save: (state: Record<string, unknown>) => {
+      save: (state: PersistedRunState) => {
         disk.set(String(state.runId), { ...state });
       },
       // Like the real store: merge into an existing record, never create one,
@@ -324,7 +296,7 @@ describe("installResultDelivery", () => {
       exportResult: (id: string) => join(runsDir ?? "/runs", `${id}.json.result`),
       list: () => [...disk.values()],
     });
-    return manager;
+    return manager as unknown as WorkflowManager;
   }
 
   function createMockPi(): ExtensionAPI & {
@@ -375,6 +347,7 @@ describe("installResultDelivery", () => {
     return obj as unknown as ExtensionAPI & {
       _calls: DeliveryCall[];
       emit?: (event: string, ...args: unknown[]) => void;
+      _onCount: (event: string) => number;
     };
   }
 
@@ -491,7 +464,8 @@ describe("installResultDelivery", () => {
     );
   }
 
-  function makeRun(overrides: Record<string, unknown> = {}) {
+  /** A finished run with a result; fields the delivery code does not read are left out. */
+  function makeRun(overrides: Record<string, unknown> = {}): ManagedRun {
     return {
       runId: "test-run-1",
       sessionId: SESSION,
@@ -515,14 +489,14 @@ describe("installResultDelivery", () => {
         result: { verdict: "## All tests passed\n\nEverything looks good!" },
       },
       ...overrides,
-    };
+    } as unknown as ManagedRun;
   }
 
   function setup(
     pi: ExtensionAPI,
     manager: ReturnType<typeof createMockManager>,
     sessionId = SESSION,
-    bindOpts: { stableSend?: StableSend; loadSettings?: () => unknown } = {},
+    bindOpts: { stableSend?: StableSend; loadSettings?: () => WorkflowSettings } = {},
   ) {
     mod.installResultDelivery(pi, manager, bindOpts.loadSettings ? { loadSettings: bindOpts.loadSettings } : undefined);
     manager.setSessionId(sessionId);
@@ -993,7 +967,7 @@ describe("installResultDelivery", () => {
       assert.ok(persistence);
       return {
         ...persistence,
-        save: (state: Record<string, unknown>) => {
+        save: (state: PersistedRunState) => {
           if (failSave) {
             failSave = false;
             throw new Error("disk temporarily unavailable");
@@ -1122,9 +1096,10 @@ describe("installResultDelivery", () => {
         isIdle: false,
         sessionManager: {
           getSessionId: () => SESSION,
-          getEntries: () => {
+          getBranch: () => {
             throw new Error("history unavailable");
           },
+          getSessionFile: () => "/session.jsonl",
         },
         subscribe: () => () => {},
         sendCustomMessage: () => Promise.resolve(),
@@ -1154,7 +1129,6 @@ describe("installResultDelivery", () => {
         isIdle: false,
         sessionManager: {
           getSessionId: () => SESSION,
-          getEntries: () => [],
         },
         subscribe: () => () => {},
         sendCustomMessage: () => {
@@ -1192,7 +1166,7 @@ describe("installResultDelivery", () => {
       assert.ok(persistence);
       return {
         ...persistence,
-        save: (state: Record<string, unknown>) => {
+        save: (state: PersistedRunState) => {
           if (failClear && !("pendingDelivery" in state)) {
             failClear = false;
             throw new Error("disk temporarily unavailable");
@@ -1290,7 +1264,7 @@ describe("installResultDelivery", () => {
     const run = makeRun();
     const manager = createMockManager(run);
     const persistence = manager.getPersistence();
-    persistence.save({ runId: "test-run-1", sessionId: SESSION, status: "completed" });
+    persistence.save({ runId: "test-run-1", sessionId: SESSION, status: "completed" } as PersistedRunState);
     const sent: string[] = [];
     // The first send is confirmed, but clearing its marker fails once, as a
     // locked record file would make it.
@@ -1313,13 +1287,13 @@ describe("installResultDelivery", () => {
       },
     });
 
-    run.result = { ...(run.result as object), result: { verdict: "FIRST_RESULT" } };
+    run.result = { ...(run.result as WorkflowRunResult), result: { verdict: "FIRST_RESULT" } };
     manager.emit("complete", { runId: "test-run-1" });
     await new Promise<void>((resolve) => setImmediate(resolve));
     const first = run.pendingDelivery?.deliveryId;
     assert.ok(first, "the uncleared first delivery keeps its marker");
 
-    run.result = { ...(run.result as object), result: { verdict: "SECOND_RESULT" } };
+    run.result = { ...(run.result as WorkflowRunResult), result: { verdict: "SECOND_RESULT" } };
     manager.emit("complete", { runId: "test-run-1" });
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.ok(
@@ -1340,7 +1314,7 @@ describe("installResultDelivery", () => {
       status: "completed",
       result: "newer result",
       pendingDelivery: { kind: "text", text: "NEWER_TEXT", deliveryId: "new-delivery" },
-    });
+    } as PersistedRunState);
     const sent: string[] = [];
     setup(pi, manager, SESSION, {
       stableSend: (message) => {
@@ -2463,23 +2437,29 @@ describe("installResultDelivery", () => {
 
 // ─── installTaskPanel ─────────────────────────────────────────────────────────
 
+/** A panel manager double: the given runs and getRun, plus real events. */
+function panelManager(
+  listRuns: () => unknown[] = () => [],
+  getRun: (id: string) => unknown = () => undefined,
+): WorkflowManager {
+  return Object.assign(new EventEmitter(), { listRuns, getRun }) as unknown as WorkflowManager;
+}
+
+/** A UI double that only receives the widget installTaskPanel registers. */
+function widgetUi(setWidget: (...args: never[]) => void): ExtensionUIContext {
+  return { setWidget } as unknown as ExtensionUIContext;
+}
+
 describe("installTaskPanel", () => {
   it("registers a widget named workflow-tasks with belowEditor placement", () => {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
-      getRun: (...args: unknown[]) => unknown;
-      listRuns: () => unknown[];
-    };
-    manager.getRun = () => null;
-    manager.listRuns = () => [];
+    const manager = panelManager();
 
     let registeredName = "";
     let registeredPlacement = "";
-    const ui = {
-      setWidget: (name: string, _factory: unknown, opts: { placement?: string }) => {
-        registeredName = name;
-        registeredPlacement = opts.placement ?? "";
-      },
-    };
+    const ui = widgetUi((name: string, _factory: unknown, opts: { placement?: string }) => {
+      registeredName = name;
+      registeredPlacement = opts.placement ?? "";
+    });
 
     mod.installTaskPanel(manager, ui);
     assert.equal(registeredName, "workflow-tasks");
@@ -2490,19 +2470,12 @@ describe("installTaskPanel", () => {
     // The manager corrects agent.model IN PLACE on the live snapshot, so without a
     // repaint subscription the panel keeps showing the pre-resolution model until
     // some unrelated event happens to fire.
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
-      getRun: (...args: unknown[]) => unknown;
-      listRuns: () => unknown[];
-    };
-    manager.getRun = () => undefined;
-    manager.listRuns = () => [];
+    const manager = panelManager();
 
     let factory: ((tui: { requestRender(): void }, theme: unknown) => { dispose?(): void }) | undefined;
-    const ui = {
-      setWidget: (_name: string, registeredFactory: typeof factory) => {
-        factory = registeredFactory;
-      },
-    };
+    const ui = widgetUi((_name: string, registeredFactory: typeof factory) => {
+      factory = registeredFactory;
+    });
 
     mod.installTaskPanel(manager, ui);
     let renders = 0;
@@ -2523,12 +2496,7 @@ describe("installTaskPanel", () => {
   });
 
   it("passes the render width through to the task panel", () => {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
-      getRun: (...args: unknown[]) => unknown;
-      listRuns: () => unknown[];
-    };
-    manager.getRun = () => undefined;
-    manager.listRuns = () => [
+    const manager = panelManager(() => [
       {
         runId: "a",
         workflowName: "handle_gh_issues_11_12_with_a_long_suffix",
@@ -2536,7 +2504,7 @@ describe("installTaskPanel", () => {
         agents: [{ status: "done" }, { status: "running" }],
         logs: [],
       },
-    ];
+    ]);
 
     let factory:
       | ((
@@ -2544,11 +2512,9 @@ describe("installTaskPanel", () => {
           theme: { fg(color: string, text: string): string; bold(text: string): string },
         ) => { render(width: number): string[] })
       | undefined;
-    const ui = {
-      setWidget: (_name: string, registeredFactory: typeof factory) => {
-        factory = registeredFactory;
-      },
-    };
+    const ui = widgetUi((_name: string, registeredFactory: typeof factory) => {
+      factory = registeredFactory;
+    });
     const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
     mod.installTaskPanel(manager, ui);
@@ -3027,10 +2993,6 @@ describe("installTaskPanel mode selection", () => {
   const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
   function activeManager() {
-    const manager = new EventEmitter() as ReturnType<typeof EventEmitter> & {
-      getRun: (id: string) => unknown;
-      listRuns: () => unknown[];
-    };
     const snapshot = {
       name: "wf",
       phases: ["P1"],
@@ -3039,11 +3001,18 @@ describe("installTaskPanel mode selection", () => {
       agents: [{ id: 1, label: "a", status: "running", phase: "P1", tokens: 500 }],
       tokenUsage: { total: 500, input: 250, output: 250 },
     };
-    manager.listRuns = () => [
-      { runId: "r1", workflowName: "wf", status: "running", agents: snapshot.agents, tokenUsage: snapshot.tokenUsage },
-    ];
-    manager.getRun = (id: string) => (id === "r1" ? { snapshot, status: "running" } : undefined);
-    return manager;
+    return panelManager(
+      () => [
+        {
+          runId: "r1",
+          workflowName: "wf",
+          status: "running",
+          agents: snapshot.agents,
+          tokenUsage: snapshot.tokenUsage,
+        },
+      ],
+      (id) => (id === "r1" ? { snapshot, status: "running" } : undefined),
+    );
   }
 
   function captureRender(loadSettings?: () => Record<string, unknown>) {
@@ -3051,12 +3020,10 @@ describe("installTaskPanel mode selection", () => {
     let factory:
       | ((tui: { requestRender(): void }, theme: unknown) => { render(w: number): string[]; dispose?(): void })
       | undefined;
-    const ui = {
-      setWidget: (_n: string, f: typeof factory) => {
-        factory = f;
-      },
-    };
-    mod.installTaskPanel(manager as never, ui as never, loadSettings as never);
+    const ui = widgetUi((_n: string, f: typeof factory) => {
+      factory = f;
+    });
+    mod.installTaskPanel(manager, ui, loadSettings as (() => WorkflowSettings) | undefined);
     const comp = factory?.({ requestRender: () => {} }, theme);
     const lines = comp?.render(120) ?? [];
     comp?.dispose?.();

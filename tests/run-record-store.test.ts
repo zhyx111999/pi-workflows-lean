@@ -32,7 +32,7 @@ function withFixture(fn: (cwd: string) => Promise<void> | void) {
     const cwd = mkdtempSync(join(tmpdir(), "pi-dw-record-store-"));
     const home = mkdtempSync(join(tmpdir(), "pi-dw-record-home-"));
     try {
-      await withFakeHomeAsync(home, () => fn(cwd));
+      await withFakeHomeAsync(home, async () => fn(cwd));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
       rmSync(home, { recursive: true, force: true });
@@ -683,14 +683,14 @@ test(
     let raced = false;
     const reader = createRunRecordStore(
       fsWith({
-        statSync: ((file, ...rest) => {
+        statSync: ((file: fsModule.PathLike, ...rest: unknown[]) => {
           // The writer switches generations after the reader read its head.
           if (!raced && String(file) === `${path}.events.jsonl`) {
             raced = true;
             writer.save(path, switching);
           }
-          return real.statSync(file, ...rest);
-        }) as typeof real.statSync,
+          return (real.statSync as (...args: unknown[]) => unknown)(file, ...rest);
+        }) as unknown as typeof real.statSync,
       }),
     );
     assert.deepEqual(reader.read(path), switching);
