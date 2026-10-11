@@ -32,6 +32,14 @@ import { workflowProjectPaths } from "./workflow-paths.js";
 export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "aborted";
 
 /**
+ * Why a paused run is paused: a provider quota ran out (`usage_limit`, which
+ * the usage-limit scheduler resumes), it waits at a checkpoint
+ * (`workflow_checkpoint`), or the process running it ended (`interrupted`).
+ * A plain pause() records none.
+ */
+export type PauseReason = "usage_limit" | "workflow_checkpoint" | "interrupted";
+
+/**
  * An agent row as the record keeps it: the display row, plus when its latest
  * execution ran, which the live snapshot keeps beside its rows.
  */
@@ -82,8 +90,8 @@ export interface PersistedRunState {
    * runs; absent on running/paused/completed runs and on older records.
    */
   errorCode?: WorkflowErrorCode;
-  /** Why a paused run is paused (e.g. "usage_limit" when a provider quota was hit). */
-  pauseReason?: string;
+  /** Why a paused run is paused. */
+  pauseReason?: PauseReason;
   /** Provider reset hint for a usage-limit pause, e.g. "Resets in ~3h" (verbatim). */
   resetHint?: string;
   /** Durable workflow-controlled suspension and its at-most-once response. */

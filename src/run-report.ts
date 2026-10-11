@@ -5,7 +5,7 @@
 
 import type { AgentHistoryEntry } from "./agent-history.js";
 import { aggregateAgentUsage, tokenFigures, type WorkflowAgentSnapshot, type WorkflowSnapshot } from "./display.js";
-import type { PersistedAgentState, PersistedRunState, RunStatus } from "./run-persistence.js";
+import type { PauseReason, PersistedAgentState, PersistedRunState, RunStatus } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
 
 /** Characters of one subagent session returned by `read`. */
@@ -19,6 +19,8 @@ export interface RunSummaryDetails {
   runId: string;
   workflowName: string;
   status: RunStatus;
+  /** Why a paused run is paused, when it recorded a reason. */
+  pauseReason?: PauseReason;
   phase: string | null;
   checkpoint: Pick<NonNullable<PersistedRunState["checkpoint"]>, "checkpointId" | "kind" | "status"> | null;
   counts: { total: number; done: number; running: number; queued: number; error: number; skipped: number };
@@ -49,6 +51,7 @@ export function summarizeRun(run: PersistedRunState, live?: WorkflowSnapshot | n
     runId: run.runId,
     workflowName: live?.name ?? run.workflowName,
     status: run.status,
+    ...(run.status === "paused" && run.pauseReason ? { pauseReason: run.pauseReason } : {}),
     phase: live?.currentPhase ?? run.currentPhase ?? null,
     checkpoint: summary.checkpoint,
     counts,
@@ -80,7 +83,8 @@ function countAgents(agents: Array<Pick<WorkflowAgentSnapshot, "status">>): RunS
 export function formatRunSummary(run: RunSummaryDetails): string {
   const active = run.activeLabels.join(",") || "-";
   const checkpoint = JSON.stringify(run.checkpoint ?? null);
-  return `runId=${run.runId} name=${quote(run.workflowName)} status=${run.status} phase=${quote(run.phase ?? "-")} checkpoint=${checkpoint} total=${run.counts.total} done=${run.counts.done} running=${run.counts.running} queued=${run.counts.queued} error=${run.counts.error} skipped=${run.counts.skipped} active=${quote(active)} tokens=${run.tokenTotalEstimated ? "~" : ""}${run.tokenTotal}`;
+  const pause = run.pauseReason ? ` pause=${run.pauseReason}` : "";
+  return `runId=${run.runId} name=${quote(run.workflowName)} status=${run.status}${pause} phase=${quote(run.phase ?? "-")} checkpoint=${checkpoint} total=${run.counts.total} done=${run.counts.done} running=${run.counts.running} queued=${run.counts.queued} error=${run.counts.error} skipped=${run.counts.skipped} active=${quote(active)} tokens=${run.tokenTotalEstimated ? "~" : ""}${run.tokenTotal}`;
 }
 
 export interface AgentStatusDetails {

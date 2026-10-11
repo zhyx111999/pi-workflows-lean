@@ -574,10 +574,15 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     append(
       path,
       head,
-      { set: { status: "paused", updatedAt: endedAt }, remove: [], arrays: {}, settleAgentsAt: endedAt },
       {
-        keys: [...new Set([...head.keys, "status", "updatedAt", "agents"])],
-        index: { ...head.index, status: "paused", updatedAt: endedAt },
+        set: { status: "paused", pauseReason: "interrupted", updatedAt: endedAt },
+        remove: [],
+        arrays: {},
+        settleAgentsAt: endedAt,
+      },
+      {
+        keys: [...new Set([...head.keys, "status", "pauseReason", "updatedAt", "agents"])],
+        index: { ...head.index, status: "paused", pauseReason: "interrupted", updatedAt: endedAt },
         summary: {
           ...summary,
           active: 0,

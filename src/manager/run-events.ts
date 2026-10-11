@@ -19,8 +19,10 @@ export interface RunEventSink {
   emit(event: string, payload: unknown): void;
   /** Write the run now; with `required`, a failed write throws. */
   persist(required?: boolean): void;
-  /** Write the run after the throttle window. */
+  /** Write the run after a short window, for writes that come in bursts. */
   schedulePersist(): void;
+  /** Write the run after the long progress window, so a process that dies mid-run keeps recent progress. */
+  scheduleProgressPersist(): void;
 }
 
 export type RunEventHooks = Pick<
@@ -122,6 +124,7 @@ export function runEventHooks(managed: ManagedRun, sink: RunEventSink): RunEvent
       // Displays sum live per-agent usage; this refreshes them without adding
       // estimates to the persisted run total.
       sink.emit("tokenUsage", { runId: managed.runId, usage: managed.snapshot.tokenUsage });
+      sink.scheduleProgressPersist();
     },
     onAgentSession: (event) => {
       const agent = managed.agentsById.get(event.callId);
@@ -171,6 +174,7 @@ export function runEventHooks(managed: ManagedRun, sink: RunEventSink): RunEvent
       const agent = managed.agentsById.get(event.id);
       if (agent) {
         agent.history = event.history;
+        sink.scheduleProgressPersist();
       }
       sink.emit("agentHistory", { runId: managed.runId, agentId: agent?.id, ...event });
     },

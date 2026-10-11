@@ -5,7 +5,7 @@ import { RunRecordDeletedError } from "../errors.js";
 import { reportDiagnostic } from "../host-diagnostics.js";
 import type { RunPersistence } from "../run-persistence.js";
 import type { ManagedRun } from "../workflow-manager.js";
-import { PersistThrottle } from "./persist-throttle.js";
+import { BURST_PERSIST_MS, PersistThrottle, PROGRESS_PERSIST_MS } from "./persist-throttle.js";
 import { runRecord, settleAgentsForTerminalRun } from "./run-record.js";
 import { TerminalRunRetention } from "./terminal-retention.js";
 
@@ -68,9 +68,14 @@ export class LiveRuns {
     this.writeRunToDisk(managed, required);
   }
 
-  /** Write the run after the throttle window (progress only). */
+  /** Write the run after a short window, for writes that come in bursts. */
   schedulePersist(managed: ManagedRun): void {
-    this.throttle.schedule(managed.runId, () => this.writeRunToDisk(managed));
+    this.throttle.schedule(managed.runId, () => this.writeRunToDisk(managed), BURST_PERSIST_MS);
+  }
+
+  /** Write the run after the long progress window, for running agents' streaming usage and history. */
+  scheduleProgressPersist(managed: ManagedRun): void {
+    this.throttle.schedule(managed.runId, () => this.writeRunToDisk(managed), PROGRESS_PERSIST_MS);
   }
 
   /**

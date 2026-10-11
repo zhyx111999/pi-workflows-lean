@@ -116,6 +116,7 @@ function runOptions(
       emit: (event, payload) => live.emit(managed, event, payload),
       persist: (required) => live.persistRun(managed, required),
       schedulePersist: () => live.schedulePersist(managed),
+      scheduleProgressPersist: () => live.scheduleProgressPersist(managed),
     }),
   };
 }

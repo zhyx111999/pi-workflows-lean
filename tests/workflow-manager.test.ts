@@ -9,7 +9,9 @@ import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import type { AgentUsage } from "../src/agent-usage.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { _setPausedExecutionSettleTimeoutForTests } from "../src/manager/execution-settlement.js";
+import { PROGRESS_PERSIST_MS } from "../src/manager/persist-throttle.js";
 import type { PersistedAgentState, PersistedRunState } from "../src/run-persistence.js";
+import { formatRunSummary, summarizeRun } from "../src/run-report.js";
 import { UsageLimitScheduler } from "../src/usage-limit-scheduler.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
 import { NavigatorModel, NavigatorState, renderNavigator } from "../src/workflow-ui.js";
@@ -2926,6 +2928,63 @@ return 'unreachable'`;
     assert.equal(pausedEvents, 0);
     assert.equal(manager.getRun(started.runId)?.status, "failed");
     assert.equal(persistence.load(started.runId)?.checkpoint, undefined);
+  }),
+);
+
+test(
+  "a run left running by a process that ended is paused at the next start, with the reason recorded",
+  withTempCwd(async (cwd) => {
+    const first = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const runId = "interrupted-run-1";
+    first.getPersistence().save({
+      runId,
+      workflowName: "interrupted",
+      script: oneAgentScript,
+      status: "running",
+      phases: [],
+      agents: [{ id: 1, label: "worker", prompt: "work", status: "running", tokens: 1234 }],
+      logs: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const next = new WorkflowManager({ cwd, agent: fakeAgent() });
+    const recovered = next.getPersistence().load(runId);
+    assert.equal(recovered?.status, "paused");
+    assert.equal(recovered?.pauseReason, "interrupted");
+    assert.equal(recovered?.agents[0].tokens, 1234, "the spend recorded before the process ended is kept");
+    const summary = summarizeRun(next.findRun(runId) as PersistedRunState);
+    assert.match(formatRunSummary(summary), / status=paused pause=interrupted /);
+  }),
+);
+
+test(
+  "a running agent's streaming usage and history reach disk before it ends",
+  withTempCwd(async (cwd) => {
+    let finish: (value: string) => void = () => {};
+    const manager = new WorkflowManager({
+      cwd,
+      agent: {
+        run: (_prompt, options) => {
+          options.onUsageProgress?.({ input: 700, output: 300, total: 1000, cost: 0, cacheRead: 0, cacheWrite: 0 });
+          options.onHistory?.([{ role: "assistant", kind: "text", text: "halfway" }]);
+          return new Promise<string>((resolve) => {
+            finish = resolve;
+          });
+        },
+      },
+    });
+    const { runId, promise } = manager.startInBackground(oneAgentScript);
+    for (let i = 0; i < 200 && !manager.getRun(runId)?.snapshot.agents[0]?.history; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    await new Promise((resolve) => setTimeout(resolve, PROGRESS_PERSIST_MS + 500));
+    const persisted = manager.getPersistence().load(runId);
+    assert.equal(persisted?.status, "running");
+    assert.equal(persisted?.agents[0].tokens, 1000);
+    assert.deepEqual(persisted?.agents[0].history, [{ role: "assistant", kind: "text", text: "halfway" }]);
+    finish("done");
+    await promise;
   }),
 );
 
