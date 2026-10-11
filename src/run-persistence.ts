@@ -525,7 +525,7 @@ export function createRunPersistence(
     const path = runPath(runId);
     const backup = `${path}.bak`;
     if (unlinkData(backup)) deleted = true;
-    for (const sidecar of [`${path}.tmp`, records.logPath(path)]) {
+    for (const sidecar of [`${path}.tmp`, ...records.logFiles(path)]) {
       unlinkData(sidecar);
       fileStateCache.delete(sidecar);
     }

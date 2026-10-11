@@ -133,7 +133,7 @@ WorkflowAgent.run()                          agent.ts
 | 文件 | 职责 |
 |---|---|
 | `run-persistence.ts` | 运行记录的读写、列表、删除、租约；本实例见过、但已被别的进程删除的记录，不会重建 |
-| `run-record-store.ts` | 存储格式：只追加的变更日志加一个原子提交的小索引头，详见 `docs/run-storage.md` |
+| `run-record-store.ts` | 存储格式：变更日志（历史超过运行本身数倍时改写成一个快照）加一个原子提交的小索引头，详见 `docs/run-storage.md` |
 | `fs-persistence.ts` | 原子写入、备份等文件系统基础操作 |
 | `workflow-paths.ts` | 目录布局：`~/.pi/workflows/projects/<项目键>/`；Windows 上同一目录的不同写法共用一个项目键 |
 | `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`）：项目级和用户级两层，项目级优先 |

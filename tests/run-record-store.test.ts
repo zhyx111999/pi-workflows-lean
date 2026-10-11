@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fsModule, {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -15,6 +16,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { defaultPersistenceFs, type PersistenceFsLayer } from "../src/fs-persistence.js";
 import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { createRunRecordStore } from "../src/run-record-store.js";
@@ -53,6 +55,54 @@ function state(runId: string, journal: PersistedRunState["journal"] = []): Persi
 
 function fsWith(overrides: Partial<PersistenceFsLayer>): PersistenceFsLayer {
   return { ...defaultPersistenceFs(), ...overrides };
+}
+
+/** A running run whose agent row changes on every save, as progress writes do. */
+function revision(runId: string, i: number, fixed = ""): PersistedRunState {
+  return {
+    ...state(runId),
+    status: "running",
+    args: { fixed },
+    agents: [
+      {
+        id: 1,
+        label: "worker",
+        prompt: "p".repeat(800),
+        status: "running",
+        resultPreview: `revision ${i} ${"o".repeat(200)}`,
+      },
+    ],
+    updatedAt: new Date(Date.UTC(2026, 8, 20, 0, 0, i)).toISOString(),
+  };
+}
+
+function generationOf(path: string): string {
+  return JSON.parse(readFileSync(path, "utf8")).generation;
+}
+
+function stagedLogs(dir: string): string[] {
+  return readdirSync(dir).filter((name) => /\.events\.[\w-]+\.jsonl$/.test(name));
+}
+
+/** Revisions whose saves grow one log until the last save starts a new generation. */
+function revisionsUntilSwitch(runId: string): PersistedRunState[] {
+  const dir = mkdtempSync(join(tmpdir(), "pi-dw-record-probe-"));
+  try {
+    const path = join(dir, `${runId}.json`);
+    const store = createRunRecordStore(defaultPersistenceFs());
+    const revisions: PersistedRunState[] = [];
+    let first: string | undefined;
+    for (let i = 0; i < 1000; i++) {
+      const next = revision(runId, i);
+      revisions.push(next);
+      store.save(path, next);
+      first ??= generationOf(path);
+      if (generationOf(path) !== first) return revisions;
+    }
+    throw new Error("the log never started a new generation");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function bytesOf(value: string | Uint8Array): number {
@@ -206,12 +256,14 @@ test(
     const runId = "delete-record-store";
     rp.save(state(runId));
     const path = join(workflowProjectPaths(cwd).runsDir, `${runId}.json`);
+    const staged = `${path}.events.${randomUUID()}.jsonl`;
     writeFileSync(`${path}.tmp`, "stale tmp", "utf8");
+    writeFileSync(staged, "interrupted generation switch", "utf8");
     assert.ok(existsSync(path));
     assert.ok(existsSync(`${path}.bak`));
     assert.ok(existsSync(`${path}.events.jsonl`));
     assert.equal(rp.delete(runId), true);
-    for (const candidate of [path, `${path}.bak`, `${path}.tmp`, `${path}.events.jsonl`])
+    for (const candidate of [path, `${path}.bak`, `${path}.tmp`, `${path}.events.jsonl`, staged])
       assert.equal(existsSync(candidate), false, `${candidate} should be deleted`);
     assert.equal(rp.load(runId), null);
   }),
@@ -465,5 +517,180 @@ test(
     assert.throws(() => contender.save(state("replacement-owner")), /EEXIST/);
     assert.ok(replaced);
     assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "new-live-owner");
+  }),
+);
+
+test(
+  "hot and cold reads both reject a head whose sequence or run id no longer matches its log",
+  withFixture((cwd) => {
+    const path = join(cwd, "commit-identity.json");
+    const store = createRunRecordStore(defaultPersistenceFs());
+    store.save(path, state("commit-identity"));
+    const head = readFileSync(path, "utf8");
+    const parsed = JSON.parse(head);
+    for (const damaged of [
+      { ...parsed, sequence: parsed.sequence + 1 },
+      { ...parsed, index: { ...parsed.index, runId: "another-run" } },
+    ]) {
+      writeFileSync(path, head);
+      assert.equal(store.read(path)?.runId, "commit-identity", "the intact head is cached");
+      writeFileSync(path, JSON.stringify(damaged));
+      assert.throws(() => store.read(path), /Run commit mismatch/, "a cached replay must not vouch for another commit");
+      assert.throws(() => createRunRecordStore(defaultPersistenceFs()).read(path), /Run commit mismatch/);
+    }
+  }),
+);
+
+test(
+  "a growing history is compacted into a snapshot generation, bounding what a cold load parses",
+  withFixture((cwd) => {
+    // Small runs stay under an absolute floor; large runs within a multiple of their own size.
+    for (const [fixed, saves] of [
+      ["", 100],
+      ["f".repeat(24 * 1024), 200],
+    ] as const) {
+      const path = join(cwd, `compaction-${fixed.length}.json`);
+      const store = createRunRecordStore(defaultPersistenceFs());
+      const generations = new Set<string>();
+      let largestLog = 0;
+      let current = revision("compaction", 0, fixed);
+      for (let i = 0; i < saves; i++) {
+        current = revision("compaction", i, fixed);
+        store.save(path, current);
+        generations.add(generationOf(path));
+        largestLog = Math.max(largestLog, statSync(`${path}.events.jsonl`).size);
+      }
+      const stateBytes = Buffer.byteLength(JSON.stringify(current));
+      assert.ok(generations.size > 1, "the log must be rewritten as a snapshot");
+      assert.ok(
+        largestLog <= Math.max(24 * 1024, 5 * stateBytes),
+        `log ${largestLog} bytes for a ${stateBytes}-byte run after ${saves} saves`,
+      );
+      assert.deepEqual(createRunRecordStore(defaultPersistenceFs()).read(path), current);
+      assert.deepEqual(stagedLogs(cwd), []);
+    }
+  }),
+);
+
+test(
+  "a generation switch interrupted at any filesystem step recovers the old or the new run",
+  withFixture((cwd) => {
+    const revisions = revisionsUntilSwitch("crash");
+    const switching = revisions.at(-1) as PersistedRunState;
+    const previous = revisions.at(-2) as PersistedRunState;
+    const real = defaultPersistenceFs();
+    let covered = 0;
+    for (let crashAt = 1; ; crashAt++) {
+      const dir = join(cwd, `crash-${crashAt}`);
+      mkdirSync(dir);
+      const path = join(dir, "crash.json");
+      const setup = createRunRecordStore(real);
+      for (const revision of revisions.slice(0, -1)) setup.save(path, revision);
+
+      // Once crashed, the process performs no further filesystem changes; a
+      // write it was in the middle of leaves a torn prefix behind.
+      let steps = 0;
+      let crashed = false;
+      const step = () => {
+        if (!crashed && ++steps === crashAt) crashed = true;
+        return crashed;
+      };
+      const crashing = fsWith({
+        writeFileSync: ((file, data, options?: WriteFileOptions) => {
+          if (!crashed && step()) {
+            const text = String(data);
+            real.writeFileSync(file, text.slice(0, Math.floor(text.length / 2)), options);
+          }
+          if (crashed) throw new Error("injected crash");
+          return real.writeFileSync(file, data, options);
+        }) as PersistenceFsLayer["writeFileSync"],
+        renameSync: ((from, to) => {
+          if (step()) throw new Error("injected crash");
+          return real.renameSync(from, to);
+        }) as PersistenceFsLayer["renameSync"],
+        truncateSync: ((file, length) => {
+          if (step()) throw new Error("injected crash");
+          return real.truncateSync(file, length);
+        }) as PersistenceFsLayer["truncateSync"],
+        unlinkSync: ((file) => {
+          if (step()) throw new Error("injected crash");
+          return real.unlinkSync(file);
+        }) as PersistenceFsLayer["unlinkSync"],
+      });
+      try {
+        createRunRecordStore(crashing).save(path, switching);
+      } catch {
+        // The process died here.
+      }
+      if (!crashed) break;
+      covered++;
+
+      // A restarted process reads exactly one of the two commits, from the
+      // head or, when only the backup survives, from the backup.
+      const restarted = createRunRecordStore(real).read(path);
+      assert.ok(
+        isDeepStrictEqual(restarted, previous) || isDeepStrictEqual(restarted, switching),
+        `crash at step ${crashAt} must leave the old or the new run`,
+      );
+      let backupIntact = true;
+      try {
+        JSON.parse(readFileSync(`${path}.bak`, "utf8"));
+      } catch {
+        backupIntact = false;
+      }
+      if (backupIntact) {
+        const fromBackup = createRunRecordStore(
+          fsWith({ existsSync: ((file) => String(file) !== path && real.existsSync(file)) as typeof real.existsSync }),
+        ).read(path);
+        assert.ok(
+          isDeepStrictEqual(fromBackup, previous) || isDeepStrictEqual(fromBackup, switching),
+          `crash at step ${crashAt} must leave a backup of the old or the new run`,
+        );
+      }
+
+      // The next writer finishes or discards the interrupted switch.
+      const resumed = { ...switching, logs: [`resumed after step ${crashAt}`] };
+      createRunRecordStore(real).save(path, resumed);
+      assert.deepEqual(createRunRecordStore(real).read(path), resumed);
+      assert.deepEqual(stagedLogs(dir), [], `crash at step ${crashAt} must not leave a staged log behind`);
+    }
+    assert.ok(covered >= 5, `every step of the switch must be a crash point (${covered})`);
+  }),
+);
+
+test(
+  "a reader racing a generation switch replays the new commit instead of the retired log",
+  withFixture((cwd) => {
+    const revisions = revisionsUntilSwitch("race");
+    const switching = revisions.at(-1) as PersistedRunState;
+    const path = join(cwd, "race.json");
+    const real = defaultPersistenceFs();
+    const writer = createRunRecordStore(real);
+    for (const revision of revisions.slice(0, -1)) writer.save(path, revision);
+
+    let raced = false;
+    const reader = createRunRecordStore(
+      fsWith({
+        statSync: ((file, ...rest) => {
+          // The writer switches generations after the reader read its head.
+          if (!raced && String(file) === `${path}.events.jsonl`) {
+            raced = true;
+            writer.save(path, switching);
+          }
+          return real.statSync(file, ...rest);
+        }) as typeof real.statSync,
+      }),
+    );
+    assert.deepEqual(reader.read(path), switching);
+    assert.ok(raced);
+
+    const view = createRunRecordStore(real).peek(path);
+    assert.ok(view);
+    const viewed = generationOf(path);
+    for (let i = 0; generationOf(path) === viewed; i++) {
+      assert.ok(i < 1000, "the log never started a new generation");
+      writer.save(path, { ...revision("race", i), logs: ["after the view"] });
+    }
+    assert.deepEqual(view.logs, ["after the view"], "a listed view still loads its fields after its log is retired");
   }),
 );

@@ -1,7 +1,16 @@
-/** Versioned run records: append changed cells, then atomically commit a small index head. */
+/**
+ * Versioned run records: append changed cells, or a snapshot once the history
+ * outgrows the run, then atomically commit a small index head.
+ */
 import { createHash, randomUUID } from "node:crypto";
+import { basename, dirname, join } from "node:path";
 import { aggregateAgentUsage } from "./display.js";
-import { type PersistenceFsLayer, readJsonWithBackupRecovery, writeJsonAtomicWithBackup } from "./fs-persistence.js";
+import {
+  type PersistenceFsLayer,
+  readJsonWithBackupRecovery,
+  unlinkIfExistsSafe,
+  writeJsonAtomicWithBackup,
+} from "./fs-persistence.js";
 import { INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import type { PersistedRunState } from "./run-persistence.js";
 
@@ -68,6 +77,7 @@ interface Head {
   summary: RunSummary;
   pendingDelivery?: { kind: "complete" | "text"; deliveryId?: string };
 }
+type HeadFields = Pick<Head, "keys" | "index" | "summary" | "pendingDelivery">;
 function markerIndex(marker: Head["pendingDelivery"]): Head["pendingDelivery"] {
   return marker ? { kind: marker.kind, deliveryId: marker.deliveryId } : undefined;
 }
@@ -87,17 +97,26 @@ interface Entry {
   delta: Delta;
 }
 interface Cached {
-  generation: string;
-  bytes: number;
+  commit: string;
+  stamp: string;
   state: PersistedRunState;
   cells: Cells;
   size: number;
-  stamp: string;
-  hash: string;
 }
 const FORMAT = "pi-workflow-run-v2";
+// Generations name staged log files, so they must be plain file-name tokens.
+const GENERATION = /^[\w-]+$/;
 const MAX_CACHE_ENTRIES = 8;
 const MAX_CACHE_BYTES = 16 * 1024 * 1024;
+// A save rewrites the log as a one-entry snapshot once replaying it costs
+// several times the run itself, so each snapshot follows at least three times
+// its size in appended history. Below the floor replay is cheap anyway, and
+// tiny runs are not snapshotted every few saves.
+const SNAPSHOT_RATIO = 4;
+const SNAPSHOT_MIN_LOG_BYTES = 16 * 1024;
+// Readers take no lock, so a concurrent generation switch can promote or
+// retire the log a just-read head names; they retry with the head on disk.
+const READ_ATTEMPTS = 3;
 
 function isHead(value: unknown): value is Head {
   return !!value && typeof value === "object" && (value as Head).format === FORMAT;
@@ -110,6 +129,7 @@ function validateHead(record: unknown): asserts record is Head {
     !Number.isSafeInteger(record.sequence) ||
     record.sequence <= 0 ||
     typeof record.generation !== "string" ||
+    !GENERATION.test(record.generation) ||
     typeof record.hash !== "string" ||
     !record.index ||
     typeof record.index.runId !== "string" ||
@@ -127,6 +147,10 @@ function readHead(fs: PersistenceFsLayer, path: string): Head | null {
 }
 function digest(line: string): string {
   return createHash("sha256").update(line).digest("hex");
+}
+/** Everything a head commits to; a cached replay is reused only for an identical commit. */
+function commitOf(head: Head): string {
+  return JSON.stringify([head.generation, head.sequence, head.bytes, head.hash, head.index.runId]);
 }
 function cellsOf(state: PersistedRunState): Cells {
   const cells: Cells = new Map();
@@ -151,6 +175,39 @@ function cellsOf(state: PersistedRunState): Cells {
     } else cells.set(key, JSON.stringify(value));
   }
   return cells;
+}
+function cellsSize(cells: Cells, measure: (json: string) => number): number {
+  let size = 0;
+  for (const cell of cells.values())
+    if (typeof cell === "string") size += measure(cell);
+    else for (const json of cell.values()) size += measure(json);
+  return size;
+}
+/** Whether replaying a head's log costs enough more than a snapshot of `cells` to rewrite it as one. */
+function outgrown(head: Head, cells: Cells): boolean {
+  return (
+    head.bytes >= SNAPSHOT_MIN_LOG_BYTES &&
+    head.bytes >= SNAPSHOT_RATIO * cellsSize(cells, (json) => Buffer.byteLength(json))
+  );
+}
+function headFields(state: PersistedRunState, cells: Cells): HeadFields {
+  return {
+    keys: [...cells.keys()],
+    index: Object.fromEntries(
+      [...cells]
+        .filter(([key]) => INDEX_KEYS.has(key))
+        .map(([key, value]) => [
+          key,
+          value instanceof Map
+            ? Object.fromEntries([...value].map(([name, json]) => [name, JSON.parse(json)]))
+            : Array.isArray(value)
+              ? value.map((json) => JSON.parse(json))
+              : JSON.parse(value),
+        ]),
+    ),
+    summary: runSummary(state),
+    pendingDelivery: markerIndex(state.pendingDelivery),
+  };
 }
 function deltaOf(before: Cells, after: Cells): Delta {
   const delta: Delta = { set: Object.create(null), remove: [], arrays: Object.create(null) };
@@ -214,27 +271,39 @@ function applyDelta(state: Record<string, unknown>, delta: Delta): void {
 export function createRunRecordStore(fs: PersistenceFsLayer) {
   const cache = new Map<string, Cached>();
   const logPath = (path: string) => `${path}.events.jsonl`;
-  function logStamp(path: string): string {
-    const s = fs.statSync(logPath(path));
-    return `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}`;
+  const stagedLogPath = (path: string, generation: string) => `${path}.events.${generation}.jsonl`;
+  /** Staged generation logs beside a record, whether committed or abandoned. */
+  function stagedLogs(path: string): string[] {
+    const dir = dirname(path);
+    const prefix = `${basename(path)}.events.`;
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return [];
+    }
+    return names
+      .filter(
+        (name) =>
+          name.startsWith(prefix) &&
+          name.endsWith(".jsonl") &&
+          GENERATION.test(name.slice(prefix.length, -".jsonl".length)),
+      )
+      .map((name) => join(dir, name));
   }
-  function remember(path: string, head: Head, state: PersistedRunState, cells: Cells): void {
+  /** The file holding a head's log, and the identity of its current contents. */
+  function logFile(path: string, head: Head): { file: string; size: number; stamp: string } {
+    // A generation switch commits its head before promoting the staged log.
+    const staged = stagedLogPath(path, head.generation);
+    const file = fs.existsSync(staged) ? staged : logPath(path);
+    const s = fs.statSync(file);
+    return { file, size: s.size, stamp: `${s.ino}:${s.size}:${s.mtimeMs}:${s.ctimeMs}` };
+  }
+  function remember(path: string, head: Head, stamp: string, state: PersistedRunState, cells: Cells): void {
     cache.delete(path);
-    const size =
-      [...cells.values()].reduce(
-        (n, v) => n + (typeof v === "string" ? v.length * 2 : [...v.values()].reduce((s, x) => s + x.length * 2, 0)),
-        0,
-      ) * 2;
-    if (size <= MAX_CACHE_BYTES)
-      cache.set(path, {
-        generation: head.generation,
-        bytes: head.bytes,
-        state,
-        cells,
-        size,
-        stamp: logStamp(path),
-        hash: head.hash,
-      });
+    // The replayed state and its serialized cells both stay resident as UTF-16 strings.
+    const size = 2 * 2 * cellsSize(cells, (json) => json.length);
+    if (size <= MAX_CACHE_BYTES) cache.set(path, { commit: commitOf(head), stamp, state, cells, size });
     let total = [...cache.values()].reduce((n, v) => n + v.size, 0);
     while (cache.size > MAX_CACHE_ENTRIES || total > MAX_CACHE_BYTES) {
       const key = cache.keys().next().value as string;
@@ -242,34 +311,32 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
       cache.delete(key);
     }
   }
-  /** The full run a validated head commits to, replayed from its log (or the cache). */
-  function hydrate(path: string, head: Head): PersistedRunState {
-    const cached = cache.get(path);
-    if (
-      cached?.generation === head.generation &&
-      cached.bytes === head.bytes &&
-      cached.hash === head.hash &&
-      cached.stamp === logStamp(path)
-    ) {
-      cache.delete(path);
-      cache.set(path, cached);
-      return cached.state;
-    }
-    const fd = fs.openSync(logPath(path), "r");
-    let raw: string;
+  function readPrefix(file: string, length: number): string {
+    const fd = fs.openSync(file, "r");
     try {
-      if (fs.statSync(logPath(path)).size < head.bytes) throw new Error("Truncated committed run log");
-      const bytes = Buffer.alloc(head.bytes);
+      const bytes = Buffer.alloc(length);
       let read = 0;
       while (read < bytes.length) {
         const n = fs.readSync(fd, bytes, read, bytes.length - read, read);
         if (!n) throw new Error("Truncated committed run log");
         read += n;
       }
-      raw = bytes.toString("utf8");
+      return bytes.toString("utf8");
     } finally {
       fs.closeSync(fd);
     }
+  }
+  /** The full run a validated head commits to, replayed from its log (or the cache). */
+  function hydrate(path: string, head: Head): PersistedRunState {
+    const { file, size, stamp } = logFile(path, head);
+    const cached = cache.get(path);
+    if (cached?.commit === commitOf(head) && cached.stamp === stamp) {
+      cache.delete(path);
+      cache.set(path, cached);
+      return cached.state;
+    }
+    if (size < head.bytes) throw new Error("Truncated committed run log");
+    const raw = readPrefix(file, head.bytes);
     if (!raw.endsWith("\n")) throw new Error("Incomplete committed run entry");
     const state: Record<string, unknown> = {};
     let previous = "",
@@ -284,15 +351,28 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     if (previous !== head.hash || sequence !== head.sequence || state.runId !== head.index.runId)
       throw new Error("Run commit mismatch");
     const result = state as unknown as PersistedRunState;
-    remember(path, head, result, cellsOf(result));
+    remember(path, head, stamp, result, cellsOf(result));
     return result;
+  }
+  /** Replays `head`, or the head now on disk when a concurrent switch moved its log. A damaged commit still fails. */
+  function replay(path: string, head: Head): PersistedRunState {
+    let current = head;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return hydrate(path, current);
+      } catch (error) {
+        const latest = attempt < READ_ATTEMPTS ? readHead(fs, path) : null;
+        if (!latest || latest.index.runId !== current.index.runId) throw error;
+        current = latest;
+      }
+    }
   }
   function read(path: string): PersistedRunState | null {
     const head = readHead(fs, path);
     if (!head) return null;
     // A committed-but-damaged log fails closed, rather than silently replaying
     // an older paid-call prefix. Only a corrupt/missing head uses its backup.
-    return structuredClone(hydrate(path, head));
+    return structuredClone(replay(path, head));
   }
   function peek(path: string): PersistedRunState | null {
     const head = readHead(fs, path);
@@ -310,7 +390,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
         Object.defineProperty(view, key, {
           enumerable: true,
           configurable: true,
-          get: () => structuredClone((hydrate(path, head) as unknown as Record<string, unknown>)[key]),
+          get: () => structuredClone((replay(path, head) as unknown as Record<string, unknown>)[key]),
         });
     // Markers are needed to route pending delivery without loading results.
     if (head.pendingDelivery) {
@@ -319,7 +399,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
         Object.defineProperty(marker, "text", {
           enumerable: true,
           get: () => {
-            const full = hydrate(path, head).pendingDelivery;
+            const full = replay(path, head).pendingDelivery;
             return full?.kind === "text" ? full.text : undefined;
           },
         });
@@ -332,30 +412,18 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     summaries.set(view, head.summary);
     return view;
   }
-  function commit(
-    path: string,
-    head: Head | undefined,
-    delta: Delta,
-    fields: Pick<Head, "keys" | "index" | "summary" | "pendingDelivery">,
-  ): Head {
-    const entry: Entry = {
-      generation: head?.generation ?? randomUUID(),
-      sequence: (head?.sequence ?? 0) + 1,
-      previous: head?.hash ?? "",
-      delta,
-    };
-    const line = JSON.stringify(entry);
-    if (head) {
-      const size = fs.statSync(logPath(path)).size;
-      if (size < head.bytes) throw new Error("Truncated committed run log");
-      if (size > head.bytes) fs.truncateSync(logPath(path), head.bytes);
-    }
-    fs.writeFileSync(logPath(path), `${line}\n`, { flag: head ? "a" : "w", flush: true });
+  /** Finishes a generation switch whose head committed before its staged log was promoted. */
+  function promote(path: string, head: Head): void {
+    const staged = stagedLogPath(path, head.generation);
+    if (fs.existsSync(staged)) fs.renameSync(staged, logPath(path));
+  }
+  /** Commits a head naming an entry already flushed to its log; the head rename is the commit point. */
+  function publish(path: string, entry: Entry, line: string, offset: number, fields: HeadFields): Head {
     const next: Head = {
       ...fields,
       format: FORMAT,
       generation: entry.generation,
-      bytes: (head?.bytes ?? 0) + Buffer.byteLength(line) + 1,
+      bytes: offset + Buffer.byteLength(line) + 1,
       sequence: entry.sequence,
       hash: digest(line),
     };
@@ -363,33 +431,60 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     cache.delete(path);
     return next;
   }
+  function append(path: string, head: Head, delta: Delta, fields: HeadFields): Head {
+    promote(path, head);
+    const entry: Entry = { generation: head.generation, sequence: head.sequence + 1, previous: head.hash, delta };
+    const line = JSON.stringify(entry);
+    const log = logPath(path);
+    const size = fs.statSync(log).size;
+    if (size < head.bytes) throw new Error("Truncated committed run log");
+    // Bytes past the boundary belong to an append whose head never committed.
+    if (size > head.bytes) fs.truncateSync(log, head.bytes);
+    fs.writeFileSync(log, `${line}\n`, { flag: "a", flush: true });
+    return publish(path, entry, line, head.bytes, fields);
+  }
+  /**
+   * Starts a generation whose log is one snapshot of the whole run. The snapshot
+   * is staged under its own name, so until the new head commits, the previous
+   * head and its log stay intact; only then does the snapshot replace the log.
+   * Every crash point leaves one committed head whose log is either the final
+   * file or its staged file, and the next writer promotes or discards the rest.
+   */
+  function startGeneration(path: string, head: Head | undefined, snapshot: Delta, fields: HeadFields): Head {
+    if (head) promote(path, head);
+    // Every staged log left now belongs to a switch that never committed.
+    for (const abandoned of stagedLogs(path)) unlinkIfExistsSafe(fs, abandoned);
+    const entry: Entry = { generation: randomUUID(), sequence: 1, previous: "", delta: snapshot };
+    const line = JSON.stringify(entry);
+    const staged = stagedLogPath(path, entry.generation);
+    fs.writeFileSync(staged, `${line}\n`, { flush: true });
+    const next = publish(path, entry, line, 0, fields);
+    try {
+      fs.renameSync(staged, logPath(path));
+    } catch {
+      // Already committed: readers use the staged log until the next writer promotes it.
+    }
+    return next;
+  }
   function save(path: string, state: PersistedRunState): void {
     const head = readHead(fs, path) ?? undefined;
+    // Replaying the committed run also refuses to write over a damaged log.
     const prior = head ? hydrate(path, head) : undefined;
-    const before = prior ? (cache.get(path)?.cells ?? cellsOf(prior)) : new Map();
     const after = cellsOf(state);
-    const delta = deltaOf(before, after);
-    const next = commit(path, head, delta, {
-      keys: [...after.keys()],
-      index: Object.fromEntries(
-        [...after]
-          .filter(([key]) => INDEX_KEYS.has(key))
-          .map(([key, value]) => [
-            key,
-            value instanceof Map
-              ? Object.fromEntries([...value].map(([name, json]) => [name, JSON.parse(json)]))
-              : Array.isArray(value)
-                ? value.map((json) => JSON.parse(json))
-                : JSON.parse(value),
-          ]),
-      ),
-      summary: runSummary(state),
-      pendingDelivery: markerIndex(state.pendingDelivery),
-    });
-    // Internal cached records never escape; reuse unchanged cells in memory.
-    const copy = (prior ?? {}) as unknown as Record<string, unknown>;
-    applyDelta(copy, delta);
-    remember(path, next, copy as unknown as PersistedRunState, after);
+    const fields = headFields(state, after);
+    if (head && prior && !outgrown(head, after)) {
+      const delta = deltaOf(cache.get(path)?.cells ?? cellsOf(prior), after);
+      const next = append(path, head, delta, fields);
+      // Internal cached records never escape; reuse unchanged cells in memory.
+      applyDelta(prior as unknown as Record<string, unknown>, delta);
+      remember(path, next, logFile(path, next).stamp, prior, after);
+      return;
+    }
+    const snapshot = deltaOf(new Map(), after);
+    const next = startGeneration(path, head, snapshot, fields);
+    const fresh: Record<string, unknown> = {};
+    applyDelta(fresh, snapshot);
+    remember(path, next, logFile(path, next).stamp, fresh as unknown as PersistedRunState, after);
   }
   function updateMetadata(
     path: string,
@@ -417,7 +512,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     for (const key of Object.keys(updated))
       if (after.has(key)) keys.add(key);
       else keys.delete(key);
-    commit(path, record, delta, {
+    append(path, record, delta, {
       summary: record.summary,
       index,
       keys: [...keys],
@@ -434,7 +529,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     const { summary } = head;
     if (status !== "running" && !(status === "paused" && summary.active > 0)) return false;
     const endedAt = new Date().toISOString();
-    commit(
+    append(
       path,
       head,
       { set: { status: "paused", updatedAt: endedAt }, remove: [], arrays: {}, settleAgentsAt: endedAt },
@@ -462,6 +557,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     updateMetadata,
     recoverInterrupted,
     forget: (path: string) => cache.delete(path),
-    logPath,
+    /** Every log file of a record, including staged generation logs. */
+    logFiles: (path: string) => [logPath(path), ...stagedLogs(path)],
   };
 }
