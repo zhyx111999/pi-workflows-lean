@@ -1,5 +1,6 @@
 /** Two-step confirmation for destructive actions, bound to the exact view and target that asked. */
 
+import type { PhaseKey } from "../phase-groups.js";
 import { type RunSaveReplace, replacedWorkflowLabel } from "../run-save.js";
 import type { ViewKind } from "../workflow-ui.js";
 import { type RunItemIdentity, type SavedItemIdentity, sameIdentity } from "./items.js";
@@ -38,7 +39,7 @@ export function confirmationPrompt(request: ConfirmRequest): string {
 export type ConfirmationContext = {
   kind: ViewKind;
   runId?: string;
-  phase?: string;
+  phase?: PhaseKey;
   agentId?: number;
   savedIdentity?: SavedItemIdentity;
 };

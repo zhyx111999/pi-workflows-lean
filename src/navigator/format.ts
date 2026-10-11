@@ -9,12 +9,6 @@ export function pluralize(word: string, n: number): string {
   return n === 1 ? word : `${word}s`;
 }
 
-/** A phase title as drawn in a cell. Scripts may call phase(""), and a blank
- *  title would leave the row and the agents-pane heading with no visible name. */
-export function phaseLabel(title: string): string {
-  return title.trim() ? title : "(unnamed phase)";
-}
-
 /** Short, human-friendly model label: drop the provider prefix for display. */
 export function shortModel(model: string | undefined): string | undefined {
   if (!model) return undefined;

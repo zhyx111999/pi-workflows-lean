@@ -3,9 +3,10 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeLike } from "../display.js";
 import { fmtCompact, fmtTokenSegment } from "../display.js";
+import type { PhaseKey } from "../phase-groups.js";
 import type { NavigatorModel, NavigatorState } from "../workflow-ui.js";
 import { BX, renderTwoPaneFrame, topTitleSegment } from "./box-frame.js";
-import { ELLIPSIS, phaseLabel, pluralize } from "./format.js";
+import { ELLIPSIS, pluralize } from "./format.js";
 import {
   computeLeftWidth,
   computeModelColStart,
@@ -91,7 +92,7 @@ function runHeader(
 }
 
 function agentsTitle(phase: PhaseRow | undefined, agentCount: number): string {
-  return `${phase ? phaseLabel(phase.title) : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
+  return `${phase ? phase.title : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
 }
 
 /** The combined Phases | agents frame. The selected phase drives the right pane. */
@@ -107,13 +108,13 @@ function renderPhasesAgents(
   // Group agents once per frame: every visible phase row needs its agents for
   // the status colour, and the selected phase's agents fill the right pane.
   const agentsByPhase = model.agentsByPhase(runId);
-  const agentsOf = (title: string): AgentRow[] => agentsByPhase.get(title) ?? [];
+  const agentsOf = (phase: PhaseKey): AgentRow[] => agentsByPhase.get(phase) ?? [];
   // In "phases" view the cursor selects the phase; in "agents" view it is the drilled-in phase.
   const inAgents = state.kind === "agents";
-  let selPhaseIdx = inAgents ? phases.findIndex((p) => p.title === state.phase) : state.cursor;
+  let selPhaseIdx = inAgents ? phases.findIndex((p) => p.phase === state.phase) : state.cursor;
   if (selPhaseIdx < 0) selPhaseIdx = 0;
   const selPhase = phases[selPhaseIdx];
-  const agents = selPhase ? agentsOf(selPhase.title) : [];
+  const agents = selPhase ? agentsOf(selPhase.phase) : [];
 
   if (width < LW_MIN + RW_MIN - 1) {
     return renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, bodyCap, inAgents);
@@ -129,7 +130,7 @@ function renderPhasesAgents(
     phases.length,
     selPhaseIdx,
     bodyCap,
-    (i) => leftPhaseRow(phases[i], i, !inAgents && i === state.cursor, agentsOf(phases[i].title), leftInner, theme),
+    (i) => leftPhaseRow(phases[i], i, !inAgents && i === state.cursor, agentsOf(phases[i].phase), leftInner, theme),
     moreRow(leftInner, theme),
   );
   const modelColStart = computeModelColStart(agents, rightInner);

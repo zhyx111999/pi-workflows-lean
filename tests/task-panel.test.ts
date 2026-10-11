@@ -2759,6 +2759,35 @@ describe("renderPanelDetailed", () => {
     };
   }
 
+  it("shows an empty-named phase and the phase-less group, and never mixes them with a same-titled phase", async () => {
+    const { renderPanelDetailed, renderPanel } = await import("../src/task-panel/panel-render.js");
+    const snapshot = {
+      name: "wf",
+      phases: [""],
+      currentPhase: "",
+      logs: [],
+      agents: [
+        { id: 1, label: "in_blank", status: "running", phase: "" },
+        { id: 2, label: "named_like_none", status: "done", phase: "(no phase)" },
+        { id: 3, label: "no_phase", status: "done" },
+      ],
+      tokenUsage: { total: 0, input: 0, output: 0, cost: 0 },
+    };
+    const manager = {
+      listRuns: () => [{ runId: "r-phases", workflowName: "wf", status: "running", agents: snapshot.agents }],
+      getRun: (id: string) => (id === "r-phases" ? { snapshot, status: "running" } : undefined),
+    };
+    const lines = renderPanelDetailed(manager as never, theme as never, undefined, 8, 1000);
+    const headers = lines.filter((line) => /^ {2}[▶✓ ] [^ []/.test(line)).map((line) => line.trim());
+    assert.equal(headers.length, 3, `one header per group, got: ${JSON.stringify(lines)}`);
+    assert.ok(headers[0].startsWith("▶ (unnamed phase)"), "the current blank phase is shown and marked");
+    assert.ok(
+      lines.some((line) => line.includes("· (unnamed phase)")),
+      "the run header names the blank current phase",
+    );
+    assert.ok(renderPanel(manager as never, theme as never).some((line) => line.endsWith("· (unnamed phase)")));
+  });
+
   it("renders a per-agent fresh/cache split when tokenUsage is present", async () => {
     const { renderPanelDetailed } = await import("../src/task-panel/panel-render.js");
     const snapshot = {

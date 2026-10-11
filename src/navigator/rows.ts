@@ -3,7 +3,7 @@
 import type { AgentUsage } from "../agent-usage.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "../display.js";
 import { aggregateAgentUsage, tokenFigures } from "../display.js";
-import { groupAgentsByPhase } from "../phase-groups.js";
+import { groupAgentsByPhase, type PhaseKey } from "../phase-groups.js";
 import type { PersistedRunState } from "../run-persistence.js";
 import { runSummary } from "../run-record-store.js";
 import { asText } from "./as-text.js";
@@ -30,6 +30,9 @@ export interface RunRow {
 }
 
 export interface PhaseRow {
+  /** Which phase the row is: the key agents are looked up by. */
+  phase: PhaseKey;
+  /** What the row prints. */
   title: string;
   done: number;
   total: number;
@@ -94,9 +97,10 @@ export function runRow(record: PersistedRunState, live: RunSnapshot | undefined)
 
 /** One row per phase, in the shared phase order (see groupAgentsByPhase). */
 export function phaseRows(snap: WorkflowSnapshot): PhaseRow[] {
-  return groupAgentsByPhase(snap).map(({ title, agents, counts }) => {
+  return groupAgentsByPhase(snap).map(({ phase, title, agents, counts }) => {
     const usage = aggregateAgentUsage(agents);
     return {
+      phase,
       title,
       done: counts.done,
       total: agents.length,
@@ -107,11 +111,11 @@ export function phaseRows(snap: WorkflowSnapshot): PhaseRow[] {
   });
 }
 
-export function agentRowsInPhase(snap: WorkflowSnapshot, phase: string): AgentRow[] {
+export function agentRowsInPhase(snap: WorkflowSnapshot, phase: PhaseKey): AgentRow[] {
   return agentRowsByPhase(snap).get(phase) ?? [];
 }
 
 /** Every agent row keyed by phase title, for views that show all phases at once. */
-export function agentRowsByPhase(snap: WorkflowSnapshot): Map<string, AgentRow[]> {
-  return new Map(groupAgentsByPhase(snap).map((group) => [group.title, group.agents.map(toAgentRow)]));
+export function agentRowsByPhase(snap: WorkflowSnapshot): Map<PhaseKey, AgentRow[]> {
+  return new Map(groupAgentsByPhase(snap).map((group) => [group.phase, group.agents.map(toAgentRow)]));
 }

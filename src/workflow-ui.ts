@@ -65,6 +65,7 @@ import {
   runRow,
 } from "./navigator/rows.js";
 import { currentSnapshot, type NavigatorSession } from "./navigator/session.js";
+import type { PhaseKey } from "./phase-groups.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, SavedWorkflowMutationResult, WorkflowStorage } from "./workflow-saved.js";
@@ -155,13 +156,13 @@ export class NavigatorModel {
     return snap ? phaseRows(snap) : [];
   }
 
-  agents(runId: string, phase: string): AgentRow[] {
+  agents(runId: string, phase: PhaseKey): AgentRow[] {
     const snap = this.snapshot(runId)?.snapshot;
     return snap ? agentRowsInPhase(snap, phase) : [];
   }
 
   /** All agents grouped by phase in one pass, for views that render every phase. */
-  agentsByPhase(runId: string): Map<string, AgentRow[]> {
+  agentsByPhase(runId: string): Map<PhaseKey, AgentRow[]> {
     const snap = this.snapshot(runId)?.snapshot;
     return snap ? agentRowsByPhase(snap) : new Map();
   }
@@ -177,7 +178,8 @@ type StackFrame = {
   kind: ViewKind;
   cursor: number;
   runId?: string;
-  phase?: string;
+  /** The drilled-into phase; undefined while no phase is open. */
+  phase?: PhaseKey;
   agentId?: number;
   savedName?: string;
   savedIdentity?: SavedItemIdentity;
@@ -213,7 +215,7 @@ export class NavigatorState {
   get runId(): string | undefined {
     return this.top().runId;
   }
-  get phase(): string | undefined {
+  get phase(): PhaseKey | undefined {
     return this.top().phase;
   }
   get agentId(): number | undefined {
@@ -376,7 +378,7 @@ export class NavigatorState {
     if (top.kind === "phases" && top.runId) {
       const phase = model.phases(top.runId)[top.cursor];
       if (!phase) return false;
-      this.stack.push({ kind: "agents", cursor: 0, runId: top.runId, phase: phase.title });
+      this.stack.push({ kind: "agents", cursor: 0, runId: top.runId, phase: phase.phase });
       return true;
     }
     // phase("") is a legal phase, so test for presence rather than truthiness.

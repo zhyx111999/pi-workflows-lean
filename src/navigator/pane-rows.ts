@@ -3,7 +3,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeLike } from "../display.js";
 import { fmtCompact, fmtTokenSegment, tokenFigures } from "../display.js";
-import { ELLIPSIS, phaseLabel, shortModel } from "./format.js";
+import { ELLIPSIS, shortModel } from "./format.js";
 import type { AgentRow, PhaseRow } from "./rows.js";
 
 /** Narrowest usable Phases pane, in cells. */
@@ -46,7 +46,7 @@ export function computeLeftWidth(phases: PhaseRow[], width: number): number {
       2 /*marker*/ +
       visibleWidth(idx) +
       1 /*sp*/ +
-      visibleWidth(phaseLabel(p.title)) +
+      visibleWidth(p.title) +
       (hasAgents ? 1 + visibleWidth(`${p.done}/${p.total}`) : 0);
     if (need > contentMax) contentMax = need;
   });
@@ -72,7 +72,7 @@ export function leftPhaseRow(
   // Fixed parts width: marker + idx + space + (space+progress if shown)
   const fixed = 2 + visibleWidth(idx) + 1 + (progress ? 1 + visibleWidth(progress) : 0);
   const nameRoom = Math.max(0, innerW - fixed);
-  const name = truncateToWidth(phaseLabel(p.title), nameRoom, ELLIPSIS, false);
+  const name = truncateToWidth(p.title, nameRoom, ELLIPSIS, false);
 
   const styleMain = (s: string) => (selected ? theme.fg("accent", theme.bold(s)) : hasAgents ? s : theme.fg("dim", s));
   const progStyle = (s: string) =>

@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import { asText } from "./navigator/as-text.js";
 import { groupAgentsByPhase, type PhaseGroup } from "./phase-groups.js";
 import type { RunStatus } from "./run-persistence.js";
 import type { WorkflowMeta } from "./workflow.js";
@@ -305,9 +306,9 @@ export function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false
 }
 
 /** One phase: a marker and tally line, then its most recent agents. */
-function phaseLines({ title, agents, counts }: PhaseGroup, currentPhase: string | undefined): string[] {
+function phaseLines({ phase, title, agents, counts }: PhaseGroup, currentPhase: string | undefined): string[] {
   const settled = agents.length > 0 && counts.done + counts.error + counts.skipped === agents.length;
-  const marker = counts.running > 0 || (!settled && currentPhase === title) ? "▶" : settled ? "✓" : " ";
+  const marker = counts.running > 0 || (!settled && currentPhase === phase) ? "▶" : settled ? "✓" : " ";
   const tally = [
     `${counts.done}/${agents.length}`,
     counts.running ? `${counts.running} running` : "",
@@ -319,7 +320,9 @@ function phaseLines({ title, agents, counts }: PhaseGroup, currentPhase: string 
   const visible = agents.slice(-TEXT_AGENTS_PER_PHASE);
   const lines = [`  ${marker} ${title} ${tally}`];
   for (const agent of visible) {
-    lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokenCell(agent)}`);
+    lines.push(
+      `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(asText(agent.label), 48)}${agentTokenCell(agent)}`,
+    );
   }
   if (agents.length > visible.length) lines.push(`    … ${agents.length - visible.length} earlier agents`);
   return lines;

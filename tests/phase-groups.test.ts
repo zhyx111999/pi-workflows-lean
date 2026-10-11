@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "../src/display.js";
-import { groupAgentsByPhase, NO_PHASE_TITLE } from "../src/phase-groups.js";
+import { groupAgentsByPhase, phaseTitle } from "../src/phase-groups.js";
 
 function agent(id: number, status: string, phase?: unknown): WorkflowAgentSnapshot {
   return { id, label: `a${id}`, prompt: "p", status, phase } as WorkflowAgentSnapshot;
@@ -19,12 +19,12 @@ test("declared phases come first, then agent-only and phase-less groups by first
     ),
   );
   assert.deepEqual(
-    groups.map((g) => [g.title, g.agents.map((a) => a.id)]),
+    groups.map((g) => [g.phase, g.agents.map((a) => a.id)]),
     [
       ["Plan", [3]],
       ["Ship", []],
       ["Extra", [1, 4]],
-      [NO_PHASE_TITLE, [2]],
+      [null, [2]],
     ],
   );
 });
@@ -57,4 +57,22 @@ test("reads non-array phases and agents from a corrupt record as empty", () => {
     groupAgentsByPhase(snapshot(undefined, [agent(1, "done", "P")])).map((g) => g.title),
     ["P"],
   );
+});
+
+test("a phase named like the phase-less group stays a group of its own", () => {
+  const groups = groupAgentsByPhase(snapshot([], [agent(1, "done", "(no phase)"), agent(2, "done")]));
+  assert.deepEqual(
+    groups.map((g) => [g.phase, g.agents.map((a) => a.id)]),
+    [
+      ["(no phase)", [1]],
+      [null, [2]],
+    ],
+  );
+});
+
+test("phase titles give blank names and the phase-less group a readable stand-in", () => {
+  assert.equal(phaseTitle(null), "(no phase)");
+  assert.equal(phaseTitle(""), "(unnamed phase)");
+  assert.equal(phaseTitle("  "), "(unnamed phase)");
+  assert.equal(phaseTitle("Plan"), "Plan");
 });

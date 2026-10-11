@@ -13,7 +13,9 @@ import {
   type WorkflowAgentSnapshot,
   type WorkflowSnapshot,
 } from "../display.js";
+import { asText } from "../navigator/as-text.js";
 import { shortModel } from "../navigator/format.js";
+import { groupAgentsByPhase, phaseTitle } from "../phase-groups.js";
 import type { PersistedRunState } from "../run-persistence.js";
 import { runSummary } from "../run-record-store.js";
 import type { WorkflowManager } from "../workflow-manager.js";
@@ -70,7 +72,8 @@ export function renderPanel(manager: WorkflowManager, theme: Theme, width?: numb
     const agents = live?.snapshot.agents;
     const done = agents ? agents.filter((a) => a.status === "done").length : summary.done;
     const icon = r.status === "paused" ? "⏸" : "◆";
-    const phase = live?.snapshot.currentPhase ? ` · ${live.snapshot.currentPhase}` : "";
+    const current = live?.snapshot.currentPhase;
+    const phase = current !== undefined ? ` · ${phaseTitle(current)}` : "";
     return `  ${icon} ${r.workflowName}  ${done}/${agents?.length ?? summary.total} agents${phase}`;
   });
   const pendingRows = pending.map((r) => `  ⏳ ${r.workflowName}  ${r.status}, result delivery pending`);
@@ -138,7 +141,7 @@ export function clampMaxAgents(value: number | undefined): number {
   return Math.min(1000, Math.floor(value));
 }
 
-/** Per-phase + per-agent body for one run in detailed mode (mirrors renderWorkflowText). */
+/** Per-phase + per-agent body for one run in detailed mode, in the shared phase order (see groupAgentsByPhase). */
 function renderRunBody(
   snap: WorkflowSnapshot,
   agents: WorkflowAgentSnapshot[],
@@ -147,28 +150,14 @@ function renderRunBody(
 ): string[] {
   const dim = (t: string) => theme.fg("dim", t);
   const lines: string[] = [];
-  // Group agents by phase, declared order first then discovery order (as the navigator does).
-  const order = snap.phases.length ? [...snap.phases] : [];
-  const byPhase = new Map<string, WorkflowAgentSnapshot[]>();
-  for (const a of agents) {
-    const key = a.phase ?? "(no phase)";
-    if (!byPhase.has(key)) byPhase.set(key, []);
-    byPhase.get(key)?.push(a);
-    if (!order.includes(key)) order.push(key);
-  }
-  for (const title of order) {
-    const phaseAgents = byPhase.get(title) ?? [];
+  for (const { phase, title, agents: phaseAgents, counts } of groupAgentsByPhase({ phases: snap.phases, agents })) {
     if (!phaseAgents.length) continue;
-    const done = phaseAgents.filter((a) => a.status === "done").length;
-    const running = phaseAgents.filter((a) => a.status === "running").length;
-    const errors = phaseAgents.filter((a) => a.status === "error").length;
-    const skipped = phaseAgents.filter((a) => a.status === "skipped").length;
-    const complete = done + errors + skipped === phaseAgents.length;
-    const marker = running > 0 || (!complete && snap.currentPhase === title) ? "▶" : complete ? "✓" : " ";
+    const complete = counts.done + counts.error + counts.skipped === phaseAgents.length;
+    const marker = counts.running > 0 || (!complete && snap.currentPhase === phase) ? "▶" : complete ? "✓" : " ";
     const phaseMeta = [
-      `${done}/${phaseAgents.length} agents`,
-      running ? `${running} running` : "",
-      errors ? `${errors} errors` : "",
+      `${counts.done}/${phaseAgents.length} agents`,
+      counts.running ? `${counts.running} running` : "",
+      counts.error ? `${counts.error} errors` : "",
       fmtTokenSegment(aggregateAgentUsage(phaseAgents), fmtCompact),
     ]
       .filter(Boolean)
@@ -181,7 +170,7 @@ function renderRunBody(
       const tok = segment ? dim(` ${segment}`) : "";
       const mdl = shortModel(a.model);
       const model = mdl ? dim(` · ${mdl}`) : "";
-      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(a.label, 40)}${tok}${model}`);
+      lines.push(`    [${a.id}] ${statusIcon(a.status)} ${shorten(asText(a.label), 40)}${tok}${model}`);
     }
     if (phaseAgents.length > visible.length) {
       lines.push(dim(`    … ${phaseAgents.length - visible.length} earlier agents`));
@@ -224,7 +213,7 @@ export function renderPanelDetailed(
     const rate = r.status === "running" ? tokensPerSecond(r.runId) : 0;
     const meta = [
       `${done}/${snap ? agents.length : summary.total} agents`,
-      snap?.currentPhase || "",
+      snap?.currentPhase !== undefined ? phaseTitle(snap.currentPhase) : "",
       fmtTokenSegment(runUsage, fmtCompact),
       // Cost is known only once the run finalizes its usage.
       usage?.cost ? fmtCost(usage.cost) : "",
