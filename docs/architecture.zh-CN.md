@@ -86,6 +86,7 @@ WorkflowAgent.run()                          agent.ts
 | `live-runs.ts` | 让内存中的运行与磁盘记录保持一致，忽略已被替代的旧执行 |
 | `record-ops.ts` | 对本进程不拥有的记录，在租约保护下修改 |
 | `resume-state.ts` | 从磁盘记录重建运行，以便恢复 |
+| `run-restart.ts` | 从运行记录得出重启（另起一个新运行）所需的脚本、参数和执行选项（如 toolset）；所有重启入口都用它 |
 | `task-list-reuse.ts` | 修改后的任务列表：把没变的任务映射到原来的调用 |
 | `checkpoint-response.ts` | 暂停点：附加回应，恢复时校验 |
 | `abort-control.ts` / `execution-settlement.ts` | 记录用户的暂停或停止造成的中止，并有界地等待执行收尾 |
@@ -137,6 +138,7 @@ WorkflowAgent.run()                          agent.ts
 | `fs-persistence.ts` | 原子写入、备份等文件系统基础操作 |
 | `workflow-paths.ts` | 目录布局：`~/.pi/workflows/projects/<项目键>/`；Windows 上同一目录的不同写法共用一个项目键 |
 | `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`）：项目级和用户级两层，项目级优先 |
+| `run-save.ts` | 把运行的脚本存为工作流：判断新建、内容相同（跳过，不冲掉备份）或替换同名的不同工作流（调用方先确认，写入前再核对目标未变） |
 | `shared-store.ts` / `logger.ts` | 运行内的键值存储；运行日志 `<runId>.log` |
 
 ### 投递与界面层

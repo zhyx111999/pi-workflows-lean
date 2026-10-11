@@ -14,11 +14,13 @@ export type SavedItemIdentity = {
   revision: string;
 };
 
-export type ItemIdentity = { kind: "run"; runId: string } | SavedItemIdentity;
+export type RunItemIdentity = { kind: "run"; runId: string };
+
+export type ItemIdentity = RunItemIdentity | SavedItemIdentity;
 
 export interface VisibleRunItem {
   kind: "run";
-  identity: Extract<ItemIdentity, { kind: "run" }>;
+  identity: RunItemIdentity;
   row: RunRow;
 }
 

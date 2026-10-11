@@ -1,10 +1,10 @@
 /** Applies navigator key presses for each input mode: text entry, confirmation, and browsing. */
 
 import type { NavAction, NavigatorModel, NavigatorState } from "../workflow-ui.js";
-import type { ConfirmKind } from "./confirmation.js";
+import { CONFIRM_KEYS } from "./confirmation.js";
 import { savedIdentity } from "./items.js";
 import { executeRunConfirmation, restartRun } from "./run-actions.js";
-import { commitRename, deleteSavedWorkflow, saveRunAsWorkflow } from "./saved-actions.js";
+import { commitRename, deleteSavedWorkflow, saveRunAsWorkflow, writeRunSave } from "./saved-actions.js";
 import { currentSnapshot, type NavigatorSession } from "./session.js";
 
 /** Filter and rename fields own every keystroke, so pasted text never reaches browse bindings. */
@@ -18,22 +18,28 @@ export function handleTextInput(session: NavigatorSession, key: string | undefin
   } else state.appendInput(data);
 }
 
-/** Only the key that asked confirms (p for pause, x for stop or delete); any other key cancels. */
+/** Only the key that asked confirms (see CONFIRM_KEYS); any other key cancels. */
 export function handleConfirmKey(session: NavigatorSession, key: string | undefined): void {
   const { state } = session;
-  const pendingAction = state.confirmationAction;
-  const action: ConfirmKind | undefined =
-    (pendingAction === "pause" && key === "p") ||
-    ((pendingAction === "stop" || pendingAction === "deleteSaved") && key === "x")
-      ? pendingAction
-      : undefined;
-  const target = action ? state.confirm(action, currentSnapshot(session)) : undefined;
-  if (!target || !action) {
+  const pending = state.confirmation?.action;
+  const request =
+    pending && key === CONFIRM_KEYS[pending] ? state.confirm(pending, currentSnapshot(session)) : undefined;
+  if (!request) {
     state.cancelConfirmation();
     return;
   }
-  if (target.kind === "run") executeRunConfirmation(session, action, target.runId);
-  else if (action === "deleteSaved") deleteSavedWorkflow(session, target);
+  switch (request.action) {
+    case "pause":
+    case "stop":
+      executeRunConfirmation(session, request.action, request.target.runId);
+      return;
+    case "deleteSaved":
+      deleteSavedWorkflow(session, request.target);
+      return;
+    case "replaceSaved":
+      writeRunSave(session, request.save);
+      return;
+  }
 }
 
 function currentCount(state: NavigatorState, model: NavigatorModel): number {
@@ -90,17 +96,17 @@ export function runBrowseAction(session: NavigatorSession, action: NavAction, cl
       return false;
     case "deleteSaved": {
       const workflow = state.activeSaved(snapshot(), model.saved());
-      if (workflow) state.beginConfirmation("deleteSaved", savedIdentity(workflow), snapshot());
+      if (workflow) state.beginConfirmation({ action: "deleteSaved", target: savedIdentity(workflow) }, snapshot());
       return true;
     }
     case "pause": {
       const runId = state.activeRunId(model, snapshot());
-      if (runId) state.beginConfirmation("pause", { kind: "run", runId }, snapshot());
+      if (runId) state.beginConfirmation({ action: "pause", target: { kind: "run", runId } }, snapshot());
       return true;
     }
     case "stop": {
       const runId = state.activeRunId(model, snapshot());
-      if (runId) state.beginConfirmation("stop", { kind: "run", runId }, snapshot());
+      if (runId) state.beginConfirmation({ action: "stop", target: { kind: "run", runId } }, snapshot());
       return true;
     }
     case "restart":
