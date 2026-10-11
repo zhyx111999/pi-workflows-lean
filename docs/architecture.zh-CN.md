@@ -123,7 +123,7 @@ WorkflowAgent.run()                          agent.ts
 | `child-session.ts` | 打开子会话；不加载主会话扩展，所以隐藏提示词不会传给子代理 |
 | `session-managers.ts` | 会话放在内存还是磁盘；同名 `thread` 复用同一个会话 |
 | `resource-loaders.ts` / `provider-middleware.ts` | 资源加载器按目录共享；只放行白名单里的 provider 中间件 |
-| `turn-result.ts` | 取结果：结构化输出，或最后一个工具结果之后的回答文字 |
+| `turn-result.ts` | 取结果：每次 `prompt()` 后先确认回合正常结束（未取消、无 provider 错误），再取结构化输出，或最后一个工具结果之后的回答文字 |
 | `turn-progress.ts` / `session-usage.ts` | 向宿主汇报历史快照和 token 用量 |
 | `provider-limit.ts` | 识别额度或限流错误，让运行暂停而不是失败 |
 | `windows-cwd.ts` | 拒绝 Windows 启动进程时会被悄悄换掉的目录 |

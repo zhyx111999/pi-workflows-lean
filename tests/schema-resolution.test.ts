@@ -2,11 +2,32 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Type } from "typebox";
 import { lastAssistantError, throwIfProviderLimit } from "../src/agent/provider-limit.js";
-import { extractValidated, resolveStructuredOutput, type StructuredSession } from "../src/agent/turn-result.js";
-import { WorkflowErrorCode } from "../src/errors.js";
+import {
+  assertTurnCompleted,
+  extractValidated,
+  finalAssistantText,
+  lastAssistantText,
+  resolveStructuredOutput,
+  type StructuredSession,
+} from "../src/agent/turn-result.js";
+import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { StructuredOutputCapture } from "../src/structured-output.js";
 
 const Schema = Type.Object({ word: Type.String() });
+const USAGE_LIMIT = "Codex usage limit reached. Resets in ~3h.";
+
+function assistant(text: string, end: { stopReason?: string; errorMessage?: string } = {}) {
+  return { role: "assistant", content: text ? [{ type: "text", text }] : [], stopReason: "stop", ...end };
+}
+
+function isWorkflowError(code: WorkflowErrorCode, recoverable: boolean) {
+  return (error: unknown) => {
+    assert.ok(error instanceof WorkflowError, `expected a WorkflowError, got ${String(error)}`);
+    assert.equal(error.code, code);
+    assert.equal(error.recoverable, recoverable);
+    return true;
+  };
+}
 
 describe("extractValidated", () => {
   it("extracts a fenced ```json block that validates", () => {
@@ -33,89 +54,194 @@ describe("extractValidated", () => {
   it("returns undefined for malformed JSON", () => {
     assert.equal(extractValidated("{word: ", Schema), undefined);
   });
+
+  it("ignores brackets inside JSON strings", () => {
+    assert.deepEqual(extractValidated('result: {"word":"a } character"} done', Schema), { word: "a } character" });
+    assert.deepEqual(extractValidated('see {"word":"[ unclosed"} above', Schema), { word: "[ unclosed" });
+  });
+
+  it("honors escaped quotes and backslashes inside JSON strings", () => {
+    assert.deepEqual(extractValidated('answer: {"word":"say \\"}\\" now"}.', Schema), { word: 'say "}" now' });
+    assert.deepEqual(extractValidated('answer: {"word":"ends in \\\\"} ok', Schema), { word: "ends in \\" });
+  });
+
+  it("parses an answer that is entirely JSON before looking for fences or brackets", () => {
+    assert.deepEqual(extractValidated('{"word":"use ```json fences```"}', Schema), { word: "use ```json fences```" });
+  });
+
+  it("finds the payload behind a stray or mismatched bracket in the prose", () => {
+    assert.deepEqual(extractValidated('See [1] and { this note: {"word":"hi"}', Schema), { word: "hi" });
+    assert.deepEqual(extractValidated('a [ mismatched } pair, then {"word":"hi"}', Schema), { word: "hi" });
+  });
+});
+
+describe("assertTurnCompleted", () => {
+  it("accepts a turn that ended normally, even when its text mentions a rate limit", () => {
+    assert.doesNotThrow(() => assertTurnCompleted([assistant("I handled the rate limit gracefully")], {}));
+    assert.doesNotThrow(() => assertTurnCompleted([], {}));
+  });
+
+  it("rejects a cancelled turn as WORKFLOW_ABORTED", () => {
+    const controller = new AbortController();
+    controller.abort();
+    assert.throws(
+      () => assertTurnCompleted([assistant("finished anyway")], { signal: controller.signal }),
+      isWorkflowError(WorkflowErrorCode.WORKFLOW_ABORTED, true),
+    );
+    assert.throws(
+      () => assertTurnCompleted([assistant("half an ans", { stopReason: "aborted" })], {}),
+      isWorkflowError(WorkflowErrorCode.WORKFLOW_ABORTED, true),
+    );
+  });
+
+  it("rejects a provider limit as a non-recoverable PROVIDER_USAGE_LIMIT", () => {
+    assert.throws(
+      () => assertTurnCompleted([assistant("", { stopReason: "error", errorMessage: USAGE_LIMIT })], { label: "l" }),
+      (error: unknown) => {
+        isWorkflowError(WorkflowErrorCode.PROVIDER_USAGE_LIMIT, false)(error);
+        assert.equal((error as WorkflowError).resetHint, "Resets in ~3h");
+        assert.equal((error as WorkflowError).agentLabel, "l");
+        return true;
+      },
+    );
+  });
+
+  it("rejects any other provider error as a recoverable AGENT_EXECUTION_ERROR with the provider message", () => {
+    const failed = [assistant("half an ans", { stopReason: "error", errorMessage: "socket disconnected" })];
+    assert.throws(
+      () => assertTurnCompleted(failed, { label: "l" }),
+      (error: unknown) => {
+        isWorkflowError(WorkflowErrorCode.AGENT_EXECUTION_ERROR, true)(error);
+        assert.equal((error as WorkflowError).message, "socket disconnected");
+        assert.equal((error as WorkflowError).agentLabel, "l");
+        return true;
+      },
+    );
+  });
+
+  it("judges the turn by its last assistant message, so a request the SDK retried successfully passes", () => {
+    const retried = [assistant("half", { stopReason: "error", errorMessage: "socket hang up" }), assistant("full")];
+    assert.doesNotThrow(() => assertTurnCompleted(retried, {}));
+  });
+});
+
+describe("assistant text never comes from a failed message", () => {
+  it("skips the fragment left by a request the SDK retried or aborted", () => {
+    const retried = [assistant("half an ans", { stopReason: "error", errorMessage: "socket hang up" }), assistant("")];
+    assert.equal(finalAssistantText(retried), "");
+    assert.equal(lastAssistantText(retried), "");
+    assert.equal(lastAssistantText([assistant('{"word":"cut', { stopReason: "aborted" })]), "");
+  });
 });
 
 describe("resolveStructuredOutput", () => {
   const opts = { maxSchemaRetries: 2 };
-  const noText = () => "";
+  type Capture = StructuredOutputCapture<{ word: string }>;
 
-  function makeSession(behavior: { callAfter?: number } = {}): {
-    session: StructuredSession;
-    capture: StructuredOutputCapture<{ word: string }>;
-    prompts: () => number;
-  } {
+  /** A repair session whose prompts append each scripted reply to the turn transcript. */
+  function makeSession(
+    replies: Array<(capture: Capture) => unknown> = [],
+    turnMessages: unknown[] = [],
+  ): { session: StructuredSession; turnMessages: unknown[]; capture: Capture; prompts: () => number } {
     let prompts = 0;
-    const capture: StructuredOutputCapture<{ word: string }> = { called: false, value: undefined };
+    const capture: Capture = { called: false, value: undefined };
     const session: StructuredSession = {
       async prompt() {
-        prompts++;
-        if (behavior.callAfter && prompts >= behavior.callAfter) {
-          capture.called = true;
-          capture.value = { word: "ok" };
-        }
+        const reply = replies[prompts++];
+        turnMessages.push(reply ? reply(capture) : assistant(""));
       },
       setActiveToolsByName() {},
-      messages: [],
     };
-    return { session, capture, prompts: () => prompts };
+    return { session, turnMessages, capture, prompts: () => prompts };
+  }
+
+  function callsTool(capture: Capture) {
+    capture.called = true;
+    capture.value = { word: "ok" };
+    return { role: "assistant", content: [{ type: "toolCall", name: "structured_output" }], stopReason: "toolUse" };
   }
 
   it("returns the captured value without re-prompting when already called", async () => {
-    const { session, capture, prompts } = makeSession();
+    const { session, turnMessages, capture, prompts } = makeSession();
     capture.called = true;
     capture.value = { word: "done" };
-    assert.deepEqual(await resolveStructuredOutput(session, capture, Schema, opts, noText), { word: "done" });
+    assert.deepEqual(await resolveStructuredOutput(session, turnMessages, capture, Schema, opts), { word: "done" });
     assert.equal(prompts(), 0, "no repair prompts when already called");
   });
 
   it("recovers via a bounded repair re-prompt", async () => {
-    const { session, capture, prompts } = makeSession({ callAfter: 1 });
-    assert.deepEqual(await resolveStructuredOutput(session, capture, Schema, opts, noText), { word: "ok" });
+    const { session, turnMessages, capture, prompts } = makeSession([callsTool]);
+    assert.deepEqual(await resolveStructuredOutput(session, turnMessages, capture, Schema, opts), { word: "ok" });
     assert.equal(prompts(), 1, "one repair prompt recovered it");
   });
 
-  it("falls back to strict prose extraction when repair fails", async () => {
-    const { session, capture } = makeSession();
-    const r = await resolveStructuredOutput(session, capture, Schema, opts, () => '{"word":"fromProse"}');
+  it("falls back to strict prose extraction from the turn transcript when repair fails", async () => {
+    const { session, turnMessages, capture } = makeSession([], [assistant('{"word":"fromProse"}')]);
+    const r = await resolveStructuredOutput(session, turnMessages, capture, Schema, opts);
     assert.deepEqual(r, { word: "fromProse" });
   });
 
   it("throws SCHEMA_NONCOMPLIANCE when repair and extraction both fail", async () => {
-    const { session, capture } = makeSession();
+    const { session, turnMessages, capture } = makeSession([], [assistant("no json at all")]);
     await assert.rejects(
-      () => resolveStructuredOutput(session, capture, Schema, opts, () => "no json at all"),
-      /structured_output/i,
+      () => resolveStructuredOutput(session, turnMessages, capture, Schema, opts),
+      isWorkflowError(WorkflowErrorCode.SCHEMA_NONCOMPLIANCE, false),
     );
   });
 
-  it("honors an aborted signal", async () => {
-    const { session, capture } = makeSession();
-    const ctrl = new AbortController();
-    ctrl.abort();
+  it("surfaces a provider limit hit during repair instead of returning earlier prose JSON", async () => {
+    const { session, turnMessages, capture, prompts } = makeSession(
+      [() => assistant("", { stopReason: "error", errorMessage: USAGE_LIMIT })],
+      [assistant('{"word":"stale"}')],
+    );
     await assert.rejects(
-      () => resolveStructuredOutput(session, capture, Schema, { ...opts, signal: ctrl.signal }, noText),
-      /aborted/i,
+      () => resolveStructuredOutput(session, turnMessages, capture, Schema, opts),
+      isWorkflowError(WorkflowErrorCode.PROVIDER_USAGE_LIMIT, false),
+    );
+    assert.equal(prompts(), 1, "no further repair prompt after the limit");
+  });
+
+  it("retries a repair turn that ended in another provider error instead of returning earlier prose JSON", async () => {
+    const { session, turnMessages, capture } = makeSession(
+      [() => assistant('{"word":"cut', { stopReason: "error", errorMessage: "socket disconnected" })],
+      [assistant('{"word":"stale"}')],
+    );
+    await assert.rejects(
+      () => resolveStructuredOutput(session, turnMessages, capture, Schema, opts),
+      isWorkflowError(WorkflowErrorCode.AGENT_EXECUTION_ERROR, true),
     );
   });
 
-  it("surfaces a provider usage limit hit during repair as PROVIDER_USAGE_LIMIT (not SCHEMA_NONCOMPLIANCE)", async () => {
-    const { session, capture } = makeSession();
-    // The repair re-prompts ran but the turn ended in a buried provider limit.
-    session.messages = [
-      {
-        role: "assistant",
-        content: [],
-        stopReason: "error",
-        errorMessage: "Codex usage limit reached. Resets in ~3h.",
-      },
-    ];
+  it("rejects when the last repair turn is cancelled instead of returning earlier prose JSON", async () => {
+    const controller = new AbortController();
+    const { session, turnMessages, capture } = makeSession(
+      [
+        () => assistant("still prose"),
+        () => {
+          controller.abort();
+          return assistant("", { stopReason: "aborted" });
+        },
+      ],
+      [assistant('{"word":"stale"}')],
+    );
     await assert.rejects(
-      () => resolveStructuredOutput(session, capture, Schema, opts, () => "no json at all"),
-      (err: unknown) => {
-        assert.equal((err as { code?: string }).code, WorkflowErrorCode.PROVIDER_USAGE_LIMIT);
-        assert.equal((err as { recoverable?: boolean }).recoverable, false);
-        return true;
+      () => resolveStructuredOutput(session, turnMessages, capture, Schema, { ...opts, signal: controller.signal }),
+      isWorkflowError(WorkflowErrorCode.WORKFLOW_ABORTED, true),
+    );
+  });
+
+  it("does not accept a value captured by a repair turn that was then cancelled", async () => {
+    const controller = new AbortController();
+    const { session, turnMessages, capture } = makeSession([
+      (turnCapture) => {
+        const message = callsTool(turnCapture);
+        controller.abort();
+        return message;
       },
+    ]);
+    await assert.rejects(
+      () => resolveStructuredOutput(session, turnMessages, capture, Schema, { ...opts, signal: controller.signal }),
+      isWorkflowError(WorkflowErrorCode.WORKFLOW_ABORTED, true),
     );
   });
 });
