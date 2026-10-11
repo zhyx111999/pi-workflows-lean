@@ -4,9 +4,8 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { AgentHistoryEntry } from "./agent-history.js";
-import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
-import type { PriorAgentExecution } from "./display.js";
+import type { RunTokenUsage } from "./agent-usage.js";
+import type { WorkflowAgentSnapshot } from "./display.js";
 import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import {
   isDeadLockDebris,
@@ -23,44 +22,19 @@ import {
   resolvePersistenceFs,
   unlinkIfExistsSafe,
 } from "./fs-persistence.js";
+import type { AgentTimestamps } from "./manager/agent-rows.js";
 import { settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import { createRunRecordStore } from "./run-record-store.js";
-
 import type { WorkflowCheckpoint } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "completed" | "failed" | "aborted";
 
-export interface PersistedAgentState {
-  id: number;
-  /** Runtime call identity (`${runId}:${callIndex}`), used to rehydrate journaled results. */
-  callId?: string;
-  label: string;
-  phase?: string;
-  prompt: string;
-  status: "queued" | "running" | "done" | "error" | "skipped";
-  result?: unknown;
-  /** One-line result summary for the progress panel. */
-  resultPreview?: string;
-  error?: string;
-  errorCode?: WorkflowErrorCode;
-  recoverable?: boolean;
-  history?: AgentHistoryEntry[];
-  startedAt?: string;
-  endedAt?: string;
-  /** Tokens used by this agent (a scalar estimate when the provider reports no usage). */
-  tokens?: number;
-  /** Per-agent token usage breakdown, when the provider reported one. */
-  tokenUsage?: AgentUsage;
-  /** The model this agent ran on (provider/id), when known. */
-  model?: string;
-  /** Child SessionManager identity, captured before the first prompt. */
-  sessionId?: string;
-  /** Child session file, absent for in-memory child sessions. */
-  sessionFile?: string;
-  /** Earlier executions of this call, oldest first; see WorkflowAgentSnapshot.priorExecutions. */
-  priorExecutions?: PriorAgentExecution[];
-}
+/**
+ * An agent row as the record keeps it: the display row, plus when its latest
+ * execution ran, which the live snapshot keeps beside its rows.
+ */
+export interface PersistedAgentState extends WorkflowAgentSnapshot, Partial<AgentTimestamps> {}
 
 /** Serialized journal entry, keyed by the call's index (see JournalEntry). */
 export interface PersistedJournalEntry {

@@ -24,28 +24,15 @@ export function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
   const snapshotAgents = agents.map((a, callIndex) => {
     const journalResult = a.callId ? journalByCallId.get(a.callId) : journalByIndex.get(callIndex);
     const result = a.result === undefined && a.status === "done" ? journalResult : a.result;
+    // The record's row is the display row plus its timestamps, which the snapshot keeps elsewhere.
+    const { startedAt: _startedAt, endedAt: _endedAt, ...row } = a;
     return {
-      id: a.id,
-      callId: a.callId,
-      label: a.label,
-      phase: a.phase,
-      prompt: a.prompt,
-      status: a.status,
+      ...row,
       result,
       // A string result is its own preview; anything else is stringified once
       // here, and the model caches this snapshot per record.
       resultPreview:
         result === undefined ? a.resultPreview : String(typeof result === "string" ? result : JSON.stringify(result)),
-      error: a.error,
-      errorCode: a.errorCode,
-      recoverable: a.recoverable,
-      history: a.history,
-      tokens: a.tokens,
-      tokenUsage: a.tokenUsage,
-      model: a.model,
-      sessionId: a.sessionId,
-      sessionFile: a.sessionFile,
-      priorExecutions: a.priorExecutions,
     };
   });
   return {

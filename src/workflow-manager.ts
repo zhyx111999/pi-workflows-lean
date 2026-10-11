@@ -13,6 +13,7 @@ import { DEFAULT_MAX_AGENTS } from "./config.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 import { abortForLifecycleControl, type LifecycleControl } from "./manager/abort-control.js";
+import type { AgentTimestamps } from "./manager/agent-rows.js";
 import { attachCheckpointResponse, checkpointAlreadyConsumed } from "./manager/checkpoint-response.js";
 import { waitForPausedExecutionSettlement } from "./manager/execution-settlement.js";
 import { LiveRuns } from "./manager/live-runs.js";
@@ -37,8 +38,6 @@ import {
 } from "./run-persistence.js";
 import type { SubagentTask } from "./subagent-tasks.js";
 import type { JournalEntry, WorkflowCheckpoint, WorkflowRunResult } from "./workflow.js";
-
-type AgentTimestamps = { startedAt: string; endedAt?: string };
 
 export interface ManagedRun {
   runId: string;

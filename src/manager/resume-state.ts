@@ -12,10 +12,8 @@ import {
 } from "../run-persistence.js";
 import type { JournalEntry } from "../workflow.js";
 import type { ManagedRun } from "../workflow-manager.js";
-import { supersedeAgentRow } from "./agent-rows.js";
+import { type AgentTimestamps, supersedeAgentRow } from "./agent-rows.js";
 import { retargetAgentRow, type TaskListMoves } from "./task-list-reuse.js";
-
-type AgentTimestamps = { startedAt: string; endedAt?: string };
 
 export interface ResumeInput {
   runId: string;

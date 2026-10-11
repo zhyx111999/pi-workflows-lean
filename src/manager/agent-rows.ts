@@ -2,7 +2,8 @@
 
 import type { PriorAgentExecution, WorkflowAgentSnapshot } from "../display.js";
 
-type AgentTimestamps = { startedAt: string; endedAt?: string };
+/** When one agent row's execution ran. The live snapshot keeps these beside its rows; the record keeps them in each row. */
+export type AgentTimestamps = { startedAt: string; endedAt?: string };
 
 /**
  * The id for a new row. A superseding row replaces a row rather than being
