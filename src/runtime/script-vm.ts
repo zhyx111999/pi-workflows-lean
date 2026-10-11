@@ -4,6 +4,7 @@ import vm from "node:vm";
 import type { WorkflowLogger } from "../logger.js";
 import { WORKFLOW_CAPABILITY_CONTRACT } from "../workflow-capability-contract.js";
 import { DETERMINISM_PRELUDE } from "./determinism.js";
+import { LOOP_GUARD_NAME } from "./loop-guard.js";
 
 /** Its own script, so it adds no lines in front of the body. */
 const PRELUDE = new vm.Script(DETERMINISM_PRELUDE, { filename: "workflow-prelude.js" });
@@ -35,10 +36,19 @@ const PROMISE_PROTOTYPE = new vm.Script("Promise.prototype");
  * first await, and bounding the later continuations (microtaskMode
  * "afterEvaluate") terminates code inside a microtask, which aborts the whole
  * Node process whenever async hooks are active (AsyncLocalStorage on Node 22,
- * node:test, APM agents). Bounding a runaway script needs a worker thread.
+ * node:test, APM agents). A runaway loop is bounded by the loop guard instead.
  */
-export function runScript(context: vm.Context, body: string, filename: string): Promise<unknown> {
-  // The body starts one line below the wrapper header, so stack traces show the author's line numbers.
-  const wrapped = `"use strict";(async () => {\n${body}\n})()`;
-  return new vm.Script(wrapped, { filename, lineOffset: -1 }).runInContext(context);
+export function runScript(
+  context: vm.Context,
+  body: string,
+  filename: string,
+  loopGuard: () => void,
+): Promise<unknown> {
+  // The body starts one line below the wrapper header, so stack traces show the
+  // author's line numbers. The loop guard is a parameter, not a global.
+  const wrapped = `"use strict";(${LOOP_GUARD_NAME}) => (async () => {\n${body}\n})()`;
+  const start = new vm.Script(wrapped, { filename, lineOffset: -1 }).runInContext(context) as (
+    guard: () => void,
+  ) => Promise<unknown>;
+  return start(loopGuard);
 }

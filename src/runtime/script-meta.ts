@@ -9,11 +9,12 @@ import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import type { WorkflowMeta, WorkflowMetaPhase } from "../workflow.js";
 import { assertDeterministicProgram } from "./determinism.js";
 
-/** The validated meta object and the source range of the statement that declares it. */
+/** The validated meta object, the source range of the statement that declares it, and the parsed script. */
 interface MetaExport {
   meta: WorkflowMeta;
   start: number;
   end: number;
+  program: Program;
 }
 
 /** The author has to edit the script to fix any of these, so none is retryable. */
@@ -50,7 +51,7 @@ export function readMetaExport(script: string): MetaExport {
   const meta = evaluateLiteral(declarator.init, "meta");
   validateMeta(meta);
   assertDeterministicProgram(program);
-  return { meta, start: first.start, end: first.end };
+  return { meta, start: first.start, end: first.end, program };
 }
 
 function parseScript(script: string): Program {

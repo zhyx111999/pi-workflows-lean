@@ -31,6 +31,7 @@ import { createAgent } from "./runtime/agent-call.js";
 import { createCheckpoint } from "./runtime/checkpoint.js";
 import { cloneDurableJsonValue } from "./runtime/durable-json.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
+import { createLoopGuard, guardLoops } from "./runtime/loop-guard.js";
 import { createRunContext, createRuntimeState, type RunContext } from "./runtime/run-context.js";
 import { resolveAgentTimeoutMs, resolveConcurrency } from "./runtime/run-limits.js";
 import { finishRun, type ScriptOutcome } from "./runtime/run-teardown.js";
@@ -352,6 +353,7 @@ export async function runWorkflow<T = unknown>(
   // started and settles the run.
   let outcome: ScriptOutcome;
   let stopRoutingRejections = () => {};
+  const loopGuard = createLoopGuard(() => ctx.throwIfAborted());
   try {
     const context = createScriptContext(createScriptGlobals(ctx), logger);
     // Promises the script makes itself must not take the host down if it leaves one rejected.
@@ -360,14 +362,18 @@ export async function runWorkflow<T = unknown>(
       rejected: (promise, reason) => own.set(promise, reason),
       handled: (promise) => own.delete(promise),
     });
-    outcome = { ok: true, value: await runScript(context, body, `${meta.name || "workflow"}.js`) };
+    outcome = { ok: true, value: await runScript(context, body, `${meta.name || "workflow"}.js`, loopGuard.check) };
   } catch (error) {
     outcome = { ok: false, error };
   }
+  // A script that held the thread too long fails even if it caught the guard's error.
+  const runaway = loopGuard.tripped();
+  if (runaway) outcome = { ok: false, error: runaway };
   let result: T;
   try {
     result = (await finishRun(ctx, outcome)) as T;
   } finally {
+    loopGuard.dispose();
     stopRoutingRejections();
   }
 
@@ -418,8 +424,10 @@ function createScriptGlobals(ctx: RunContext) {
 
 /** Split a script into its validated literal `meta` and the body that runs in the vm. */
 export function parseWorkflowScript(script: string): { meta: WorkflowMeta; body: string } {
-  const { meta, start, end } = readMetaExport(script);
+  const { meta, start, end, program } = readMetaExport(script);
+  // Loop guards are inserted after the meta statement only, so its range still holds.
+  const guarded = guardLoops(script, program);
   // Keep the meta statement's line breaks, so body line N is still script line N in stack traces.
   const metaLineBreaks = script.slice(start, end).replace(/[^\n\r\u2028\u2029]/g, "");
-  return { meta, body: script.slice(0, start) + metaLineBreaks + script.slice(end) };
+  return { meta, body: guarded.slice(0, start) + metaLineBreaks + guarded.slice(end) };
 }
