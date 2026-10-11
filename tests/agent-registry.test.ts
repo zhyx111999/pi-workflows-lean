@@ -10,7 +10,6 @@ import {
   type AgentRegistry,
   agentDefinitionKey,
   applyToolPolicy,
-  listAgentTypes,
   loadAgentRegistry,
   parseAgentDefinition,
   resolveAgentType,
@@ -186,7 +185,7 @@ describe("loadAgentRegistry", () => {
   });
 });
 
-describe("resolveAgentType / listAgentTypes", () => {
+describe("resolveAgentType", () => {
   const reg: AgentRegistry = new Map([
     ["a", { name: "a", description: "A agent", prompt: "be a", source: "project" } as AgentDefinition],
   ]);
@@ -194,9 +193,6 @@ describe("resolveAgentType / listAgentTypes", () => {
     assert.equal(resolveAgentType("a", reg)?.name, "a");
     assert.equal(resolveAgentType("missing", reg), undefined);
     assert.equal(resolveAgentType(undefined, reg), undefined);
-  });
-  it("lists names + descriptions", () => {
-    assert.deepEqual(listAgentTypes(reg), [{ name: "a", description: "A agent" }]);
   });
 });
 

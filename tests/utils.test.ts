@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import fsModule, { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -243,6 +244,122 @@ describe("logger", () => {
           `${message} appears exactly once after retry`,
         );
       }
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  /** Parse a log file, requiring every line to be one complete `[time] [LEVEL] message` entry. */
+  function completeEntries(content: string): string[] {
+    return content
+      .trimEnd()
+      .split("\n")
+      .map((line) => {
+        const match = /^\[\d{4}-\d\d-\d\dT[\d:.]+Z\] \[(?:INFO|WARN|ERROR)\] (.*)$/.exec(line);
+        assert.ok(match, `log line is one complete entry: ${JSON.stringify(line)}`);
+        return match[1];
+      });
+  }
+
+  /**
+   * Run `body` while chosen appends write only the first 12 characters and then
+   * fail with ENOSPC, the way a filling disk tears a write.
+   */
+  async function withTornAppends(body: (tearNextAppend: () => void) => void | Promise<void>) {
+    const realAppend = fsModule.appendFileSync;
+    let tear = false;
+    fsModule.appendFileSync = ((path, data, options) => {
+      if (!tear) return realAppend(path, data, options);
+      tear = false;
+      realAppend(path, String(data).slice(0, 12));
+      throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+    }) as typeof realAppend;
+    syncBuiltinESMExports();
+    try {
+      await body(() => {
+        tear = true;
+      });
+    } finally {
+      fsModule.appendFileSync = realAppend;
+      syncBuiltinESMExports();
+    }
+  }
+
+  it("a torn append is cut back to the last complete entry before the retry", async () => {
+    const { createWorkflowLogger } = await loadLogger();
+    const cwd = mkdtempSync(join(tmpdir(), "pi-wf-log-"));
+    try {
+      await withTornAppends((tearNextAppend) => {
+        const log = createWorkflowLogger({ cwd, runId: "run-torn" });
+        tearNextAppend(); // the very first append creates the file and tears
+        log.log("first");
+        log.log("second");
+        tearNextAppend(); // a later append tears after complete entries
+        log.warn("third");
+        log.error("fourth");
+        const file = log.persist();
+        assert.ok(file);
+        assert.deepEqual(completeEntries(readFileSync(file, "utf8")), ["first", "second", "third", "fourth"]);
+      });
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("a torn tail that cannot be cut back at once is cut back before the next append", async () => {
+    const { createWorkflowLogger } = await loadLogger();
+    const cwd = mkdtempSync(join(tmpdir(), "pi-wf-log-"));
+    const realTruncate = fsModule.truncateSync;
+    let failTruncate = false;
+    fsModule.truncateSync = ((path, len) => {
+      if (!failTruncate) return realTruncate(path, len);
+      failTruncate = false;
+      throw Object.assign(new Error("EBUSY: resource busy or locked, open"), { code: "EBUSY" });
+    }) as typeof realTruncate;
+    syncBuiltinESMExports();
+    try {
+      await withTornAppends((tearNextAppend) => {
+        const log = createWorkflowLogger({ cwd, runId: "run-torn-busy" });
+        log.log("first");
+        tearNextAppend();
+        failTruncate = true;
+        log.log("second");
+        const file = log.persist();
+        assert.ok(file);
+        assert.deepEqual(completeEntries(readFileSync(file, "utf8")), ["first", "second"]);
+      });
+    } finally {
+      fsModule.truncateSync = realTruncate;
+      syncBuiltinESMExports();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("cutting back a torn append keeps entries another logger appended to the same run log", async () => {
+    const { createWorkflowLogger } = await loadLogger();
+    const cwd = mkdtempSync(join(tmpdir(), "pi-wf-log-"));
+    try {
+      await withTornAppends((tearNextAppend) => {
+        // A superseded execution can still be settling while its resumed
+        // successor writes the same `<runId>.log`.
+        const settling = createWorkflowLogger({ cwd, runId: "run-shared" });
+        const resumed = createWorkflowLogger({ cwd, runId: "run-shared" });
+        settling.log("settling-1");
+        resumed.log("resumed-1");
+        tearNextAppend();
+        settling.log("settling-2");
+        resumed.log("resumed-2");
+        settling.log("settling-3");
+        const file = settling.persist();
+        assert.ok(file);
+        assert.deepEqual(completeEntries(readFileSync(file, "utf8")), [
+          "settling-1",
+          "resumed-1",
+          "resumed-2",
+          "settling-2",
+          "settling-3",
+        ]);
+      });
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }

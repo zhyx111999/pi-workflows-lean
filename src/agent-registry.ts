@@ -192,8 +192,3 @@ export function agentDefinitionKey(def: AgentDefinition | undefined): string | n
     prompt: def.prompt,
   });
 }
-
-/** List registered agent types for discoverability in the tool guideline. */
-export function listAgentTypes(registry: AgentRegistry): Array<{ name: string; description?: string }> {
-  return [...registry.values()].map((d) => ({ name: d.name, description: d.description }));
-}
