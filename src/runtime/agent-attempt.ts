@@ -65,14 +65,6 @@ export function dispatchAttempt(
     model: call.modelSpec,
     thinking: agentOptions.thinking ?? definition?.thinking,
     tier: agentOptions.tier,
-    modelSource:
-      agentOptions.model || definition?.model
-        ? "explicit"
-        : agentOptions.tier
-          ? "tier"
-          : call.modelSpec
-            ? "phase"
-            : undefined,
     modelRegistry: options.modelRegistry,
     toolNames: definition?.tools,
     disallowedToolNames: definition?.disallowedTools,

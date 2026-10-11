@@ -58,15 +58,6 @@ import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
 
-export const WORKFLOW_LIFECYCLE_EVENT = "pi-dynamic-workflows:lifecycle";
-
-export interface WorkflowLifecycleEvent {
-  status: "started" | "resumed" | "paused" | "completed" | "failed" | "stopped";
-  runId: string;
-  name: string;
-  sessionId?: string;
-}
-
 export interface TaskPanelOptions {
   storage?: WorkflowStorage;
   cwd?: string;
@@ -375,8 +366,6 @@ export function resumeResultDelivery(manager: WorkflowManager): void {
 
 type DeliveryManager = WorkflowManager & {
   __deliveryInstalled?: boolean;
-  __lifecycleEventInstalled?: boolean;
-  __lifecycleEventEmitter?: (data: WorkflowLifecycleEvent) => void;
   /** Last loadSettings seen on install — used when binding endpoints. */
   __deliveryLoadSettings?: () => WorkflowSettings;
 };
@@ -413,40 +402,6 @@ export function installResultDelivery(
   const m = deliveryManager(manager);
   m.__deliveryLoadSettings = opts.loadSettings;
   patchAgentSessionCapture();
-
-  m.__lifecycleEventEmitter = (data) => pi.events?.emit(WORKFLOW_LIFECYCLE_EVENT, data);
-  if (!m.__lifecycleEventInstalled) {
-    m.__lifecycleEventInstalled = true;
-    const emitLifecycle =
-      (status: WorkflowLifecycleEvent["status"]) =>
-      ({ runId }: { runId: string }) => {
-        const run = manager.getRun(runId);
-        const persistence = manager.getPersistence();
-        const persisted = run
-          ? undefined
-          : persistence.loadPreview
-            ? persistence.loadPreview(runId)
-            : persistence.load(runId);
-        const lifecycle = run?.background
-          ? { name: run.snapshot.name, sessionId: resolveDeliverySessionId(run, manager) }
-          : persisted
-            ? { name: persisted.workflowName, sessionId: persisted.sessionId }
-            : undefined;
-        if (!lifecycle) return;
-        m.__lifecycleEventEmitter?.({
-          status,
-          runId,
-          name: lifecycle.name,
-          ...(lifecycle.sessionId ? { sessionId: lifecycle.sessionId } : {}),
-        });
-      };
-    manager.on("started", emitLifecycle("started"));
-    manager.on("resumed", emitLifecycle("resumed"));
-    manager.on("paused", emitLifecycle("paused"));
-    manager.on("complete", emitLifecycle("completed"));
-    manager.on("error", emitLifecycle("failed"));
-    manager.on("stopped", emitLifecycle("stopped"));
-  }
 
   // After each turn, bind the session if its send was not captured yet, then
   // flush whatever is still pending for it.

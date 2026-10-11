@@ -32,7 +32,6 @@ import {
   validateThinkingLevel,
 } from "./model-spec.js";
 import { loadModelTierConfig, type ModelTierConfig } from "./model-tier-config.js";
-import type { ModelSource, PreSpawnModelResolver } from "./pre-spawn-model.js";
 import type { StructuredOutputCapture } from "./structured-output.js";
 
 export type { AgentUsage } from "./agent-usage.js";
@@ -80,12 +79,6 @@ export interface WorkflowAgentOptions {
    * default with a run-visible warning instead of throwing.
    */
   inheritMainModel?: boolean;
-  /**
-   * Optional host policy run after model-intent resolution and before
-   * createAgentSession. Per-instance; a per-run `AgentRunOptions.preSpawnModel`
-   * overrides this, which overrides {@link setPreSpawnModelResolver}.
-   */
-  preSpawnModel?: PreSpawnModelResolver;
   /**
    * Shared model registry from the host Pi session. When provided, subagents
    * resolve tier/model specs against the same registry the main session uses,
@@ -154,13 +147,6 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    * script never asked for that model.
    */
   tier?: string;
-  /**
-   * Provenance of `model`/`tier` as known by the caller (workflow layer).
-   * When omitted, it is inferred from model/tier/resolved spec.
-   */
-  modelSource?: ModelSource;
-  /** Per-run host policy; overrides the instance and process resolvers. */
-  preSpawnModel?: PreSpawnModelResolver;
   /**
    * Called with the resolved model id once known (for display/telemetry). When
    * no spec resolved (settings default, implicit-route degrade, or an empty
@@ -264,7 +250,6 @@ export class WorkflowAgent {
     this.models = new AgentModelSelector({
       mainModel: options.mainModel,
       inheritMainModel: options.inheritMainModel ?? false,
-      preSpawnModel: options.preSpawnModel,
       loadTierConfig: () => this.loadTierConfig(),
       listModels: listAvailableModels,
     });
@@ -320,7 +305,7 @@ export class WorkflowAgent {
 
     // 2. Which model it runs on.
     const modelRegistry = await this.getRegistry(options.modelRegistry);
-    const choice = await this.models.select(options, modelRegistry);
+    const choice = this.models.select(options, modelRegistry);
 
     // 3. The session it runs in. Persisted sessions are keyed by the runner's
     //    project cwd, not runCwd, so short-lived worktree agents still group

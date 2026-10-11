@@ -9,7 +9,7 @@ import { WorkflowAgent } from "../src/agent.js";
 import { agentDefinitionKey } from "../src/agent-registry.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
-test("separate thinking, suffix, and policy precedence reach actual SDK provider options", async () => {
+test("separate thinking and a model suffix reach actual SDK provider options, the suffix winning", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-thinking-options-"));
   const provider = "fauxtest-thinking-options";
   const modelId = "literal:high";
@@ -41,7 +41,7 @@ test("separate thinking, suffix, and policy precedence reach actual SDK provider
           },
         ],
       });
-      core.setResponses(Array.from({ length: 3 }, () => fauxAssistantMessage("ok", { stopReason: "stop" })));
+      core.setResponses(Array.from({ length: 2 }, () => fauxAssistantMessage("ok", { stopReason: "stop" })));
       const agent = new WorkflowAgent({ cwd: root, modelRegistry: new ModelRegistry(runtime) });
       const selected: string[] = [];
       await agent.run("task", {
@@ -54,25 +54,11 @@ test("separate thinking, suffix, and policy precedence reach actual SDK provider
         thinking: "low",
         onModelResolved: (value) => selected.push(value),
       });
-      await agent.run("task", {
-        model: `${provider}/${modelId}`,
-        thinking: "high",
-        onModelResolved: (value) => selected.push(value),
-        preSpawnModel: (ctx) => {
-          assert.equal(ctx.requestedThinking, "high");
-          return { action: "use", model: `${provider}/${modelId}:low` };
-        },
-      });
       assert.deepEqual(requests, [
         { model: modelId, reasoning: "low" },
         { model: modelId, reasoning: "high" },
-        { model: modelId, reasoning: "low" },
       ]);
-      assert.deepEqual(selected, [
-        `${provider}/${modelId}:low`,
-        `${provider}/${modelId}:high`,
-        `${provider}/${modelId}:low`,
-      ]);
+      assert.deepEqual(selected, [`${provider}/${modelId}:low`, `${provider}/${modelId}:high`]);
     });
   } finally {
     rmSync(root, { recursive: true, force: true });

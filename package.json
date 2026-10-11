@@ -4,14 +4,6 @@
   "private": true,
   "description": "Lean fork of pi-dynamic-workflows 3.13.0. The parent model dispatches subagents; cross-check helpers and foreground runs are removed.",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
   "scripts": {
     "test": "npm run check && npm run build && npm run docs:check && npm run context:check && npm run test:unit",
     "test:unit": "tsx --test --import ./tests/helpers/isolated-home.ts tests/**/*.test.ts",
@@ -24,8 +16,7 @@
     "docs:generate": "tsx scripts/generate-workflow-capabilities.ts",
     "docs:check": "tsx scripts/generate-workflow-capabilities.ts --check",
     "context:generate": "tsx scripts/generate-workflow-context-measurement.ts",
-    "context:check": "tsx scripts/generate-workflow-context-measurement.ts --check",
-    "dev": "tsx src/index.ts"
+    "context:check": "tsx scripts/generate-workflow-context-measurement.ts --check"
   },
   "keywords": [
     "pi-package",
