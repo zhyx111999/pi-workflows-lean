@@ -256,6 +256,13 @@ test("a hung git is bounded by the exec timeout", {
   }
 });
 
+/**
+ * Timeout for a worktree add whose hook must finish its setup (git commands, a
+ * node process) before the timeout fires. Generous, because the whole suite
+ * runs test files in parallel and a short one raced the hook under load.
+ */
+const HOOK_SETUP_TIMEOUT_MS = 10_000;
+
 /** Quote a value as one POSIX shell word. */
 const shellWord = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
@@ -316,17 +323,19 @@ test("a timed-out worktree add cleans up only its half-created branch, tree, and
 
     process.env.GIT_TRACE = commandLog;
     const started = Date.now();
-    // 2s is comfortably above the tiny repo's real `worktree add` plus the
-    // hook's fixture commands (a shorter timeout can kill the add under load
-    // before it registers, which makes the cleanup assertions vacuous).
-    const wt = await createWorktreeLive(repo, "run-addhang-0-task", { timeoutMs: 2_000 }).finally(() => {
-      delete process.env.GIT_TRACE;
-    });
+    // The timeout must outlast the hook's fixture commands even on a loaded
+    // machine (the full test suite runs files in parallel); killing the add
+    // before the hook is ready would make the cleanup assertions vacuous.
+    const wt = await createWorktreeLive(repo, "run-addhang-0-task", { timeoutMs: HOOK_SETUP_TIMEOUT_MS }).finally(
+      () => {
+        delete process.env.GIT_TRACE;
+      },
+    );
     const elapsed = Date.now() - started;
 
     assert.equal(wt.isolated, false);
     assert.match(wt.reason ?? "", /timed out/, "an honest timeout reason, not 'not a git repository'");
-    assert.ok(elapsed < 15_000, `bounded (took ${elapsed}ms)`);
+    assert.ok(elapsed < HOOK_SETUP_TIMEOUT_MS + 10_000, `bounded (took ${elapsed}ms)`);
     assert.equal(
       readFileSync(fixtureReady, "utf8"),
       "ready\n",
@@ -413,7 +422,7 @@ test("a timed-out worktree add ends the hook processes git started, so cleanup i
     git("add", ".");
     git("commit", "-qm", "init");
 
-    const timeoutMs = 2_000;
+    const timeoutMs = HOOK_SETUP_TIMEOUT_MS;
     const started = Date.now();
     const wt = await createWorktreeLive(repo, "run-hooktree-0-task", { timeoutMs });
     const elapsed = Date.now() - started;
