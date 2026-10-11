@@ -19,7 +19,7 @@ import { resolveAgentModelSpec } from "../src/agent/model-selection.js";
 import { isProviderMiddlewareExtensionPath } from "../src/agent/provider-middleware.js";
 import { DEFAULT_EXCLUDED_SUBAGENT_TOOLS, subagentExcludedTools } from "../src/agent/session-tools.js";
 import { usageFromStats } from "../src/agent/session-usage.js";
-import { lastAssistantText } from "../src/agent/turn-result.js";
+import { finalAssistantText, lastAssistantText } from "../src/agent/turn-result.js";
 import type { AgentRunOptions } from "../src/agent.js";
 import { DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS, WorkflowAgent } from "../src/agent.js";
 import type { AgentUsage } from "../src/agent-usage.js";
@@ -39,7 +39,6 @@ import { readProviderSystemPrompt } from "./helpers/pi-context.js";
 // Private methods used for testing - cast to this type to access them without `any`
 type WorkflowAgentPrivates = {
   buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string;
-  finalAssistantText(messages: unknown[]): string;
   createSessionManager(thread?: string, cwd?: string): SessionManager;
   restoreThreadLeaf(manager: SessionManager, leafId: string | null): void;
   getRegistry(perRunRegistry?: ModelRegistry): Promise<ModelRegistry>;
@@ -2379,28 +2378,25 @@ const progressThenToolResult = [
   { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "command output" }] },
 ];
 
-test("finalAssistantText rejects progress text before a terminal tool result (#111)", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const text = (agent as unknown as WorkflowAgentPrivates).finalAssistantText(progressThenToolResult);
+test("finalAssistantText rejects progress text before a terminal tool result", () => {
+  const text = finalAssistantText(progressThenToolResult);
   assert.equal(text, "", "text emitted before the final tool result is not a final answer");
 });
 
-test("finalAssistantText accepts a real assistant answer AFTER tools (#111)", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
+test("finalAssistantText accepts a real assistant answer AFTER tools", () => {
   const messages = [
     { role: "assistant", content: [{ type: "text", text: "Let me check." }] },
     { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: {} }] },
     { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "output" }] },
     { role: "assistant", content: [{ type: "text", text: "The answer is 42." }] },
   ];
-  const text = (agent as unknown as WorkflowAgentPrivates).finalAssistantText(messages);
+  const text = finalAssistantText(messages);
   assert.equal(text, "The answer is 42.", "a genuine post-tool answer still counts");
 });
 
-test("finalAssistantText returns a plain answer when no tools were used (#111)", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
+test("finalAssistantText returns a plain answer when no tools were used", () => {
   const messages = [{ role: "assistant", content: [{ type: "text", text: "Direct answer." }] }];
-  const text = (agent as unknown as WorkflowAgentPrivates).finalAssistantText(messages);
+  const text = finalAssistantText(messages);
   assert.equal(text, "Direct answer.");
 });
 

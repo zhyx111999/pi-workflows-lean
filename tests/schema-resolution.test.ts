@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import test, { describe, it } from "node:test";
 import { Type } from "typebox";
 import { lastAssistantError, throwIfProviderLimit } from "../src/agent/provider-limit.js";
 import {
   assertTurnCompleted,
   extractValidated,
+  finalAnswer,
   finalAssistantText,
   lastAssistantText,
   resolveStructuredOutput,
@@ -295,4 +296,34 @@ describe("lastAssistantError / throwIfProviderLimit", () => {
       throwIfProviderLimit([{ role: "assistant", content: [], stopReason: "error", errorMessage: "network blip" }]),
     );
   });
+});
+
+test("finalAnswer rejects an answer cut off at the output limit as recoverable, and an empty one", () => {
+  const cutOff = [{ role: "assistant", stopReason: "length", content: [{ type: "text", text: "The first half of" }] }];
+  assert.throws(
+    () => finalAnswer(cutOff, { label: "a" }),
+    (error: WorkflowError) => error.code === WorkflowErrorCode.AGENT_EXECUTION_ERROR && error.recoverable,
+  );
+  const empty = [{ role: "assistant", stopReason: "stop", content: [] }];
+  assert.throws(
+    () => finalAnswer(empty, { label: "a" }),
+    (error: WorkflowError) => error.code === WorkflowErrorCode.AGENT_EMPTY_OUTPUT,
+  );
+  const whole = [{ role: "assistant", stopReason: "stop", content: [{ type: "text", text: "Done." }] }];
+  assert.equal(finalAnswer(whole, { label: "a" }), "Done.");
+});
+
+test("extractValidated scans prose in linear time, even past many unclosed brackets", () => {
+  const schema = Type.Object({ ok: Type.Boolean() });
+  const prose = `${"{ [ ".repeat(50_000)} then the payload {"ok": true}`;
+  const started = performance.now();
+  assert.deepEqual(extractValidated(prose, schema), { ok: true });
+  assert.ok(performance.now() - started < 1_000, "one pass, not one pass per bracket");
+});
+
+test("extractValidated still finds a payload inside a bracket that never closes or closes wrongly", () => {
+  const schema = Type.Object({ ok: Type.Boolean() });
+  assert.deepEqual(extractValidated('Note (see [1}: {"ok": true}', schema), { ok: true });
+  assert.deepEqual(extractValidated('{ unclosed prose {"ok": false} and more', schema), { ok: false });
+  assert.deepEqual(extractValidated('{"word": "a } b", "ok": true}', schema), { word: "a } b", ok: true });
 });

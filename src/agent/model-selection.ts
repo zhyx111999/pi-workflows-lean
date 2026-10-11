@@ -120,13 +120,14 @@ export class AgentModelSelector {
     if (resolved.warning) console.warn(`[workflow] ${resolved.warning}`);
     if (!resolved.model) {
       if (request.model || request.tier) {
-        const message = request.model
-          ? (resolved.error ?? `Model "${modelSpec}" not found. Use /workflows-models to choose an available model.`)
-          : `tier "${request.tier}" from model-tiers.json resolves to "${modelSpec}", which is not available. Use /workflows-models to choose an available model.`;
-        throw new WorkflowError(message, WorkflowErrorCode.MODEL_NOT_FOUND, {
-          recoverable: false,
-          agentLabel: request.label,
-        });
+        throw new WorkflowError(
+          unavailableModelMessage(request, modelSpec, resolved.error),
+          WorkflowErrorCode.MODEL_NOT_FOUND,
+          {
+            recoverable: false,
+            agentLabel: request.label,
+          },
+        );
       }
       if (!this.warnedImplicitRouteUnavailable) {
         this.warnedImplicitRouteUnavailable = true;
@@ -147,6 +148,15 @@ export class AgentModelSelector {
     );
     return { model: resolved.model, thinkingLevel: resolved.thinkingLevel ?? request.thinking };
   }
+}
+
+/** Why an explicitly requested model or tier cannot run, naming where the spec came from. */
+function unavailableModelMessage(request: ModelRequest, modelSpec: string, resolverError: string | undefined): string {
+  const origin = request.model
+    ? `Model "${modelSpec}"`
+    : `tier "${request.tier}" from model-tiers.json ("${modelSpec}")`;
+  const reason = (resolverError ?? "it is not available").replace(/.?$/, ".");
+  return `${origin} cannot be used: ${reason} Use /workflows-models to choose an available model.`;
 }
 
 /**

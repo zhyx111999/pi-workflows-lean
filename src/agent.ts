@@ -18,7 +18,7 @@ import { SharedResourceLoaders } from "./agent/resource-loaders.js";
 import { SessionManagers } from "./agent/session-managers.js";
 import { buildSubagentTools, subagentExcludedTools } from "./agent/session-tools.js";
 import { TurnProgress } from "./agent/turn-progress.js";
-import { assertTurnCompleted, finalAssistantText, resolveStructuredOutput } from "./agent/turn-result.js";
+import { assertTurnCompleted, finalAnswer, resolveStructuredOutput } from "./agent/turn-result.js";
 import { assertProcessesStartIn } from "./agent/windows-cwd.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { AgentUsage } from "./agent-usage.js";
@@ -409,13 +409,7 @@ export class WorkflowAgent {
 
       // A threaded session's restored transcript never enters turnMessages, so
       // an empty turn cannot reuse an old answer.
-      const text = this.finalAssistantText(turnMessages);
-      if (!text.trim()) {
-        throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
-          recoverable: true,
-          agentLabel: options.label,
-        });
-      }
+      const text = finalAnswer(turnMessages, options);
       threadTurnSucceeded = true;
       return text as AgentRunResult<TSchemaDef>;
     } finally {
@@ -501,10 +495,6 @@ export class WorkflowAgent {
       );
     }
     return parts.join("\n\n");
-  }
-
-  private finalAssistantText(messages: unknown[]): string {
-    return finalAssistantText(messages);
   }
 }
 

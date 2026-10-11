@@ -133,48 +133,53 @@ function validatedJson<T>(json: string, schema: TSchema): T | undefined {
   return undefined;
 }
 
-/**
- * Each balanced {...} or [...] span, left to right. A bracket that closes with
- * the wrong kind or never closes was prose, not JSON, so the scan resumes right
- * after it and a payload behind a stray bracket is still found.
- */
-function* balancedJsonSpans(text: string): Generator<string> {
-  const opener = /[{[]/g;
-  let match = opener.exec(text);
-  while (match) {
-    const end = closingBracketIndex(text, match.index);
-    if (end !== -1) yield text.slice(match.index, end + 1);
-    opener.lastIndex = end === -1 ? match.index + 1 : end + 1;
-    match = opener.exec(text);
-  }
+/** An open bracket during the scan, and the balanced spans that closed inside it. */
+interface OpenBracket {
+  at: number;
+  closer: "}" | "]";
+  inner: Array<[number, number]>;
 }
 
 /**
- * The index of the bracket that closes the one at `start`, or -1. Brackets inside
- * JSON strings, including after escaped quotes, do not count.
+ * Each maximal balanced {...} or [...] span, left to right, in one pass. A
+ * bracket that closes with the wrong kind or never closes was prose, not JSON:
+ * the balanced spans inside it then count on their own, so a payload behind a
+ * stray bracket is still found. Brackets inside JSON strings, including after
+ * escaped quotes, do not count.
  */
-function closingBracketIndex(text: string, start: number): number {
-  const expected: string[] = [];
+function* balancedJsonSpans(text: string): Generator<string> {
+  const open: OpenBracket[] = [];
   let inString = false;
   let escaped = false;
-  for (let i = start; i < text.length; i++) {
+  // Every open bracket was prose: what balanced inside them stands alone, in text order.
+  const abandon = function* () {
+    for (const bracket of open) for (const [start, end] of bracket.inner) yield text.slice(start, end);
+    open.length = 0;
+    inString = false;
+  };
+  for (let i = 0; i < text.length; i++) {
     const char = text[i];
     if (inString) {
       if (escaped) escaped = false;
       else if (char === "\\") escaped = true;
       else if (char === '"') inString = false;
     } else if (char === '"') {
-      inString = true;
-    } else if (char === "{") {
-      expected.push("}");
-    } else if (char === "[") {
-      expected.push("]");
+      inString = open.length > 0;
+    } else if (char === "{" || char === "[") {
+      open.push({ at: i, closer: char === "{" ? "}" : "]", inner: [] });
     } else if (char === "}" || char === "]") {
-      if (expected.pop() !== char) return -1;
-      if (expected.length === 0) return i;
+      const bracket = open.at(-1);
+      if (bracket?.closer !== char) {
+        yield* abandon();
+        continue;
+      }
+      open.pop();
+      const parent = open.at(-1);
+      if (parent) parent.inner.push([bracket.at, i + 1]);
+      else yield text.slice(bracket.at, i + 1);
     }
   }
-  return -1;
+  yield* abandon();
 }
 
 /**
@@ -194,6 +199,29 @@ export function lastAssistantText(messages: unknown[]): string {
  */
 export function finalAssistantText(messages: unknown[]): string {
   return assistantTextAfter(messages, lastToolResultIndex(messages));
+}
+
+/**
+ * The answer of a completed unstructured turn, or a recoverable error: no text
+ * at all (AGENT_EMPTY_OUTPUT), or text the model's output limit cut off, which
+ * would otherwise be journaled as if it were the whole answer.
+ */
+export function finalAnswer(turnMessages: unknown[], options: TurnCheckOptions): string {
+  const text = finalAssistantText(turnMessages);
+  if (!text.trim()) {
+    throw new WorkflowError("Subagent produced no assistant output", WorkflowErrorCode.AGENT_EMPTY_OUTPUT, {
+      recoverable: true,
+      agentLabel: options.label,
+    });
+  }
+  if (lastAssistantError(turnMessages)?.stopReason === "length") {
+    throw new WorkflowError(
+      "Subagent answer was cut off at the model's output limit",
+      WorkflowErrorCode.AGENT_EXECUTION_ERROR,
+      { recoverable: true, agentLabel: options.label },
+    );
+  }
+  return text;
 }
 
 function lastToolResultIndex(messages: unknown[]): number {
