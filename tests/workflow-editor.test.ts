@@ -363,6 +363,34 @@ describe("registerWorkflowProgressCommands", () => {
     assert.match(sent.at(-1)?.content ?? "", /Usage: \/workflows-progress max <1-1000>/);
   });
 
+  it("reports a failed save as not applied instead of claiming a session-only change", async () => {
+    const { commands, sent, pi } = setup();
+    const failingStore = {
+      load: () => ({ progressPanelMode: "compact" as const, progressPanelMaxAgents: 8 }),
+      save: () => {
+        throw new Error("EACCES: permission denied");
+      },
+    };
+    registerWorkflowProgressCommands(pi, failingStore);
+
+    const cmd = commands.get("workflows-progress");
+    assert.ok(cmd, "registers /workflows-progress");
+
+    await cmd.handler("detailed", {});
+    const modeReply = sent.at(-1)?.content ?? "";
+    assert.doesNotMatch(modeReply, /for this session|set to detailed/i);
+    assert.match(modeReply, /not saved/i);
+    assert.match(modeReply, /still compact/i);
+    assert.match(modeReply, /EACCES: permission denied/);
+
+    await cmd.handler("max 12", {});
+    const maxReply = sent.at(-1)?.content ?? "";
+    assert.doesNotMatch(maxReply, /for this session|Set to 12/i);
+    assert.match(maxReply, /not saved/i);
+    assert.match(maxReply, /still shows up to 8 agents per phase/i);
+    assert.match(maxReply, /EACCES: permission denied/);
+  });
+
   it("is case-insensitive for subverbs", async () => {
     const { commands, sent, settingsStore, getSettings, pi } = setup();
     registerWorkflowProgressCommands(pi, settingsStore);
