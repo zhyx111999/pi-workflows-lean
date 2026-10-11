@@ -2,7 +2,7 @@
  * Workflow logger with file persistence.
  */
 
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { workflowProjectPaths } from "./workflow-paths.js";
 
@@ -37,10 +37,39 @@ export function createWorkflowLogger(options: WorkflowLoggerOptions = {}): Workf
   // A resumed logger starts at zero but only holds its new execution's logs, so
   // it appends without rewriting the earlier execution's file contents.
   let nextUnpersisted = 0;
+  // File length that ended with a complete entry before an append failed. A
+  // failed append can still leave part of its chunk on disk (ENOSPC mid-write),
+  // and a retry written after that fragment would glue onto it.
+  let tornAt: number | null = null;
+
+  /** Cut a failed append's fragment off the log; false while it is still there. */
+  const cutTornTail = (file: string): boolean => {
+    if (tornAt === null) return true;
+    try {
+      truncateSync(file, tornAt);
+    } catch (error) {
+      // A missing file has no fragment left to cut.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false;
+    }
+    tornAt = null;
+    return true;
+  };
 
   const flushPendingEntries = () => {
     if (!logFile || logs.length === nextUnpersisted) return;
-    appendFileSync(logFile, `${logs.slice(nextUnpersisted).join("\n")}\n`);
+    if (!cutTornTail(logFile)) throw new Error(`cannot cut a torn entry off ${logFile}`);
+    // Measured right before the append instead of summed from earlier appends:
+    // a superseded execution that is still settling may append to the same file.
+    const boundary = statSync(logFile, { throwIfNoEntry: false })?.size ?? 0;
+    try {
+      appendFileSync(logFile, `${logs.slice(nextUnpersisted).join("\n")}\n`);
+    } catch (error) {
+      tornAt = boundary;
+      // Cut at once, before another writer appends after the fragment; a cut
+      // that fails here is retried before the next append.
+      cutTornTail(logFile);
+      throw error;
+    }
     nextUnpersisted = logs.length;
   };
 

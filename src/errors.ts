@@ -10,7 +10,7 @@ export interface CapabilityErrorDiagnostic {
   message: string;
 }
 
-/** Stable runtime and persistence failure codes exposed to callers and UI surfaces. */
+/** Stable runtime failure codes exposed to callers and UI surfaces. */
 export enum WorkflowErrorCode {
   /** Agent exceeded timeout. */
   AGENT_TIMEOUT = "AGENT_TIMEOUT",
@@ -38,8 +38,6 @@ export enum WorkflowErrorCode {
   MODEL_NOT_FOUND = "MODEL_NOT_FOUND",
   /** Agent execution failed. */
   AGENT_EXECUTION_ERROR = "AGENT_EXECUTION_ERROR",
-  /** Run state persistence failed. */
-  PERSISTENCE_ERROR = "PERSISTENCE_ERROR",
   /** Unknown error. */
   UNKNOWN = "UNKNOWN",
 }
