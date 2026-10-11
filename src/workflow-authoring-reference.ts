@@ -13,7 +13,7 @@ const TABLE_START = "<!-- BEGIN GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";
 const TABLE_END = "<!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";
 
 /** Package-relative compact capability index generated from the contract. */
-export const CAPABILITY_INDEX_PATH = "skills/workflow-authoring/references/capabilities.md";
+const CAPABILITY_INDEX_PATH = "skills/workflow-authoring/references/capabilities.md";
 
 /** Documents that embed the byte-identical supported-capability table. */
 export const CAPABILITY_TABLE_PUBLICATION_PATHS = [

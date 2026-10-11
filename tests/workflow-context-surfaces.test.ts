@@ -113,7 +113,9 @@ test("workflow context measurement generation is deterministic and committed art
   assert.equal(first, second);
   assert.equal(readFileSync(join(ROOT, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8"), first);
   assert.equal(checkWorkflowContextMeasurement(ROOT), true);
-  assert.equal(checkWorkflowContextMeasurement(ROOT, `${first}stale`), false);
+  const stale = JSON.parse(first);
+  stale.surfaces.permanentToolPrompt.bytes += 1;
+  assert.equal(checkWorkflowContextMeasurement(ROOT, stale), false);
   assert.equal(packageJson.scripts["context:check"], `tsx ${CONTEXT_SCRIPT} --check`);
   assert.match(packageJson.scripts.test, /npm run context:check/);
 });
@@ -130,10 +132,10 @@ test("render, write, and freshness check all measure the package at the given ro
     assert.deepEqual(JSON.parse(rendered), measureWorkflowContextSurfaces(root));
     assert.notEqual(rendered, renderWorkflowContextMeasurement(ROOT));
 
-    assert.deepEqual(writeWorkflowContextMeasurement(root), JSON.parse(rendered));
+    writeWorkflowContextMeasurement(root);
     assert.equal(readFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8"), rendered);
     assert.equal(checkWorkflowContextMeasurement(root), true);
-    assert.equal(checkWorkflowContextMeasurement(ROOT, rendered), false);
+    assert.equal(checkWorkflowContextMeasurement(ROOT, measureWorkflowContextSurfaces(root)), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

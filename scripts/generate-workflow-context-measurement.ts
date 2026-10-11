@@ -8,7 +8,8 @@ import {
 
 const root = resolve(import.meta.dirname, "..");
 const check = process.argv.includes("--check");
-const measurement = check ? measureWorkflowContextSurfaces() : writeWorkflowContextMeasurement(root);
+// Measured once: the printed numbers are exactly the ones written or checked.
+const measurement = measureWorkflowContextSurfaces(root);
 const {
   permanentToolPrompt,
   providerVisibleToolDefinitions,
@@ -33,11 +34,12 @@ console.log(
 );
 console.log(`Representative authoring profile median: ${representativeAuthoringProfiles.medianBytes} bytes`);
 
-if (check && !checkWorkflowContextMeasurement(root)) {
-  console.error(`Stale workflow context measurement: ${WORKFLOW_CONTEXT_MEASUREMENT_PATH}`);
-  process.exitCode = 1;
-} else if (check) {
+if (!check) {
+  writeWorkflowContextMeasurement(root, measurement);
+  console.log(`Generated ${WORKFLOW_CONTEXT_MEASUREMENT_PATH}.`);
+} else if (checkWorkflowContextMeasurement(root, measurement)) {
   console.log("Workflow context measurement is fresh.");
 } else {
-  console.log(`Generated ${WORKFLOW_CONTEXT_MEASUREMENT_PATH}.`);
+  console.error(`Stale workflow context measurement: ${WORKFLOW_CONTEXT_MEASUREMENT_PATH}`);
+  process.exitCode = 1;
 }

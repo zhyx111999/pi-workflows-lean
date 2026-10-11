@@ -187,7 +187,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `script-contract`
 - Support: `supported`
 - Signature: —
-- Constraint: Date.now(), Math.random(), and no-argument new Date() are unavailable
+- Constraint: Date.now(), Date(), no-argument new Date(), Math.random(), and Intl.DateTimeFormat format()/formatToParts() without a date are unavailable
 - Constraint: pass timestamps and randomness through args
 
 <a id="compatibility"></a>
