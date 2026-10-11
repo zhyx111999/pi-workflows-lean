@@ -1,7 +1,7 @@
 /** Saved-workflow actions started from the navigator: save a run, rename, and delete, keeping `/name` commands in sync. */
 
 import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "../saved-commands.js";
-import { isSafeSavedWorkflowName, type SavedWorkflow } from "../workflow-saved.js";
+import { isSafeSavedWorkflowName, SAVED_WORKFLOW_NAME_RULE, type SavedWorkflow } from "../workflow-saved.js";
 import { type ItemIdentity, sameIdentity, savedIdentity } from "./items.js";
 import { currentStorage, type NavigatorSession } from "./session.js";
 
@@ -52,10 +52,7 @@ export function saveRunAsWorkflow(session: NavigatorSession, runId: string | und
 export function commitRename(session: NavigatorSession): void {
   const { pi, ui, model, state } = session;
   if (!isSafeSavedWorkflowName(state.draft)) {
-    ui.notify(
-      "Saved workflow name must be a non-empty slash-command-safe name without whitespace, controls, or paths.",
-      "warning",
-    );
+    ui.notify(SAVED_WORKFLOW_NAME_RULE, "warning");
     return;
   }
   const rename = state.takeRename();

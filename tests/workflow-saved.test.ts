@@ -1,27 +1,47 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { workflowProjectPaths } from "../src/workflow-paths.js";
-import { createWorkflowStorage, resolveSavedScriptPath } from "../src/workflow-saved.js";
+import {
+  createWorkflowStorage,
+  isSafeSavedWorkflowName,
+  resolveSavedScriptPath,
+  SAVED_WORKFLOW_NAME_RULE,
+} from "../src/workflow-saved.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 /**
  * Run tests with HOME overridden to a temp directory so the user-level
  * saved workflows directory (~/.pi/workflows/saved) is isolated.
  */
-function withIsolatedHome(fn: (cwd: string) => Promise<void>) {
-  return async () => {
+function withIsolatedHome(fn: (cwd: string, t: TestContext) => Promise<void>) {
+  return async (t: TestContext) => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-dw-ws-"));
     const fakeHome = mkdtempSync(join(tmpdir(), "pi-dw-home-"));
     try {
-      await withFakeHomeAsync(fakeHome, () => fn(cwd));
+      await withFakeHomeAsync(fakeHome, () => fn(cwd, t));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
       rmSync(fakeHome, { recursive: true, force: true });
     }
   };
+}
+
+/** Silence `console.warn` for one test and return the messages logged so far. */
+function captureWarnings(t: TestContext): () => string[] {
+  const warn = t.mock.method(console, "warn", () => {});
+  return () => warn.mock.calls.map((call) => String(call.arguments[0]));
 }
 
 test(
@@ -200,7 +220,10 @@ test(
   "createWorkflowStorage rejects path-unsafe workflow names",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    assert.throws(() => storage.save({ name: "../escape", description: "bad", script: "bad" }), /path-safe name/);
+    assert.throws(
+      () => storage.save({ name: "../escape", description: "bad", script: "bad" }),
+      (error: Error) => error.message === SAVED_WORKFLOW_NAME_RULE,
+    );
     assert.equal(storage.load("../escape"), null);
     assert.equal(storage.delete("../escape"), false);
     assert.equal(existsSync(join(workflowProjectPaths(cwd).rootDir, "escape.json")), false);
@@ -228,7 +251,8 @@ test(
 
 test(
   "createWorkflowStorage handles corrupted files gracefully",
-  withIsolatedHome(async (cwd) => {
+  withIsolatedHome(async (cwd, t) => {
+    const warnings = captureWarnings(t);
     const storage = createWorkflowStorage(cwd);
     const projectDir = workflowProjectPaths(cwd).savedDir;
     mkdirSync(projectDir, { recursive: true });
@@ -239,12 +263,15 @@ test(
     const list = storage.list();
     assert.ok(Array.isArray(list), "list should be an array");
     assert.equal(list.length, 0); // only corrupted file
+    assert.equal(warnings().length, 1);
+    assert.match(warnings()[0], /corrupted\.json: the file is unreadable or not valid JSON$/);
   }),
 );
 
 test(
   "createWorkflowStorage skips files with unsafe workflow names",
-  withIsolatedHome(async (cwd) => {
+  withIsolatedHome(async (cwd, t) => {
+    const warnings = captureWarnings(t);
     const storage = createWorkflowStorage(cwd);
     const projectDir = workflowProjectPaths(cwd).savedDir;
     mkdirSync(projectDir, { recursive: true });
@@ -262,6 +289,148 @@ test(
     );
 
     assert.deepEqual(storage.list(), []);
+    assert.deepEqual(warnings(), [
+      `[workflow] Skipped saved workflow ${join(projectDir, "unsafe.json")}: "name" is not valid. ${SAVED_WORKFLOW_NAME_RULE}`,
+    ]);
+  }),
+);
+
+test("saved workflow names are portable file names on every platform", () => {
+  const rejected: unknown[] = [
+    "review:branch",
+    "a<b",
+    "a>b",
+    'a"b',
+    "a|b",
+    "a?b",
+    "a*b",
+    "trailing.",
+    "trailing ",
+    ".",
+    "..",
+    "CON",
+    "con",
+    "Prn",
+    "AUX",
+    "nul",
+    "COM1",
+    "com9",
+    "COM¹",
+    "LPT1",
+    "lpt9",
+    "LPT³",
+    "CON.review",
+    "nul.tar.gz",
+    "",
+    "x".repeat(129),
+    ["review"],
+    123,
+    null,
+    undefined,
+    { length: 3 },
+  ];
+  for (const name of rejected) assert.equal(isSafeSavedWorkflowName(name), false, `rejects ${JSON.stringify(name)}`);
+
+  const accepted = [
+    "review-branch",
+    "v1.2",
+    "deep_research",
+    "CONSOLE",
+    "COM10",
+    "LPT",
+    "nullable",
+    "con-review",
+    "保存",
+  ];
+  for (const name of accepted) assert.equal(isSafeSavedWorkflowName(name), true, `accepts ${name}`);
+});
+
+test(
+  "save and rename refuse Windows-unsafe names before anything reaches disk",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    const source = storage.save({ name: "review", description: "d", script: "s" });
+    const before = readdirSync(workflowProjectPaths(cwd).savedDir).sort();
+
+    for (const name of ["review:branch", "CON", "lpt1.json", "review."]) {
+      assert.throws(
+        () => storage.save({ name, description: "d", script: "s" }),
+        (error: Error) => error.message === SAVED_WORKFLOW_NAME_RULE,
+        `save ${name}`,
+      );
+      assert.deepEqual(storage.rename(source, name), {
+        ok: false,
+        code: "invalid",
+        message: SAVED_WORKFLOW_NAME_RULE,
+      });
+      assert.equal(storage.load(name), null);
+      assert.equal(storage.delete(name), false);
+    }
+    assert.deepEqual(readdirSync(workflowProjectPaths(cwd).savedDir).sort(), before, "no stray file or stream");
+    assert.equal(storage.load("review")?.script, "s");
+  }),
+);
+
+test(
+  "list skips mistyped saved files with one warning each and keeps the valid rows",
+  withIsolatedHome(async (cwd, t) => {
+    const warnings = captureWarnings(t);
+    const storage = createWorkflowStorage(cwd);
+    storage.save({ name: "good", description: "kept", script: "s" });
+    storage.save({ name: "shadowed", description: "user copy", script: "user script" }, "user");
+    const dir = workflowProjectPaths(cwd).savedDir;
+    const bad: Record<string, unknown> = {
+      "array-name": { name: ["array-name"], description: "d", script: "s" },
+      "object-name": { name: { length: 3 }, description: "d", script: "s" },
+      "colon-name": { name: "review:branch", description: "d", script: "s" },
+      "device-name": { name: "NUL", description: "d", script: "s" },
+      "number-description": { name: "number-description", description: 7, script: "s" },
+      "number-script": { name: "number-script", description: "d", script: 42 },
+      "no-script": { name: "no-script", description: "d" },
+      "number-saved-at": { name: "number-saved-at", description: "d", script: "s", savedAt: 1 },
+      "array-parameters": { name: "array-parameters", description: "d", script: "s", parameters: [] },
+      "null-parameter": { name: "null-parameter", description: "d", script: "s", parameters: { topic: null } },
+      "untyped-parameter": { name: "untyped-parameter", description: "d", script: "s", parameters: { topic: {} } },
+      "array-file": [{ name: "array-file", description: "d", script: "s" }],
+      // A broken project copy must not hide the valid user copy of the same name.
+      shadowed: { name: "shadowed", description: "project copy", script: false },
+    };
+    for (const [file, data] of Object.entries(bad)) writeFileSync(join(dir, `${file}.json`), JSON.stringify(data));
+    writeFileSync(join(dir, "not-json.json"), "{ not json");
+
+    const listed = storage.list();
+    assert.deepEqual(
+      listed.map((workflow) => [workflow.name, workflow.location]),
+      [
+        ["good", "project"],
+        ["shadowed", "user"],
+      ],
+    );
+    assert.equal(storage.load("shadowed")?.script, "user script");
+    storage.list();
+
+    for (const file of [...Object.keys(bad), "not-json"]) {
+      const path = join(dir, `${file}.json`);
+      assert.equal(warnings().filter((message) => message.includes(path)).length, 1, `one warning for ${file}`);
+    }
+    assert.equal(warnings().length, Object.keys(bad).length + 1);
+  }),
+);
+
+test(
+  "load accepts a hand-written file without description or savedAt",
+  withIsolatedHome(async (cwd) => {
+    const dir = workflowProjectPaths(cwd).savedDir;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "minimal.json"),
+      JSON.stringify({ name: "minimal", script: "s", parameters: { topic: { type: "string", default: "x" } } }),
+    );
+    const loaded = createWorkflowStorage(cwd).load("minimal");
+    assert.equal(loaded?.script, "s");
+    assert.equal(loaded?.description, "");
+    assert.equal(loaded?.savedAt, "");
+    assert.deepEqual(loaded?.parameters, { topic: { type: "string", default: "x" } });
   }),
 );
 
@@ -490,7 +659,8 @@ test(
 
 test(
   "createWorkflowStorage load refuses a scriptPath that escapes the saved dir",
-  withIsolatedHome(async (cwd) => {
+  withIsolatedHome(async (cwd, t) => {
+    const warnings = captureWarnings(t);
     const storage = createWorkflowStorage(cwd);
     const savedDir = workflowProjectPaths(cwd).savedDir;
     mkdirSync(savedDir, { recursive: true });
@@ -501,12 +671,15 @@ test(
     );
     assert.equal(storage.load("escape"), null);
     assert.deepEqual(storage.list(), []);
+    assert.equal(warnings().length, 1, "load and list report the file once");
+    assert.match(warnings()[0], /escape\.json: "scriptPath" must be a relative file path inside the saved directory$/);
   }),
 );
 
 test(
   "createWorkflowStorage load returns null when scriptPath is missing on disk",
-  withIsolatedHome(async (cwd) => {
+  withIsolatedHome(async (cwd, t) => {
+    const warnings = captureWarnings(t);
     const storage = createWorkflowStorage(cwd);
     const savedDir = workflowProjectPaths(cwd).savedDir;
     mkdirSync(savedDir, { recursive: true });
@@ -515,6 +688,8 @@ test(
       JSON.stringify({ name: "missing-js", description: "gone", scriptPath: "nope.js" }),
     );
     assert.equal(storage.load("missing-js"), null);
+    assert.equal(warnings().length, 1);
+    assert.match(warnings()[0], /missing-js\.json: cannot read "scriptPath": ENOENT/);
   }),
 );
 
