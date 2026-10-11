@@ -33,6 +33,34 @@ test("compactAgentHistory captures user, assistant, tool call, and tool result e
   );
 });
 
+test("compactAgentHistory keeps tool call ids and read paths so parallel results pair with their calls", () => {
+  const history = compactAgentHistory([
+    {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "call-ts", name: "read", arguments: { path: "src/a.ts" } },
+        { type: "toolCall", id: "call-py", name: "read", arguments: { path: "b.py" } },
+        { type: "toolCall", id: "call-ls", name: "ls", arguments: { path: "src" } },
+      ],
+    },
+    { role: "toolResult", toolCallId: "call-ts", toolName: "read", content: [{ type: "text", text: "ts" }] },
+    { role: "toolResult", toolCallId: "call-py", toolName: "read", content: [{ type: "text", text: "py" }] },
+    { role: "toolResult", toolCallId: "call-ls", toolName: "ls", content: [{ type: "text", text: "a.ts" }] },
+  ]);
+
+  assert.deepEqual(
+    history.map((entry) => [entry.kind, entry.toolCallId, entry.path]),
+    [
+      ["toolCall", "call-ts", "src/a.ts"],
+      ["toolCall", "call-py", "b.py"],
+      ["toolCall", "call-ls", undefined],
+      ["toolResult", "call-ts", undefined],
+      ["toolResult", "call-py", undefined],
+      ["toolResult", "call-ls", undefined],
+    ],
+  );
+});
+
 test("compactAgentHistory stores write source without its raw JSON envelope", () => {
   const history = compactAgentHistory(
     [
