@@ -4,6 +4,8 @@ import type { WorkflowManager } from "../workflow-manager.js";
 import type { NavigatorState } from "../workflow-ui.js";
 
 const RUN_EVENTS = [
+  "started",
+  "deleted",
   "agentStart",
   "agentModel",
   "agentEnd",

@@ -244,9 +244,31 @@ export class NavigatorState {
     top.cursor = snapshot.items.length ? Math.max(0, Math.min(top.cursor, snapshot.items.length - 1)) : 0;
     if (snapshot.items.length) top.selected = snapshot.items[top.cursor]?.identity;
   }
+  /** The selected item for drawing; a vanished selection moves to its nearest row. */
   currentItem(snapshot: NavigatorSnapshot): VisibleNavigatorItem | undefined {
     this.reconcile(snapshot);
-    return snapshot.items.find((item) => sameIdentity(this.top().selected, item.identity));
+    return this.selectedItem(snapshot);
+  }
+  /**
+   * The item an action applies to: exactly the one the user last saw selected.
+   * Unlike currentItem() it never moves the selection, so a run or workflow
+   * that vanished since the last redraw (deleted, renamed, filtered out) gives
+   * no target rather than its neighbour.
+   */
+  selectedItem(snapshot: NavigatorSnapshot): VisibleNavigatorItem | undefined {
+    // Nothing is selected before the first draw; the row under the cursor is then the selection.
+    if (!this.top().selected) this.reconcile(snapshot);
+    const selected = this.top().selected;
+    return selected ? snapshot.items.find((item) => sameIdentity(selected, item.identity)) : undefined;
+  }
+  /** The kind of the row selected in the runs list, whether or not it is still listed. */
+  selectedKind(snapshot: NavigatorSnapshot): ItemKind | undefined {
+    if (this.kind !== "runs") return undefined;
+    return this.selectedItem(snapshot)?.kind ?? this.top().selected?.kind;
+  }
+  /** Whether the runs list's selection names an item that is no longer listed. */
+  selectionVanished(snapshot: NavigatorSnapshot): boolean {
+    return this.kind === "runs" && this.top().selected !== undefined && !this.selectedItem(snapshot);
   }
   clamp(count: number) {
     const top = this.top();
@@ -331,7 +353,7 @@ export class NavigatorState {
     const top = this.top();
     if (top.kind === "runs") {
       const snapshot = provided ?? model.visible(this.filter);
-      const item = this.currentItem(snapshot);
+      const item = this.selectedItem(snapshot);
       if (!item) return false;
       this.cancelConfirmation();
       if (item.kind === "run") {
@@ -398,12 +420,12 @@ export class NavigatorState {
   activeRunId(model: NavigatorModel, snapshot?: NavigatorSnapshot): string | undefined {
     if (this.runId) return this.runId;
     if (this.kind !== "runs") return undefined;
-    const item = this.currentItem(snapshot ?? model.visible(this.filter));
+    const item = this.selectedItem(snapshot ?? model.visible(this.filter));
     return item?.kind === "run" ? item.row.runId : undefined;
   }
   activeSaved(snapshot: NavigatorSnapshot, allSaved: SavedWorkflow[]): SavedWorkflow | undefined {
     if (this.kind === "runs") {
-      const item = this.currentItem(snapshot);
+      const item = this.selectedItem(snapshot);
       return item?.kind === "saved" ? item.workflow : undefined;
     }
     if (this.kind === "savedDetail") {
@@ -512,8 +534,7 @@ export class NavigatorState {
       return sameIdentity(this.top().savedIdentity, request.target) ? request : undefined;
     }
     if (this.kind === "runs") {
-      const current = this.currentItem(snapshot);
-      return sameIdentity(current?.identity, request.target) ? request : undefined;
+      return sameIdentity(this.selectedItem(snapshot)?.identity, request.target) ? request : undefined;
     }
     // Drilled views are bound to the immutable frame runId, not runs selection.
     return request.target.kind === "run" && request.target.runId === this.runId ? request : undefined;
@@ -662,8 +683,15 @@ export function openWorkflowNavigator(
           if (state.mode === "filter" || state.mode === "rename") handleTextInput(session, key, data);
           else if (state.mode === "confirm") handleConfirmKey(session, key);
           else {
-            const item = state.kind === "runs" ? state.currentItem(currentSnapshot(session)) : undefined;
-            if (!runBrowseAction(session, keyToAction(key, state.kind, item?.kind), close)) return;
+            // The key means what it meant for the row the user saw, even if that row has since gone.
+            if (
+              !runBrowseAction(
+                session,
+                keyToAction(key, state.kind, state.selectedKind(currentSnapshot(session))),
+                close,
+              )
+            )
+              return;
           }
         } catch (error) {
           ui.notify(`Workflow action failed: ${error instanceof Error ? error.message : error}`, "error");

@@ -186,3 +186,42 @@ test(
     assert.match(nav.notifications.at(-1)?.message ?? "", /changed/);
   }),
 );
+
+test("a run deleted since the last redraw is never replaced by its neighbour as an action's target", async () => {
+  const record = (runId: string, workflowName: string) =>
+    ({
+      runId,
+      workflowName,
+      status: "completed",
+      phases: [],
+      agents: [],
+      logs: [],
+      script: `export const meta = { name: '${workflowName}', description: 'd' }\nreturn 1`,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }) as unknown as PersistedRunState;
+  let runs = [record("run-a", "script-a"), record("run-b", "script-b")];
+  const started: string[] = [];
+  const manager = {
+    on: () => {},
+    off: () => {},
+    listRuns: () => runs,
+    findRun: (id: string) => runs.find((run) => run.runId === id),
+    getRun: () => undefined,
+    startInBackground: (script: string) => {
+      started.push(script);
+      return { runId: "restarted", promise: new Promise(() => {}) };
+    },
+  } as unknown as WorkflowManager;
+
+  const nav = await openNavigator(manager);
+  assert.match(nav.text(), /❯ \S+ script-a/, "run-a is selected and shown");
+  // Another window deletes run-a; no redraw happens before the key press.
+  runs = [record("run-b", "script-b")];
+  nav.press("r");
+  assert.deepEqual(started, [], "nothing restarts, least of all run-b");
+  assert.equal(nav.notifications.at(-1)?.type, "warning");
+  assert.match(nav.text(), /❯ \S+ script-b/, "the redraw then shows what is selected now");
+  nav.press("r");
+  assert.equal(started.length, 1, "an action on the row the user now sees goes ahead");
+});
