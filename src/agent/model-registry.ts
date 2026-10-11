@@ -32,8 +32,8 @@ export function ensureFallbackRegistry(): Promise<ModelRegistry> {
 
 /**
  * The ModelRuntime behind a registry. The registry keeps it private and has no
- * getter, but a subagent session needs it to share the host session's exact
- * catalog and auth.
+ * getter, but a subagent session and the SDK's model resolver need it to share
+ * the host session's exact catalog and auth.
  */
 export function runtimeOf(registry: ModelRegistry): ModelRuntime {
   return (registry as unknown as { runtime: ModelRuntime }).runtime;
