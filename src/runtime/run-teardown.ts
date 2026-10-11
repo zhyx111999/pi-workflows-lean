@@ -1,19 +1,54 @@
-/** Ends a run: seals a failed run, drains outstanding agent() calls, and closes the callbacks of abandoned agents. */
+/** Ends a run: drains every promise the script was handed, settles the run's verdict once, and closes the callbacks of abandoned agents. */
 
-import type { WorkflowRunResult } from "../workflow.js";
+import { WorkflowCheckpointSuspensionError, type WorkflowError, workflowAbortedError, wrapError } from "../errors.js";
 import type { RunContext } from "./run-context.js";
 import { resolveDrainAbortGraceMs } from "./run-limits.js";
+import { unobservedFailures } from "./script-calls.js";
+
+/** How the script body ended: the value it returned, or the error that escaped it. */
+export type ScriptOutcome =
+  | { readonly ok: true; readonly value: unknown }
+  | { readonly ok: false; readonly error: unknown };
 
 /**
- * Called only for an error that escaped the script uncaught; errors that
- * parallel() or a script's own try/catch swallowed never get here. Aborting
- * in-flight siblings also covers a provider usage limit: work still running on
- * an exhausted quota is thrown away and re-runs on resume, rather than burning
- * more quota now.
+ * End the run after its script body has ended: return the run's result, or
+ * throw its terminal error. An error that escaped the script seals the run at
+ * once so its siblings stop; a checkpoint suspension waits them out so their
+ * paid results journal. Everything else is decided after the drain, because
+ * only then is it final which failures the script never observed.
  */
-export function sealRunFatal(ctx: RunContext, error: unknown): void {
-  // Notify the host before the drain: a pause/stop requested while siblings
-  // settle must not erase the error that already ended this run.
+export async function finishRun(ctx: RunContext, outcome: ScriptOutcome): Promise<unknown> {
+  const { options, state } = ctx;
+  const escaped = !outcome.ok && !(outcome.error instanceof WorkflowCheckpointSuspensionError);
+  if (escaped) sealRunFatal(ctx, outcome.error);
+  await drainScriptCalls(ctx);
+  closeAgentCallbacks(ctx);
+  // An escaped error stays the run's error.
+  const verdict = escaped ? outcome : settleVerdict(ctx, outcome);
+  // Reported after the drain, because agents settling during it commit usage
+  // last. Success only: failed and aborted runs own their usage records.
+  if (verdict.ok) {
+    try {
+      options.onTokenUsage?.(state.tokenUsage);
+    } catch {
+      // Instrumentation must never break teardown or mask the run's outcome.
+    }
+  }
+  ctx.store.dispose();
+  if (!verdict.ok) throw verdict.error;
+  return verdict.value;
+}
+
+/**
+ * Called for a fatal error that escaped the script, or that the script never
+ * observed; errors that parallel() or a script's own try/catch handled never
+ * get here. Aborting in-flight siblings also covers a provider usage limit:
+ * work still running on an exhausted quota is thrown away and re-runs on
+ * resume, rather than burning more quota now.
+ */
+function sealRunFatal(ctx: RunContext, error: unknown): void {
+  // An escaped error reaches the host before the drain: a pause/stop requested
+  // while siblings settle must not erase the error that already ended this run.
   try {
     const observation = ctx.options.onRunFatal?.(error);
     // The hook is observational; consume a rejecting thenable so it cannot
@@ -28,19 +63,52 @@ export function sealRunFatal(ctx: RunContext, error: unknown): void {
 }
 
 /**
- * Wait out every agent() call of the run, including ones the script never
- * awaited, then close late callbacks and dispose the store. `success` is the
- * result object of a completed run, refreshed here with the final usage.
+ * The verdict of a run whose script returned or suspended. A fatal failure the
+ * script never observed fails the run, before a checkpoint pause, just as an
+ * escaped error wins over a suspension the script caught. A suspension pauses
+ * the run whether the script awaited, caught or ignored its checkpoint.
  */
-export async function finishRun(ctx: RunContext, success: WorkflowRunResult | undefined): Promise<void> {
+function settleVerdict(ctx: RunContext, outcome: ScriptOutcome): ScriptOutcome {
   const { options, state } = ctx;
-  if (state.inFlight.size > 0) {
-    ctx.log(`waiting for ${state.inFlight.size} outstanding agent() call(s) to settle before this run completes`);
+  const fatal = settleUnobservedFailures(ctx);
+  if (fatal) {
+    sealRunFatal(ctx, fatal);
+    return { ok: false, error: fatal };
   }
-  // A completed run waits for its outstanding agents without limit: their
-  // results are wanted. Once the run is aborted the wait is bounded, because
-  // abort is cooperative and a runner that ignores its signal (with no agent
-  // timeout configured) would otherwise block the run from ending forever.
+  if (!state.checkpointSuspension) return outcome;
+  // An external abort keeps priority over the suspension.
+  return { ok: false, error: options.signal?.aborted ? workflowAbortedError() : state.checkpointSuspension };
+}
+
+/**
+ * Log each failure the script never observed and return the first fatal one,
+ * classified as parallel() classifies a branch failure: a recoverable failure
+ * leaves the run going. A suspension is settled as the run's pause instead,
+ * and once the run is aborted its failures are consequences of the abort.
+ */
+function settleUnobservedFailures(ctx: RunContext): WorkflowError | undefined {
+  if (ctx.isAborted()) return undefined;
+  let fatal: WorkflowError | undefined;
+  for (const { global, error } of unobservedFailures(ctx.state.calls)) {
+    if (error instanceof WorkflowCheckpointSuspensionError) continue;
+    const workflowError = wrapError(error);
+    ctx.log(`${global}() failed and the script never awaited it: ${workflowError.message}`);
+    if (!workflowError.recoverable) fatal ??= workflowError;
+  }
+  return fatal;
+}
+
+/** Wait out every tracked promise of the run, including ones the script never awaited. */
+async function drainScriptCalls(ctx: RunContext): Promise<void> {
+  const { options, state } = ctx;
+  const { pending } = state.calls;
+  if (pending.size > 0) {
+    ctx.log(`waiting for ${pending.size} outstanding workflow promise(s) to settle before this run ends`);
+  }
+  // A run that is not aborted waits for its outstanding calls without limit:
+  // their results are wanted. Once the run is aborted the wait is bounded,
+  // because abort is cooperative and a runner that ignores its signal (with no
+  // agent timeout configured) would otherwise block the run from ending forever.
   const graceMs = resolveDrainAbortGraceMs(options.drainAbortGraceMs);
   // Wakes the wait as soon as either abort source fires, so the grace clock starts.
   let wakeAbort: () => void = () => {};
@@ -53,15 +121,15 @@ export async function finishRun(ctx: RunContext, success: WorkflowRunResult | un
   state.runFatalController.signal.addEventListener("abort", fatalWake, { once: true });
   try {
     // Loop: settling calls can start further calls that join the set.
-    while (state.inFlight.size > 0) {
-      const pending = Array.from(state.inFlight);
+    while (pending.size > 0) {
+      const outstanding = Array.from(pending);
       if (!ctx.isAborted() || graceMs === Number.POSITIVE_INFINITY) {
         // Already aborted with unlimited grace: a plain wait. Racing the
         // resolved abortWake there would spin the microtask queue.
         if (ctx.isAborted()) {
-          await Promise.allSettled(pending);
+          await Promise.allSettled(outstanding);
         } else {
-          await Promise.race([Promise.allSettled(pending), abortWake]);
+          await Promise.race([Promise.allSettled(outstanding), abortWake]);
         }
         continue;
       }
@@ -71,14 +139,14 @@ export async function finishRun(ctx: RunContext, success: WorkflowRunResult | un
         // before the run reaches its terminal state.
         timer = setTimeout(() => resolve("timeout"), graceMs);
       });
-      const winner = await Promise.race([Promise.allSettled(pending).then(() => "settled" as const), grace]);
+      const winner = await Promise.race([Promise.allSettled(outstanding).then(() => "settled" as const), grace]);
       if (timer) clearTimeout(timer);
       if (winner === "timeout") {
-        // Abandoned calls already carry a no-op rejection handler from agent().
-        // Nothing they do later is kept: the store is disposed below, the
-        // abort check precedes journaling, and the host ignores stale writes.
+        // Abandoned promises keep the tracker's rejection handler. Nothing they
+        // do later is kept: the store is disposed, the abort check precedes
+        // journaling, and the host ignores stale writes.
         ctx.log(
-          `abandoning ${pending.length} outstanding agent() call(s) that did not settle within ${graceMs}ms of the drain's abort grace`,
+          `abandoning ${outstanding.length} outstanding workflow promise(s) that did not settle within ${graceMs}ms of the drain's abort grace`,
         );
         break;
       }
@@ -87,9 +155,11 @@ export async function finishRun(ctx: RunContext, success: WorkflowRunResult | un
     options.signal?.removeEventListener("abort", externalWake);
     state.runFatalController.signal.removeEventListener("abort", fatalWake);
   }
+}
 
-  // An abandoned runner may still be live: record its latest usage while the
-  // host is listening, then close every callback it still holds.
+/** An abandoned runner may still be live: record its latest usage while the host is listening, then close every callback it still holds. */
+function closeAgentCallbacks(ctx: RunContext): void {
+  const { state } = ctx;
   for (const finalizeUsage of state.pendingUsageFinalizers) {
     try {
       finalizeUsage();
@@ -99,16 +169,4 @@ export async function finishRun(ctx: RunContext, success: WorkflowRunResult | un
   }
   state.pendingUsageFinalizers.clear();
   state.agentCallbacksClosed = true;
-
-  // Reported after the drain, because agents settling during it commit usage
-  // last. Success only: failed and aborted runs own their usage records.
-  if (success) {
-    success.tokenUsage = { ...state.tokenUsage };
-    try {
-      options.onTokenUsage?.(state.tokenUsage);
-    } catch {
-      // Instrumentation must never break teardown or mask the run's outcome.
-    }
-  }
-  ctx.store.dispose();
 }

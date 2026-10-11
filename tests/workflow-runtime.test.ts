@@ -2198,7 +2198,7 @@ return 'script-done'`;
       controller.abort();
     } else {
       // Wait for the drain to start (its log line), then abort mid-drain.
-      for (let i = 0; i < 2000 && !logs.some((l) => l.includes("outstanding agent()")); i++) {
+      for (let i = 0; i < 2000 && !logs.some((l) => l.includes("outstanding workflow promise")); i++) {
         await new Promise((resolve) => setTimeout(resolve, 1));
       }
       controller.abort();
@@ -2209,7 +2209,7 @@ return 'script-done'`;
       `${abortTiming}: the run settles promptly after the grace instead of wedging`,
     );
     assert.ok(
-      logs.some((l) => l.includes("abandoning 1 outstanding agent()")),
+      logs.some((l) => l.includes("abandoning 1 outstanding workflow promise")),
       `${abortTiming}: the abandonment is logged`,
     );
   }
@@ -2295,7 +2295,7 @@ return 'script-done'`,
       drainAbortGraceMs: 5,
       persistLogs: false,
       onLog: (message) => {
-        if (message.includes("outstanding agent()")) controller.abort();
+        if (message.includes("outstanding workflow promise")) controller.abort();
       },
       onTokenUsage: (usage) => totals.push(usage.total),
     },

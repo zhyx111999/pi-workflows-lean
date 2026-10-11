@@ -13,6 +13,7 @@ import type { ModelRoutingConfig } from "../model-routing.js";
 import type { SharedStore } from "../shared-store.js";
 import type { WorkflowAgentRunner, WorkflowCheckpoint, WorkflowMeta, WorkflowRunOptions } from "../workflow.js";
 import { createLimiter } from "./run-limits.js";
+import { createScriptCalls, type ScriptCalls } from "./script-calls.js";
 
 export interface RuntimeState {
   currentPhase?: string;
@@ -52,11 +53,12 @@ export interface RuntimeState {
    */
   runFatalController: AbortController;
   /**
-   * Every agent() promise of this run, added on call and removed on settle.
-   * The run drains it before disposing the SharedStore, so an agent() the
-   * script forgot to await cannot touch state after teardown.
+   * Every promise the workflow globals handed to the script. The run drains
+   * them before disposing the SharedStore, so a call the script forgot to
+   * await cannot touch state after teardown, and then settles the failures
+   * the script never observed.
    */
-  inFlight: Set<Promise<unknown>>;
+  calls: ScriptCalls;
   /** Named conversations currently executing. */
   activeThreads: Set<string>;
   /** Whether a threaded call has invalidated journal replay for the rest of the run. */
@@ -116,7 +118,7 @@ export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptio
     activeCheckpointResponse: options.resumeCheckpoint ?? null,
     seenCheckpointIds: new Set<string>(),
     runFatalController: new AbortController(),
-    inFlight: new Set<Promise<unknown>>(),
+    calls: createScriptCalls(),
     activeThreads: new Set<string>(),
     resumeBarrierReached: false,
   };
