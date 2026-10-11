@@ -35,7 +35,6 @@ describe("parseAgentDefinition", () => {
     const def = parseAgentDefinition(md, "project", "security-auditor.md");
     assert.ok(def);
     assert.equal(def.name, "security-auditor");
-    assert.equal(def.description, "Reviews code for vulnerabilities");
     assert.equal(def.model, "openai/gpt-4.1");
     assert.deepEqual(def.tools, ["read", "grep"]);
     assert.deepEqual(def.disallowedTools, ["write", "bash"]);

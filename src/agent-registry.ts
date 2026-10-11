@@ -25,8 +25,6 @@ import { isThinkingLevel, type ModelThinkingLevel } from "./model-spec.js";
 export interface AgentDefinition {
   /** Stable identity used as the `agentType` value. */
   name: string;
-  /** One-line summary (for discoverability in the tool guideline). */
-  description?: string;
   /** Allowlist of coding-tool names the subagent may use. Undefined = all. */
   tools?: string[];
   /** Denylist of coding-tool names, applied after the allowlist. */
@@ -94,7 +92,6 @@ export function parseAgentDefinition(
 
   return {
     name,
-    description: typeof fm.description === "string" ? fm.description.trim() || undefined : undefined,
     tools: toStringArray(fm.tools),
     disallowedTools: toStringArray(fm.disallowedTools),
     model: typeof fm.model === "string" ? fm.model.trim() || undefined : undefined,

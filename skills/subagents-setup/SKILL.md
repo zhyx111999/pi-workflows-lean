@@ -49,7 +49,6 @@ A change in an earlier file is shadowed while a later file sets the same key. `/
 
 ```markdown
 ---
-description: One line
 tools: read, bash
 disallowedTools: write
 model: <provider>/<model>

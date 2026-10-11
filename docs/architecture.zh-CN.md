@@ -123,7 +123,7 @@ WorkflowAgent.run()                          agent.ts
 | `session-tools.ts` | 子代理的工具集；始终禁用 `subagents` 和 `subagents_control`，防止递归开子代理 |
 | `model-selection.ts` | 选模型和思考等级：显式 model > 角色定义的 model > tier > 阶段路由 > 继承主模型（需开启 `inheritMainModel`）> 默认 medium 档 > Pi 默认模型 |
 | `available-models.ts` / `model-registry.ts` | 可用模型列表；宿主没有提供注册表时，构建后备注册表 |
-| `child-session.ts` | 打开子会话；不加载主会话扩展，所以隐藏提示词不会传给子代理 |
+| `child-session.ts` | 打开子会话；不加载主会话扩展，所以隐藏提示词不会传给子代理；本次调用的工具集同时作为会话白名单，Pi 自带的同名或其他内置工具不会绕过角色的工具限制 |
 | `session-managers.ts` | 会话放在内存还是磁盘；同名 `thread` 复用同一个会话 |
 | `resource-loaders.ts` / `provider-middleware.ts` | 资源加载器按目录共享；只放行白名单里的 provider 中间件 |
 | `turn-result.ts` | 取结果：每次 `prompt()` 后先确认回合正常结束（未取消、无 provider 错误），再取结构化输出，或最后一个工具结果之后的回答文字 |
