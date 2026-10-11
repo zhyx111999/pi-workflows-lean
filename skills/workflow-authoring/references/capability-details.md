@@ -1,7 +1,7 @@
 <!-- GENERATED from WORKFLOW_CAPABILITY_CONTRACT; do not edit by hand. -->
 # Exhaustive workflow capability facts
 
-Contract format: `2.0.0`<br>
+Contract format: `2.1.0`<br>
 Contract content / skill / extension: `3.13.0-lean.1`
 
 Every exact fact below is projected from the installed extension's capability contract. Explanatory judgment belongs in the hand-written references next to this file.
@@ -12,19 +12,20 @@ Every exact fact below is projected from the installed extension's capability co
 - Classification: `runtime-global`
 - Support: `supported`
 - Signature: `agent(prompt, options?) => Promise<string \| structured value \| null>`
+- Argument `prompt`: non-empty string (required)
 - Option shape: `agent-options`
-- `label`: string (optional; default: derived from phase and call count)
-- `phase`: string (optional; default: current phase)
-- `schema`: plain JSON Schema (optional)
-- `model`: string (optional; highest-priority exact model selector)
-- `thinking`: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" (optional; call-site value overrides agentType thinking; selected model suffix takes precedence; invalid values fail before dispatch)
-- `tier`: string (optional; configured route name; dynamic reference: model-routes)
-- `isolation`: "worktree" | false (optional)
+- `label`: string (optional; default: derived from phase and call count; blank uses the default)
+- `phase`: non-empty string (optional; default: current phase)
+- `schema`: plain JSON Schema object (optional)
+- `model`: non-empty string (optional; highest-priority exact model selector)
+- `thinking`: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" (optional; call-site value overrides agentType thinking; selected model suffix takes precedence)
+- `tier`: non-empty string (optional; configured route name; dynamic reference: model-routes)
+- `isolation`: "worktree" | false (optional; false opts out of an agentType worktree default)
 - `keepWorktree`: boolean (optional; default: true)
-- `cwd`: string (optional; non-empty absolute existing directory; resolved to its real path; coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host; cannot combine with worktree isolation; on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory)
-- `thread`: string (optional; non-empty name; same-name calls must be sequential)
-- `agentType`: string (optional; must come from provided context; dynamic reference: agent-types)
-- Constraint: options must be an object using only the declared option names; anything else fails before dispatch with an error listing the accepted names
+- `cwd`: absolute directory path (optional; must exist; resolved to its real path; coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host; cannot combine with worktree isolation; on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory)
+- `thread`: non-empty string (optional; trimmed; same-name calls must be sequential)
+- `agentType`: non-empty string (optional; must come from provided context; dynamic reference: agent-types)
+- Constraint: prompt must be a non-empty string; options must be an object using only the declared option names, each value matching its declared type (undefined means omitted); anything else fails before dispatch with SCRIPT_VALIDATION_ERROR listing the accepted names or values
 - Constraint: recoverable failures return null after retries; nonrecoverable failures throw
 - Constraint: schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries
 - Constraint: run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)
@@ -40,7 +41,6 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: only the implicit route an untagged agent falls into — the implicit default medium tier, or the inherited main model when inheritMainModel is on (no explicit model, tier, agentType, or phase model requested) — degrades to the session default when unavailable, logging a one-time run-visible warning instead of throwing
 - Constraint: with the inheritMainModel setting on, an untagged agent (no explicit model, tier, agentType model, or phase model) inherits the session's main model (the model in effect when the run starts) instead of the implicit medium tier or the settings default; an unavailable inherited model degrades to the settings default with a one-time run-visible warning instead of throwing
 - Constraint: requested worktree isolation fails closed before agent execution if git cannot create the worktree; it never falls back to the shared checkout
-- Constraint: isolation: false opts out of an agentType worktree default
 - Constraint: keepWorktree defaults true (worktree kept for merge); false deletes after the call
 - Constraint: each live execution creates a uniquely owned worktree; retries or resume never reuse or overwrite a retained worktree
 
@@ -52,7 +52,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Signature: `parallel(thunks) => Promise<Array<unknown \| null>>`
 - Constraint: requires functions rather than promises
 - Constraint: result order matches input order
-- Constraint: recoverable thunk failures become null; nonrecoverable failures throw
+- Constraint: a thunk's recoverable workflow failure becomes null, as with agent(); nonrecoverable failures and errors thrown by the thunk's own code reject parallel()
 
 <a id="pipeline"></a>
 ## pipeline
@@ -63,7 +63,7 @@ Every exact fact below is projected from the installed extension's capability co
 - Constraint: items run concurrently while stages per item run sequentially
 - Constraint: each stage receives previousValue, originalItem, and zero-based index
 - Constraint: a null stage result is passed to the next stage; authors must guard missing coverage explicitly
-- Constraint: recoverable stage failures become null; nonrecoverable failures throw
+- Constraint: a stage's recoverable workflow failure becomes null, as with agent(); nonrecoverable failures and errors thrown by the stage's own code reject pipeline()
 
 <a id="checkpoint"></a>
 ## checkpoint
