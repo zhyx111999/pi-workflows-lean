@@ -63,3 +63,69 @@ export function makeNotifyCtx(mode?: "tui" | "rpc" | "json" | "print"): NotifyCt
   } as unknown as ExtensionCommandContext;
   return { ctx, notified };
 }
+
+/** A registered command as the extension host keeps it. */
+export interface HostCommand {
+  description?: string;
+  handler: (args: string, ctx: unknown) => unknown;
+}
+
+/** An extension host double that records what one extension generation registers. */
+export interface FakeExtensionHost {
+  pi: ExtensionAPI;
+  /** Tool names passed to registerTool, in order. */
+  tools: string[];
+  /** Registered commands by name, in registration order. */
+  commands: Map<string, HostCommand>;
+  /** Event handlers by event name, in registration order. */
+  handlers: Record<string, Array<(...args: any[]) => any>>;
+  /** The session's active tools; setActiveTools replaces the array's contents, so generations can share it. */
+  activeTools: string[];
+}
+
+/**
+ * A fresh ExtensionAPI for one extension generation. `sendMessage` stands in
+ * for the host's delivery path (a no-op by default); `tools` and `activeTools`
+ * may be shared with another generation.
+ */
+export function fakeExtensionHost(
+  options: {
+    activeTools?: string[];
+    tools?: string[];
+    sendMessage?: (message: never, options?: never) => unknown;
+  } = {},
+): FakeExtensionHost {
+  const tools = options.tools ?? [];
+  const activeTools = options.activeTools ?? [];
+  const commands = new Map<string, HostCommand>();
+  const handlers: Record<string, Array<(...args: any[]) => any>> = {};
+  const pi = {
+    registerTool: (tool: { name: string }) => tools.push(tool.name),
+    registerCommand: (name: string, spec: HostCommand) => commands.set(name, spec),
+    getCommands: () => [...commands].map(([name, { description }]) => ({ name, description })),
+    on: (event: string, handler: (...args: any[]) => any) => {
+      handlers[event] ??= [];
+      handlers[event].push(handler);
+    },
+    getActiveTools: () => [...activeTools],
+    setActiveTools: (names: string[]) => {
+      activeTools.splice(0, activeTools.length, ...names);
+    },
+    sendMessage: options.sendMessage ?? (() => {}),
+  } as unknown as ExtensionAPI;
+  return { pi, tools, commands, handlers, activeTools };
+}
+
+/** The session_start context the extension reads, for a session with `sessionId`. */
+export function sessionStartContext(
+  sessionId: string | undefined,
+  overrides: { cwd?: string; sessionFile?: string; ui?: Record<string, unknown> } = {},
+) {
+  return {
+    cwd: overrides.cwd ?? process.cwd(),
+    model: undefined,
+    modelRegistry: {},
+    sessionManager: { getSessionId: () => sessionId, getSessionFile: () => overrides.sessionFile },
+    ui: { setWidget: () => {}, notify: () => {}, ...overrides.ui },
+  };
+}

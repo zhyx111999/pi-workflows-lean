@@ -8,7 +8,6 @@ import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   claimWorkflowRuntime,
   discardWorkflowRuntime,
@@ -23,6 +22,33 @@ import { _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
 import { getWorkflowSettingsPath } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 import { FakeHostSession, type HostMessage, sendMessageTo } from "./helpers/fake-host-session.js";
+import { fakeExtensionHost, sessionStartContext } from "./helpers/mock-pi.js";
+
+/**
+ * Install an extension generation that takes over a staged runtime reporting
+ * one live run, and record which runs its shutdown pauses.
+ */
+async function installWithLiveRun(runId: string) {
+  const { default: installExtension } = await import("../src/pi-extension.js");
+  discardWorkflowRuntime();
+  const seed = fakeExtensionHost({ activeTools: ["bash"] });
+  installExtension(seed.pi);
+  seed.handlers.session_shutdown?.[0]?.({ reason: "reload" });
+  const staged = takeWorkflowRuntime();
+  assert.ok(staged, "seed reload must expose the manager for live-run injection");
+
+  const paused: string[] = [];
+  staged.manager.listLiveRuns = (() => [{ runId, status: "running" }]) as typeof staged.manager.listLiveRuns;
+  staged.manager.pause = ((id: string) => {
+    paused.push(id);
+    return true;
+  }) as typeof staged.manager.pause;
+  handoffWorkflowRuntime(staged);
+
+  const host = fakeExtensionHost({ activeTools: ["bash"] });
+  installExtension(host.pi);
+  return { handlers: host.handlers, paused };
+}
 
 describe("workflow extension - tool availability", () => {
   it("registers exactly the two subagents tools and hands the live runtime across reload", async (t) => {
@@ -30,30 +56,21 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        const registeredTools: string[] = [];
-        const registeredCommands: string[] = [];
-        const activeTools = ["bash", "read"];
-        const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi = {
-          registerTool: (tool: { name: string }) => registeredTools.push(tool.name),
-          registerCommand: (name: string) => registeredCommands.push(name),
-          getCommands: () => registeredCommands.map((name) => ({ name })),
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers[event]) handlers[event] = [];
-            handlers[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: () => {},
-        } as unknown as ExtensionAPI;
+        const {
+          pi,
+          tools: registeredTools,
+          commands,
+          handlers,
+          activeTools,
+        } = fakeExtensionHost({
+          activeTools: ["bash", "read"],
+        });
         const { default: installExtension } = await import("../src/pi-extension.js");
 
         installExtension(pi);
 
         assert.deepEqual(registeredTools, ["subagents", "subagents_control"]);
-        assert.deepEqual(registeredCommands.sort(), [
+        assert.deepEqual([...commands.keys()].sort(), [
           "deep-research",
           "workflows",
           "workflows-models",
@@ -71,13 +88,7 @@ describe("workflow extension - tool availability", () => {
         const notified: string[] = [];
         handlers.session_start[0](
           {},
-          {
-            cwd: process.cwd(),
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "session-1" },
-            ui: { setWidget: () => {}, notify: (message: string) => notified.push(message) },
-          },
+          sessionStartContext("session-1", { ui: { notify: (message: string) => notified.push(message) } }),
         );
         reportDiagnostic("while the session is bound");
         assert.deepEqual(notified, ["while the session is bound"], "diagnostics go to the session's UI");
@@ -96,34 +107,11 @@ describe("workflow extension - tool availability", () => {
         assert.ok(staged, "session_shutdown(reload) stages the live manager for the next extension generation");
         handoffWorkflowRuntime(staged);
 
-        const secondHandlers: Record<string, Array<(...args: any[]) => any>> = {};
-        const secondPi = {
-          registerTool: (tool: { name: string }) => registeredTools.push(tool.name),
-          registerCommand: () => {},
-          getCommands: () => [],
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!secondHandlers[event]) secondHandlers[event] = [];
-            secondHandlers[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: () => {},
-        } as unknown as ExtensionAPI;
+        const { pi: secondPi, handlers: secondHandlers } = fakeExtensionHost({ activeTools, tools: registeredTools });
         installExtension(secondPi);
         assert.equal(takeWorkflowRuntime(), undefined, "the fresh factory consumes the staged runtime");
 
-        secondHandlers.session_start?.[0]?.(
-          { reason: "reload" },
-          {
-            cwd: process.cwd(),
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "session-2" },
-            ui: { setWidget: () => {}, notify: () => {} },
-          },
-        );
+        secondHandlers.session_start?.[0]?.({ reason: "reload" }, sessionStartContext("session-2"));
 
         secondHandlers.session_shutdown?.[0]?.({ reason: "reload" });
         const restaged = takeWorkflowRuntime();
@@ -152,41 +140,19 @@ describe("workflow extension - tool availability", () => {
             progressPanelMaxAgents: 5,
           }),
         );
-        const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
         const sent: string[] = [];
-        const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi = {
-          registerTool: () => {},
-          registerCommand: (name: string, spec: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
-            commands.set(name, spec.handler);
-          },
-          getCommands: () => [...commands.keys()].map((name) => ({ name })),
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers[event]) handlers[event] = [];
-            handlers[event].push(handler);
-          },
-          getActiveTools: () => [],
-          setActiveTools: () => {},
+        const { pi, commands, handlers } = fakeExtensionHost({
           sendMessage: (message: { content?: string }) => {
             sent.push(message.content ?? "");
           },
-        } as unknown as ExtensionAPI;
+        });
         const { default: installExtension } = await import("../src/pi-extension.js");
 
         installExtension(pi);
-        handlers.session_start[0](
-          {},
-          {
-            cwd: process.cwd(),
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "legacy-settings-session" },
-            ui: { setWidget: () => {}, notify: () => {} },
-          },
-        );
+        handlers.session_start[0]({}, sessionStartContext("legacy-settings-session"));
 
         assert.equal(commands.has("workflows-trigger"), false);
-        await commands.get("workflows-progress")?.("status", {});
+        await commands.get("workflows-progress")?.handler("status", {});
         assert.match(sent.at(-1) ?? "", /panel is detailed, showing up to 5 agents per phase/);
         handlers.session_shutdown?.[0]?.({ reason: "quit" });
         discardWorkflowRuntime();
@@ -226,22 +192,7 @@ describe("workflow extension - tool availability", () => {
         for (const { reason, event } of cases) {
           discardWorkflowRuntime();
 
-          const activeTools = ["bash", "read"];
-          const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-          const pi = {
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (eventName: string, handler: (...args: any[]) => any) => {
-              if (!handlers[eventName]) handlers[eventName] = [];
-              handlers[eventName].push(handler);
-            },
-            getActiveTools: () => [...activeTools],
-            setActiveTools: (tools: string[]) => {
-              activeTools.splice(0, activeTools.length, ...tools);
-            },
-            sendMessage: () => {},
-          } as unknown as ExtensionAPI;
+          const { pi, handlers, activeTools } = fakeExtensionHost({ activeTools: ["bash", "read"] });
           const { default: installExtension } = await import("../src/pi-extension.js");
           installExtension(pi);
 
@@ -256,36 +207,14 @@ describe("workflow extension - tool availability", () => {
           // Pi binds the second generation's pi to the replacement host session.
           useHostSessionClass(FakeHostSession);
           const hostSession = new FakeHostSession(`session-${reason}`);
-          const secondHandlers: Record<string, Array<(...args: any[]) => any>> = {};
-          const secondPi = {
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (eventName: string, handler: (...args: any[]) => any) => {
-              if (!secondHandlers[eventName]) secondHandlers[eventName] = [];
-              secondHandlers[eventName].push(handler);
-            },
-            getActiveTools: () => [...activeTools],
-            setActiveTools: (tools: string[]) => {
-              activeTools.splice(0, activeTools.length, ...tools);
-            },
+          const { pi: secondPi, handlers: secondHandlers } = fakeExtensionHost({
+            activeTools,
             sendMessage: sendMessageTo(hostSession),
-          } as unknown as ExtensionAPI;
+          });
           installExtension(secondPi);
           assert.equal(takeWorkflowRuntime(), undefined, "second generation claims the staged runtime");
 
-          secondHandlers.session_start?.[0]?.(
-            { reason },
-            {
-              cwd: process.cwd(),
-              model: undefined,
-              modelRegistry: {},
-              sessionManager: {
-                getSessionId: () => `session-${reason}`,
-              },
-              ui: { setWidget: () => {}, notify: () => {} },
-            },
-          );
+          secondHandlers.session_start?.[0]?.({ reason }, sessionStartContext(`session-${reason}`));
 
           // One run per case: delivery seeds a record, and a record's owner
           // outranks the in-memory copy, so a shared id would carry the
@@ -321,45 +250,9 @@ describe("workflow extension - tool availability", () => {
     const otherProject = mkdtempSync(join(tmpdir(), "pi-dw-other-resume-"));
     try {
       await withFakeHomeAsync(fakeHome, async () => {
-        const { default: installExtension } = await import("../src/pi-extension.js");
-        const makePi = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
-          ({
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (event: string, handler: (...args: any[]) => any) => {
-              if (!handlers[event]) handlers[event] = [];
-              handlers[event].push(handler);
-            },
-            getActiveTools: () => ["bash"],
-            setActiveTools: () => {},
-            sendMessage: () => {},
-          }) as unknown as ExtensionAPI;
-
-        const installWithLiveRun = (runId: string) => {
-          discardWorkflowRuntime();
-          const seedHandlers: Record<string, Array<(...args: any[]) => any>> = {};
-          installExtension(makePi(seedHandlers));
-          seedHandlers.session_shutdown?.[0]?.({ reason: "reload" });
-          const staged = takeWorkflowRuntime();
-          assert.ok(staged, "seed reload must expose the manager for live-run injection");
-
-          const paused: string[] = [];
-          staged.manager.listLiveRuns = (() => [{ runId, status: "running" }]) as typeof staged.manager.listLiveRuns;
-          staged.manager.pause = ((id: string) => {
-            paused.push(id);
-            return true;
-          }) as typeof staged.manager.pause;
-          handoffWorkflowRuntime(staged);
-
-          const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-          installExtension(makePi(handlers));
-          return { handlers, paused };
-        };
-
         // resume + no targetSessionFile → discard
         {
-          const { handlers, paused } = installWithLiveRun("resume-no-target");
+          const { handlers, paused } = await installWithLiveRun("resume-no-target");
           handlers.session_shutdown?.[0]?.({ reason: "resume" });
           assert.deepEqual(paused, ["resume-no-target"], "fail-closed resume must pause the live run");
           assert.equal(
@@ -371,7 +264,7 @@ describe("workflow extension - tool availability", () => {
 
         // resume + missing/unreadable header → discard
         {
-          const { handlers, paused } = installWithLiveRun("resume-missing-header");
+          const { handlers, paused } = await installWithLiveRun("resume-missing-header");
           handlers.session_shutdown?.[0]?.({
             reason: "resume",
             targetSessionFile: join(sessionDir, "does-not-exist.jsonl"),
@@ -393,7 +286,7 @@ describe("workflow extension - tool availability", () => {
               timestamp: new Date().toISOString(),
             })}\n`,
           );
-          const { handlers, paused } = installWithLiveRun("resume-foreign-cwd");
+          const { handlers, paused } = await installWithLiveRun("resume-foreign-cwd");
           handlers.session_shutdown?.[0]?.({ reason: "resume", targetSessionFile: foreign });
           assert.deepEqual(paused, ["resume-foreign-cwd"], "cross-project resume must pause the source live run");
           assert.equal(takeWorkflowRuntime(), undefined, "resume into a different project must discard, not hand off");
@@ -412,7 +305,7 @@ describe("workflow extension - tool availability", () => {
               timestamp: new Date().toISOString(),
             })}\n`,
           );
-          const { handlers, paused } = installWithLiveRun("resume-same-cwd");
+          const { handlers, paused } = await installWithLiveRun("resume-same-cwd");
           handlers.session_shutdown?.[0]?.({ reason: "resume", targetSessionFile: same });
           assert.deepEqual(paused, [], "same-project resume must keep the live run running");
           const staged = takeWorkflowRuntime();
@@ -422,7 +315,7 @@ describe("workflow extension - tool availability", () => {
 
         // fork without a session file still hands off (new fork file may not exist yet)
         {
-          const { handlers, paused } = installWithLiveRun("fork-no-target");
+          const { handlers, paused } = await installWithLiveRun("fork-no-target");
           handlers.session_shutdown?.[0]?.({ reason: "fork" });
           assert.deepEqual(paused, [], "fork without a target file stays in-project and must keep the live run");
           const staged = takeWorkflowRuntime();
@@ -442,7 +335,7 @@ describe("workflow extension - tool availability", () => {
               timestamp: new Date().toISOString(),
             })}\n`,
           );
-          const { handlers, paused } = installWithLiveRun("fork-foreign-cwd");
+          const { handlers, paused } = await installWithLiveRun("fork-foreign-cwd");
           handlers.session_shutdown?.[0]?.({ reason: "fork", targetSessionFile: foreign });
           assert.deepEqual(paused, ["fork-foreign-cwd"], "foreign fork target must pause the source live run");
           assert.equal(takeWorkflowRuntime(), undefined, "foreign fork target must not stage a handoff");
@@ -475,51 +368,20 @@ describe("workflow extension - tool availability", () => {
         discardWorkflowRuntime();
         discardWorkflowRuntime();
 
-        const commands: Array<{
-          name: string;
-          description?: string;
-          handler: (args: string, ctx: unknown) => unknown;
-        }> = [];
-        const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi = {
-          registerTool: () => {},
-          registerCommand: (
-            name: string,
-            spec: { description?: string; handler: (args: string, ctx: unknown) => unknown },
-          ) => {
-            commands.push({ name, description: spec.description, handler: spec.handler });
-          },
-          getCommands: () => commands.map((c) => ({ name: c.name, description: c.description })),
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers[event]) handlers[event] = [];
-            handlers[event].push(handler);
-          },
-          getActiveTools: () => ["bash"],
-          setActiveTools: () => {},
-          sendMessage: () => {},
-        } as unknown as ExtensionAPI;
+        const { pi, commands, handlers } = fakeExtensionHost({ activeTools: ["bash"] });
 
         const { default: installExtension } = await import("../src/pi-extension.js");
         installExtension(pi);
 
         assert.equal(
-          commands.some((c) => c.name === "same"),
+          commands.has("same"),
           false,
           "factory must not register project saved commands before session_start",
         );
 
-        handlers.session_start?.[0]?.(
-          { reason: "resume" },
-          {
-            cwd: otherProject,
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "session-b" },
-            ui: { setWidget: () => {}, notify: () => {} },
-          },
-        );
+        handlers.session_start?.[0]?.({ reason: "resume" }, sessionStartContext("session-b", { cwd: otherProject }));
 
-        const savedCmd = commands.find((c) => c.name === "same");
+        const savedCmd = commands.get("same");
         assert.ok(savedCmd, "session_start must register the target project's saved command");
         assert.equal(
           savedCmd.description,
@@ -567,22 +429,7 @@ describe("workflow extension - tool availability", () => {
           return original.call(this, spec);
         };
         try {
-          const activeTools = ["bash", "read"];
-          const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-          const pi = {
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (event: string, handler: (...args: any[]) => any) => {
-              if (!handlers[event]) handlers[event] = [];
-              handlers[event].push(handler);
-            },
-            getActiveTools: () => [...activeTools],
-            setActiveTools: (tools: string[]) => {
-              activeTools.splice(0, activeTools.length, ...tools);
-            },
-            sendMessage: () => {},
-          } as unknown as ExtensionAPI;
+          const { pi, handlers } = fakeExtensionHost({ activeTools: ["bash", "read"] });
           const { default: installExtension } = await import("../src/pi-extension.js");
           installExtension(pi);
 
@@ -626,31 +473,19 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        const activeTools = ["bash", "read"];
-        const handlers: Record<string, Array<(...args: any[]) => any>> = {};
         useHostSessionClass(FakeHostSession);
         const hostSession = new FakeHostSession("s-prebind");
         const delivered = () => hostSession.received.map(({ message }) => message.content);
-        const pi = {
-          registerTool: () => {},
-          registerCommand: () => {},
-          getCommands: () => [],
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers[event]) handlers[event] = [];
-            handlers[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: (msg: HostMessage, options?: unknown) => {
-            if (!(pi as { _bound?: boolean })._bound) {
-              throw new Error("Extension runtime not initialized");
-            }
-            sendMessageTo(hostSession)(msg, options);
-          },
-          _bound: false,
-        } as unknown as ExtensionAPI & { _bound: boolean };
+        // Pi throws from sendMessage until it binds the generation to a session.
+        let secondBound = false;
+        const unboundSend = (isBound: () => boolean) => (msg: HostMessage, options?: unknown) => {
+          if (!isBound()) throw new Error("Extension runtime not initialized");
+          sendMessageTo(hostSession)(msg, options);
+        };
+        const { pi, handlers, activeTools } = fakeExtensionHost({
+          activeTools: ["bash", "read"],
+          sendMessage: unboundSend(() => false),
+        });
         const { default: installExtension } = await import("../src/pi-extension.js");
         installExtension(pi);
 
@@ -659,27 +494,10 @@ describe("workflow extension - tool availability", () => {
         assert.ok(staged);
         handoffWorkflowRuntime(staged);
 
-        const handlers2: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi2 = {
-          registerTool: () => {},
-          registerCommand: () => {},
-          getCommands: () => [],
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers2[event]) handlers2[event] = [];
-            handlers2[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: (msg: HostMessage, options?: unknown) => {
-            if (!(pi2 as { _bound?: boolean })._bound) {
-              throw new Error("Extension runtime not initialized");
-            }
-            sendMessageTo(hostSession)(msg, options);
-          },
-          _bound: false,
-        } as unknown as ExtensionAPI & { _bound: boolean };
+        const { pi: pi2, handlers: handlers2 } = fakeExtensionHost({
+          activeTools,
+          sendMessage: unboundSend(() => secondBound),
+        });
         installExtension(pi2);
 
         const fakeRun = {
@@ -700,7 +518,7 @@ describe("workflow extension - tool availability", () => {
         mgr.emit("complete", { runId: "bg-prebind" });
         assert.equal(delivered().length, 0, "must not deliver while runtime unbound");
 
-        pi2._bound = true;
+        secondBound = true;
         handlers2.session_start?.[0]?.(
           { reason: "reload" },
           {
@@ -732,42 +550,23 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        const piFor = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
-          ({
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (event: string, handler: (...args: any[]) => any) => {
-              if (!handlers[event]) handlers[event] = [];
-              handlers[event].push(handler);
-            },
-            getActiveTools: () => [],
-            setActiveTools: () => {},
-            sendMessage: () => {},
-          }) as unknown as ExtensionAPI;
         const { default: installExtension } = await import("../src/pi-extension.js");
-        const first: Record<string, Array<(...args: any[]) => any>> = {};
-        installExtension(piFor(first));
-        first.session_shutdown?.[0]?.({ reason: "reload" });
+        const first = fakeExtensionHost();
+        installExtension(first.pi);
+        first.handlers.session_shutdown?.[0]?.({ reason: "reload" });
         const factoryRuntime = takeWorkflowRuntime();
         assert.ok(factoryRuntime);
         handoffWorkflowRuntime(factoryRuntime);
 
-        const second: Record<string, Array<(...args: any[]) => any>> = {};
-        installExtension(piFor(second));
+        const second = fakeExtensionHost();
+        installExtension(second.pi);
         const cwd = resolve(process.cwd());
         const otherSpelling = cwd === cwd.toUpperCase() ? cwd.toLowerCase() : cwd.toUpperCase();
-        second.session_start?.[0]?.(
+        second.handlers.session_start?.[0]?.(
           { reason: "reload" },
-          {
-            cwd: otherSpelling,
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "same-project-session" },
-            ui: { setWidget: () => {}, notify: () => {} },
-          },
+          sessionStartContext("same-project-session", { cwd: otherSpelling }),
         );
-        second.session_shutdown?.[0]?.({ reason: "reload" });
+        second.handlers.session_shutdown?.[0]?.({ reason: "reload" });
         const kept = claimWorkflowRuntime().compatible;
         assert.equal(
           kept?.manager,
@@ -814,19 +613,8 @@ describe("workflow extension - tool availability", () => {
             }) as typeof manager.pause;
             handoffWorkflowRuntime({ cwd: project, extensionBuild: WORKFLOW_EXTENSION_BUILD, manager });
 
-            const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-            installExtension({
-              registerTool: () => {},
-              registerCommand: () => {},
-              getCommands: () => [],
-              on: (event: string, handler: (...args: any[]) => any) => {
-                if (!handlers[event]) handlers[event] = [];
-                handlers[event].push(handler);
-              },
-              getActiveTools: () => [],
-              setActiveTools: () => {},
-              sendMessage: () => {},
-            } as unknown as ExtensionAPI);
+            const { pi, handlers } = fakeExtensionHost();
+            installExtension(pi);
 
             const target = join(sessionDir, `${reason}-${name}.jsonl`);
             writeFileSync(
@@ -855,44 +643,27 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        const piFor = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
-          ({
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (event: string, handler: (...args: any[]) => any) => {
-              if (!handlers[event]) handlers[event] = [];
-              handlers[event].push(handler);
-            },
-            getActiveTools: () => [],
-            setActiveTools: () => {},
-            sendMessage: () => {},
-          }) as unknown as ExtensionAPI;
-        const ctxFor = (cwd: string, sessionId: string) => ({
-          cwd,
-          model: undefined,
-          modelRegistry: {},
-          sessionManager: { getSessionId: () => sessionId },
-          ui: { setWidget: () => {}, notify: () => {} },
-        });
         const { default: installExtension } = await import("../src/pi-extension.js");
         const { _getSessionDeliveryEndpointForTests } = await import("../src/task-panel.js");
 
-        const first: Record<string, Array<(...args: any[]) => any>> = {};
-        installExtension(piFor(first));
-        first.session_start?.[0]?.({ reason: "startup" }, ctxFor(process.cwd(), "home-session"));
+        const first = fakeExtensionHost();
+        installExtension(first.pi);
+        first.handlers.session_start?.[0]?.({ reason: "startup" }, sessionStartContext("home-session"));
         assert.ok(_getSessionDeliveryEndpointForTests("home-session"), "the first session is bound");
-        first.session_shutdown?.[0]?.({ reason: "new" });
+        first.handlers.session_shutdown?.[0]?.({ reason: "new" });
 
-        const second: Record<string, Array<(...args: any[]) => any>> = {};
-        installExtension(piFor(second));
-        second.session_start?.[0]?.({ reason: "new" }, ctxFor(otherProject, "other-session"));
+        const second = fakeExtensionHost();
+        installExtension(second.pi);
+        second.handlers.session_start?.[0]?.(
+          { reason: "new" },
+          sessionStartContext("other-session", { cwd: otherProject }),
+        );
         assert.equal(
           _getSessionDeliveryEndpointForTests("home-session"),
           undefined,
           "the session of the replaced manager no longer holds a delivery endpoint",
         );
-        second.session_shutdown?.[0]?.({ reason: "quit" });
+        second.handlers.session_shutdown?.[0]?.({ reason: "quit" });
         discardWorkflowRuntime();
       });
     } finally {
@@ -907,22 +678,7 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        const activeTools = ["bash", "read"];
-        const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi = {
-          registerTool: () => {},
-          registerCommand: () => {},
-          getCommands: () => [],
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers[event]) handlers[event] = [];
-            handlers[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: () => {},
-        } as unknown as ExtensionAPI;
+        const { pi, handlers, activeTools } = fakeExtensionHost({ activeTools: ["bash", "read"] });
         const { default: installExtension } = await import("../src/pi-extension.js");
         installExtension(pi);
 
@@ -933,32 +689,12 @@ describe("workflow extension - tool availability", () => {
         assert.equal(resolve(factoryManager.getCwd()), resolve(process.cwd()));
         handoffWorkflowRuntime(factoryRuntime);
 
-        const handlers2: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi2 = {
-          registerTool: () => {},
-          registerCommand: () => {},
-          getCommands: () => [],
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers2[event]) handlers2[event] = [];
-            handlers2[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: () => {},
-        } as unknown as ExtensionAPI;
+        const { pi: pi2, handlers: handlers2 } = fakeExtensionHost({ activeTools });
         installExtension(pi2);
 
         handlers2.session_start?.[0]?.(
           { reason: "resume" },
-          {
-            cwd: otherProject,
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "foreign-session" },
-            ui: { setWidget: () => {}, notify: () => {} },
-          },
+          sessionStartContext("foreign-session", { cwd: otherProject }),
         );
 
         handlers2.session_shutdown?.[0]?.({ reason: "reload" });
@@ -971,31 +707,11 @@ describe("workflow extension - tool availability", () => {
         assert.notEqual(rebuilt.manager, factoryManager, "must not keep the source-project manager");
         // Round-trip: a third factory install must adopt the claimed manager.
         handoffWorkflowRuntime(rebuilt);
-        const handlers3: Record<string, Array<(...args: any[]) => any>> = {};
-        const pi3 = {
-          registerTool: () => {},
-          registerCommand: () => {},
-          getCommands: () => [],
-          on: (event: string, handler: (...args: any[]) => any) => {
-            if (!handlers3[event]) handlers3[event] = [];
-            handlers3[event].push(handler);
-          },
-          getActiveTools: () => [...activeTools],
-          setActiveTools: (tools: string[]) => {
-            activeTools.splice(0, activeTools.length, ...tools);
-          },
-          sendMessage: () => {},
-        } as unknown as ExtensionAPI;
+        const { pi: pi3, handlers: handlers3 } = fakeExtensionHost({ activeTools });
         installExtension(pi3);
         handlers3.session_start?.[0]?.(
           { reason: "reload" },
-          {
-            cwd: otherProject,
-            model: undefined,
-            modelRegistry: {},
-            sessionManager: { getSessionId: () => "foreign-session-2" },
-            ui: { setWidget: () => {}, notify: () => {} },
-          },
+          sessionStartContext("foreign-session-2", { cwd: otherProject }),
         );
         handlers3.session_shutdown?.[0]?.({ reason: "reload" });
         const again = claimWorkflowRuntime().compatible;
@@ -1014,53 +730,14 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        const activeTools = ["bash", "read"];
-        const makePi = (handlers: Record<string, Array<(...args: any[]) => any>>) =>
-          ({
-            registerTool: () => {},
-            registerCommand: () => {},
-            getCommands: () => [],
-            on: (event: string, handler: (...args: any[]) => any) => {
-              if (!handlers[event]) handlers[event] = [];
-              handlers[event].push(handler);
-            },
-            getActiveTools: () => [...activeTools],
-            setActiveTools: (tools: string[]) => {
-              activeTools.splice(0, activeTools.length, ...tools);
-            },
-            sendMessage: () => {},
-          }) as unknown as ExtensionAPI;
-        const { default: installExtension } = await import("../src/pi-extension.js");
-
-        const installWithLiveRun = (runId: string) => {
-          discardWorkflowRuntime();
-          const seedHandlers: Record<string, Array<(...args: any[]) => any>> = {};
-          installExtension(makePi(seedHandlers));
-          seedHandlers.session_shutdown?.[0]?.({ reason: "reload" });
-          const staged = takeWorkflowRuntime();
-          assert.ok(staged, "seed reload must expose the manager for live-run injection");
-
-          const paused: string[] = [];
-          staged.manager.listLiveRuns = (() => [{ runId, status: "running" }]) as typeof staged.manager.listLiveRuns;
-          staged.manager.pause = ((id: string) => {
-            paused.push(id);
-            return true;
-          }) as typeof staged.manager.pause;
-          handoffWorkflowRuntime(staged);
-
-          const handlers: Record<string, Array<(...args: any[]) => any>> = {};
-          installExtension(makePi(handlers));
-          return { handlers, paused };
-        };
-
         {
-          const { handlers, paused } = installWithLiveRun("shutdown-unknown");
+          const { handlers, paused } = await installWithLiveRun("shutdown-unknown");
           handlers.session_shutdown?.[0]?.();
           assert.deepEqual(paused, ["shutdown-unknown"], "missing shutdown reason must pause the live run");
           assert.equal(takeWorkflowRuntime(), undefined, "session_shutdown with no reason must not stage a handoff");
         }
         {
-          const { handlers, paused } = installWithLiveRun("shutdown-quit");
+          const { handlers, paused } = await installWithLiveRun("shutdown-quit");
           handlers.session_shutdown?.[0]?.({ reason: "quit" });
           assert.deepEqual(paused, ["shutdown-quit"], "quit must pause the live run before process teardown");
           assert.equal(
@@ -1070,7 +747,7 @@ describe("workflow extension - tool availability", () => {
           );
         }
         {
-          const { handlers, paused } = installWithLiveRun("shutdown-manual");
+          const { handlers, paused } = await installWithLiveRun("shutdown-manual");
           handlers.session_shutdown?.[0]?.({ reason: "manual" });
           assert.deepEqual(paused, ["shutdown-manual"], "unknown shutdown reasons must pause the live run");
           assert.equal(takeWorkflowRuntime(), undefined, "unknown shutdown reasons must not stage a handoff");
