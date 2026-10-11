@@ -1,7 +1,8 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentHistoryEntry } from "./agent-history.js";
 import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import { groupAgentsByPhase, type PhaseGroup } from "./phase-groups.js";
 import type { RunStatus } from "./run-persistence.js";
 import type { WorkflowMeta } from "./workflow.js";
 
@@ -49,20 +50,6 @@ export interface WorkflowSnapshot {
   result?: unknown;
   tokenUsage?: RunTokenUsage;
   runId?: string;
-}
-
-export interface WorkflowDisplay {
-  update(snapshot: WorkflowSnapshot): void;
-  complete(snapshot: WorkflowSnapshot): void;
-  clear(): void;
-}
-
-export interface WorkflowDisplayOptions {
-  key?: string;
-  placement?: "aboveEditor" | "belowEditor";
-  maxAgents?: number;
-  showStatus?: boolean;
-  showResultPreviews?: boolean;
 }
 
 /**
@@ -257,198 +244,59 @@ export function backgroundStartNotice(
   return `/${name} running in the background (${runId}) — ${where}; the ${deliverable} is posted here when it finishes.`;
 }
 
-export function createWidgetWorkflowDisplay(
-  ctx: Pick<ExtensionContext, "ui" | "hasUI">,
-  options: WorkflowDisplayOptions = {},
-): WorkflowDisplay {
-  const key = options.key ?? "workflow";
-  const placement = options.placement ?? "belowEditor";
-  const showStatus = options.showStatus ?? false;
-
-  // Mutable state captured by the component closure so re-renders
-  // always read the latest snapshot even though the factory ran once.
-  let snapshot: WorkflowSnapshot | undefined;
-  let completed = false;
-
-  // Store the factory so update()/complete() can re-register it to trigger re-render.
-  const widgetFactory = (_tui: unknown, theme: Theme) => ({
-    render: () => (snapshot ? renderWorkflowLines(snapshot, options, theme) : []),
-    invalidate: () => {},
-  });
-
-  if (ctx.hasUI) {
-    ctx.ui.setWidget(key, widgetFactory, { placement });
-  }
-
-  return {
-    update(s) {
-      snapshot = s;
-      if (!ctx.hasUI) return;
-      if (showStatus) ctx.ui.setStatus(key, statusLine(s, completed));
-      ctx.ui.setWidget(key, widgetFactory, { placement });
-    },
-    complete(s) {
-      snapshot = s;
-      completed = true;
-      if (!ctx.hasUI) return;
-      if (showStatus) ctx.ui.setStatus(key, statusLine(s, true));
-      ctx.ui.setWidget(key, widgetFactory, { placement });
-    },
-    clear() {
-      if (!ctx.hasUI) return;
-      if (showStatus) ctx.ui.setStatus(key, undefined);
-      ctx.ui.setWidget(key, undefined);
-    },
-  };
-}
-
-export function createToolUpdateWorkflowDisplay(
-  onUpdate: ((result: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined,
-  ctx?: Pick<ExtensionContext, "ui" | "hasUI">,
-  options: WorkflowDisplayOptions & { streamToolUpdates?: boolean } = {},
-): WorkflowDisplay {
-  const widget = ctx ? createWidgetWorkflowDisplay(ctx, options) : undefined;
-  const streamToolUpdates = options.streamToolUpdates ?? !ctx?.hasUI;
-
-  const emit = (snapshot: WorkflowSnapshot, completed = false) => {
-    if (streamToolUpdates) {
-      onUpdate?.({
-        content: [{ type: "text", text: renderWorkflowText(snapshot, completed) }],
-        details: snapshot,
-      });
-    }
-    if (completed) widget?.complete(snapshot);
-    else widget?.update(snapshot);
-  };
-
-  return {
-    update(snapshot) {
-      emit(snapshot, false);
-    },
-    complete(snapshot) {
-      emit(snapshot, true);
-    },
-    clear() {
-      widget?.clear();
-    },
-  };
-}
-
-/** Minimal theme surface so rendering works without a real Theme (tool output, tests). */
+/** Minimal theme surface the navigator renders with, so its views work without a real Theme in tests. */
 export interface ThemeLike {
   fg(color: string, text: string): string;
   bold(text: string): string;
 }
 
-/** Identity passthrough for contexts where no theme is available (tool text output). */
-const NO_THEME: ThemeLike = { fg: (_c, t) => t, bold: (t) => t };
+/** The text view lists only each phase's most recent agents, so a large fleet stays readable. */
+const TEXT_AGENTS_PER_PHASE = 8;
 
-/** The bracketed per-agent token cell (" [89 tok · 3,000 cached]"), or "" when nothing is known yet. */
-function agentTokenCell(agent: WorkflowAgentSnapshot, theme: ThemeLike): string {
-  const segment = fmtTokenSegment(tokenFigures(agent.tokenUsage, agent.tokens), fmtFull);
-  return segment ? theme.fg("dim", ` [${segment}]`) : "";
-}
-
-export function renderWorkflowLines(
-  snapshot: WorkflowSnapshot,
-  options: WorkflowDisplayOptions = {},
-  theme: ThemeLike = NO_THEME,
-): string[] {
-  // A non-positive or fractional cap falls back or rounds down (mirrors
-  // clampMaxAgents in the task panel): slice(-0) and slice(-0.5) both equal
-  // slice(0) and would render every agent.
-  const maxAgents =
-    options.maxAgents !== undefined && options.maxAgents > 0 ? Math.max(1, Math.floor(options.maxAgents)) : 8;
-  const showResultPreviews = options.showResultPreviews ?? false;
+/** Plain-text progress of a run, for hosts that can only print text (`/workflows status`, the final watch message). */
+export function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false): string {
   const state =
     snapshot.errorCount > 0
       ? `, ${snapshot.errorCount} errors`
       : snapshot.runningCount > 0
         ? `, ${snapshot.runningCount} running`
         : "";
-  // Build header with token info (and cost when the provider reports it)
   const usage = snapshot.tokenUsage;
-  const costInfo = usage?.cost ? ` · ${fmtCost(usage.cost)}` : "";
   const segment = fmtTokenSegment(tokenFigures(usage), fmtFull);
-  const tokenInfo = `${segment ? ` · ${segment}` : ""}${costInfo}`;
+  const tokenInfo = `${segment ? ` · ${segment}` : ""}${usage?.cost ? ` · ${fmtCost(usage.cost)}` : ""}`;
   const lines = [
-    `${theme.bold(`◆ Workflow: ${snapshot.name}`)} (${snapshot.doneCount}/${snapshot.agentCount} done${state}${tokenInfo})`,
+    completed ? "Workflow completed" : "Workflow running",
+    `◆ Workflow: ${snapshot.name} (${snapshot.doneCount}/${snapshot.agentCount} done${state}${tokenInfo})`,
   ];
+  for (const group of groupAgentsByPhase(snapshot)) lines.push(...phaseLines(group, snapshot.currentPhase));
+  return lines.join("\n");
+}
 
-  const phaseNames = snapshot.phases.length
-    ? snapshot.phases
-    : unique(snapshot.agents.map((agent) => agent.phase).filter(Boolean) as string[]);
-  const rendered = new Set<WorkflowAgentSnapshot>();
-
-  // Single-pass phase bucketing: per-phase filter() loops made
-  // every render O(phases × agents), which dominates at large fleets.
-  const agentsByPhase = new Map<string, WorkflowAgentSnapshot[]>();
-  for (const agent of snapshot.agents) {
-    // Degenerate case: an agent whose phase is "" renders under "Unphased"
-    // even when meta.phases declares a ""-titled phase (the phase row then
-    // reads 0/0) — same as the pre-bucketing behavior for untitled agents.
-    if (!agent.phase) continue;
-    let bucket = agentsByPhase.get(agent.phase);
-    if (!bucket) {
-      bucket = [];
-      agentsByPhase.set(agent.phase, bucket);
-    }
-    bucket.push(agent);
+/** One phase: a marker and tally line, then its most recent agents. */
+function phaseLines({ title, agents, counts }: PhaseGroup, currentPhase: string | undefined): string[] {
+  const settled = agents.length > 0 && counts.done + counts.error + counts.skipped === agents.length;
+  const marker = counts.running > 0 || (!settled && currentPhase === title) ? "▶" : settled ? "✓" : " ";
+  const tally = [
+    `${counts.done}/${agents.length}`,
+    counts.running ? `${counts.running} running` : "",
+    counts.error ? `${counts.error} errors` : "",
+    counts.skipped ? `${counts.skipped} skipped` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const visible = agents.slice(-TEXT_AGENTS_PER_PHASE);
+  const lines = [`  ${marker} ${title} ${tally}`];
+  for (const agent of visible) {
+    lines.push(`    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokenCell(agent)}`);
   }
-
-  for (const phase of phaseNames) {
-    const agents = agentsByPhase.get(phase) ?? [];
-    for (const agent of agents) rendered.add(agent);
-    const done = agents.filter((agent) => agent.status === "done").length;
-    const running = agents.filter((agent) => agent.status === "running").length;
-    const errors = agents.filter((agent) => agent.status === "error").length;
-    const skipped = agents.filter((agent) => agent.status === "skipped").length;
-    const complete = agents.length > 0 && done + errors + skipped === agents.length;
-    const marker = running > 0 || (!complete && snapshot.currentPhase === phase) ? "▶" : complete ? "✓" : " ";
-    lines.push(
-      theme.fg("accent", `  ${marker} ${phase}`) +
-        theme.fg(
-          "dim",
-          ` ${done}/${agents.length}${running ? ` · ${running} running` : ""}${errors ? ` · ${errors} errors` : ""}${skipped ? ` · ${skipped} skipped` : ""}`,
-        ),
-    );
-
-    const visibleAgents = agents.slice(-maxAgents);
-    for (const agent of visibleAgents) {
-      const order = `[${agent.id}]`;
-      const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      lines.push(
-        `    ${order} ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokenCell(agent, theme)}${result}`,
-      );
-    }
-    if (agents.length > visibleAgents.length)
-      lines.push(theme.fg("dim", `    … ${agents.length - visibleAgents.length} earlier agents`));
-  }
-
-  const unphased = snapshot.agents.filter((agent) => !rendered.has(agent));
-  if (unphased.length) {
-    lines.push(theme.fg("accent", "  Unphased"));
-    for (const agent of unphased.slice(-maxAgents)) {
-      const result = showResultPreviews && agent.resultPreview ? ` — ${agent.resultPreview}` : "";
-      lines.push(
-        `    [${agent.id}] ${statusIcon(agent.status)} ${shorten(agent.label, 48)}${agentTokenCell(agent, theme)}${result}`,
-      );
-    }
-  }
-
+  if (agents.length > visible.length) lines.push(`    … ${agents.length - visible.length} earlier agents`);
   return lines;
 }
 
-export function renderWorkflowText(snapshot: WorkflowSnapshot, completed = false): string {
-  const header = completed ? "Workflow completed" : "Workflow running";
-  return [header, ...renderWorkflowLines(snapshot)].join("\n");
-}
-
-function statusLine(snapshot: WorkflowSnapshot, completed: boolean): string {
-  if (completed) return `workflow ✓ ${snapshot.name}: ${snapshot.doneCount}/${snapshot.agentCount}`;
-  if (snapshot.runningCount > 0)
-    return `workflow ${snapshot.name}: ${snapshot.runningCount} running, ${snapshot.doneCount}/${snapshot.agentCount} done`;
-  return `workflow ${snapshot.name}: ${snapshot.doneCount}/${snapshot.agentCount} done`;
+/** The bracketed per-agent token cell (" [89 tok · 3,000 cached]"), or "" when nothing is known yet. */
+function agentTokenCell(agent: WorkflowAgentSnapshot): string {
+  const segment = fmtTokenSegment(tokenFigures(agent.tokenUsage, agent.tokens), fmtFull);
+  return segment ? ` [${segment}]` : "";
 }
 
 export function statusIcon(status: WorkflowAgentStatus): string {
@@ -464,10 +312,6 @@ export function statusIcon(status: WorkflowAgentStatus): string {
     case "skipped":
       return "-";
   }
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
 }
 
 export function shorten(value: string, max: number): string {

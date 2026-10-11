@@ -1,16 +1,15 @@
 /**
  * Comprehensive tests for workflow display rendering:
  *
- * 1. renderWorkflowText / renderWorkflowLines — how the workflow UI
- *    renders progress, results, phases, agents, logs, tokens, cost
- * 2. createWidgetWorkflowDisplay / createToolUpdateWorkflowDisplay —
- *    the lifecycle: update → complete → clear
+ * 1. renderWorkflowText — how the plain-text status view renders
+ *    progress, phases, agents, tokens, cost
+ * 2. Phase grouping — the text view and the navigator list the same phases
  * 3. deliverText — how background-run results are formatted for the user
- * 4. Pure helper functions: preview, shorten, statusIcon, statusLine
+ * 4. Pure helper functions: preview
  */
 
 import assert from "node:assert/strict";
-import { describe, it, mock } from "node:test";
+import { describe, it } from "node:test";
 import { aggregateAgentUsage, fmtFull, fmtTokenSegment, tokenFigures } from "../src/display.js";
 import type { WorkflowMeta } from "../src/workflow.js";
 
@@ -115,78 +114,68 @@ describe("renderWorkflowText", () => {
   });
 
   it("shows error count", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines, recomputeWorkflowSnapshot } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText, recomputeWorkflowSnapshot } = await loadDisplay();
     const snap = recomputeWorkflowSnapshot(createWorkflowSnapshot(fakeMeta()));
     snap.agents = [agent(1, "a1", "done", "Research"), agent(2, "a2", "error", "Research")] as never[];
-    const text = renderWorkflowLines(recomputeWorkflowSnapshot(snap)).join("\n");
+    const text = renderWorkflowText(recomputeWorkflowSnapshot(snap));
     assert.ok(text.includes("1 errors"), "should show error count");
   });
 
-  it("maxAgents: 0 falls back to the default cap instead of rendering ALL agents (audit2 #31)", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines, recomputeWorkflowSnapshot } = await loadDisplay();
-    const snap = recomputeWorkflowSnapshot(createWorkflowSnapshot(fakeMeta()));
-    snap.agents = Array.from({ length: 12 }, (_, i) => agent(i + 1, `a${i + 1}`, "done", "Research")) as never[];
-    const text = renderWorkflowLines(recomputeWorkflowSnapshot(snap), { maxAgents: 0 }).join("\n");
-    // slice(-0) === slice(0) would render all 12; the fallback caps at 8.
-    assert.ok(!text.includes("a1") || text.includes("earlier agents"), "the cap applies");
-    assert.ok(text.includes("earlier agents"), "truncation note rendered");
-  });
-
   it("shows running count in header", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines, recomputeWorkflowSnapshot } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText, recomputeWorkflowSnapshot } = await loadDisplay();
     const snap = recomputeWorkflowSnapshot(createWorkflowSnapshot(fakeMeta()));
     snap.agents = [agent(1, "a1", "done", "Research"), agent(2, "a2", "running", "Research")] as never[];
-    const text = renderWorkflowLines(recomputeWorkflowSnapshot(snap)).join("\n");
-    assert.ok(text.includes("running"), "should show running in header");
+    const text = renderWorkflowText(recomputeWorkflowSnapshot(snap));
+    assert.ok(text.includes("(1/2 done, 1 running)"), "should show running in header");
   });
 
   it("shows cost info when tokenUsage has cost", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.tokenUsage = { input: 1000, output: 500, total: 1500, cost: 0.042 };
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     // fmtCost: 2 decimals from one cent up, 4 below it (shared across all surfaces).
     assert.ok(text.includes("$0.04"), "should show cost");
   });
 
   it("shows token info without cost when cost is absent", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.tokenUsage = { input: 500, output: 300, total: 800 };
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("800"), "should show token count");
     assert.ok(!text.includes("$"), "should NOT show cost when absent");
   });
 
   it("shows skipped agents in phase line", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines, recomputeWorkflowSnapshot } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText, recomputeWorkflowSnapshot } = await loadDisplay();
     const snap = recomputeWorkflowSnapshot(createWorkflowSnapshot(fakeMeta("t", "d", ["Phase"])));
     snap.agents = [agent(1, "a1", "done", "Phase"), agent(2, "a2", "skipped", "Phase")] as never[];
-    const text = renderWorkflowLines(recomputeWorkflowSnapshot(snap)).join("\n");
+    const text = renderWorkflowText(recomputeWorkflowSnapshot(snap));
     assert.ok(text.includes("1 skipped"), "should show skipped count");
   });
 
   it("shows unphased agents when agents have no phase", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta("t", "d", []));
     snap.agents = [agent(1, "orphan", "done")] as never[];
-    const text = renderWorkflowLines(snap).join("\n");
-    assert.ok(text.includes("Unphased"), "should show unphased section");
+    const text = renderWorkflowText(snap);
+    assert.ok(text.includes("(no phase)"), "should show the phase-less group");
     assert.ok(text.includes("orphan"), "should contain orphan");
   });
 
   it("shows agent tokens when available", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.agents = [agent(1, "heavy-agent", "done", "Research", { tokens: 12345 })] as never[];
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     // toLocaleString() output depends on locale (UK/US uses commas, PL uses NBSP)
     // Check with a regex matching any thousands separator between 12 and 345
     assert.ok(/12[ ,.\u00a0]345/.test(text), "should show formatted token count");
   });
 
   it("shows a fresh/cache split for an agent with tokenUsage", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.agents = [
       agent(1, "cached-agent", "done", "Research", {
@@ -194,7 +183,7 @@ describe("renderWorkflowText", () => {
         tokenUsage: { input: 80_000, output: 20_000, total: 3_100_000, cacheRead: 3_000_000, cacheWrite: 0, cost: 0.4 },
       }),
     ] as never[];
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     // fresh (input+output = 100,000) reads as "tok"; cacheRead (3,000,000) as "cached" (locale-flexible separators)
     assert.ok(/100[ ,.\u00a0]000 tok/.test(text), "shows fresh (input+output) as tok");
     assert.ok(/3[ ,.\u00a0]000[ ,.\u00a0]000 cached/.test(text), "shows cacheRead as cached");
@@ -239,17 +228,17 @@ describe("renderWorkflowText", () => {
   });
 
   it("header falls back to the estimated total when the provider reported no usage (#57 regression)", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     // onUsage never fired: breakdown is all-zero, total carries the estimate.
     snap.tokenUsage = { input: 0, output: 0, total: 800 };
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("800 tok"), `estimate should survive in the header; got: ${text}`);
     assert.ok(!/\b0 tok/.test(text), `must not render a zero breakdown; got: ${text}`);
   });
 
   it("keeps the scalar estimate for a cost-only agent row (#57 regression)", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.agents = [
       agent(1, "cost-only-agent", "done", "Research", {
@@ -257,16 +246,16 @@ describe("renderWorkflowText", () => {
         tokenUsage: { input: 0, output: 0, total: 0, cacheRead: 0, cacheWrite: 0, cost: 0.02 },
       }),
     ] as never[];
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(/\[384 tok\]/.test(text), `cost-only agent should show its scalar estimate; got: ${text}`);
   });
 
   it("suppresses the header token segment for an all-zero usage aggregate (#57 regression)", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     // e.g. a fully journal-replayed resume, or a run whose agents were all skipped.
     snap.tokenUsage = { input: 0, output: 0, total: 0 };
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(!/\b0 tok/.test(text), `an all-zero aggregate must not render "0 tok"; got: ${text}`);
   });
 
@@ -278,19 +267,19 @@ describe("renderWorkflowText", () => {
   });
 
   it("truncates long agent labels", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     snap.agents = [agent(1, "x".repeat(100), "done", "Research")] as never[];
-    const text = renderWorkflowLines(snap).join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("…"), "should truncate with ellipsis");
     assert.ok(text.length < 200, "should not include the full 100-char label");
   });
 
-  it("shows 'earlier agents' when more agents than maxAgents", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+  it("shows 'earlier agents' past the per-phase cap", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta("t", "d", ["Phase"]));
     snap.agents = Array.from({ length: 20 }, (_, i) => agent(i + 1, `agent-${i + 1}`, "done", "Phase")) as never[];
-    const text = renderWorkflowLines(snap, { maxAgents: 5 }).join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("earlier agents"), "should mention earlier agents");
     assert.ok(text.includes("agent-20"), "should show last agent");
     // Use word boundary to avoid matching "agent-1" inside "agent-11", "agent-12", etc.
@@ -309,255 +298,7 @@ describe("renderWorkflowText", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// createWidgetWorkflowDisplay lifecycle
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("createWidgetWorkflowDisplay lifecycle", () => {
-  it("update calls setWidget constructor once and re-renders via component", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "test-wf" });
-
-    // Constructor registers the widget as a component factory (callback, not array)
-    assert.equal(setWidget.mock.callCount(), 1);
-    const [key, widget, _opts] = setWidget.mock.calls[0].arguments;
-    assert.equal(key, "test-wf");
-    assert.equal(typeof widget, "function", "widget should be a component factory function");
-
-    // The component factory produces a Component with a render method
-    const comp = widget(
-      undefined as never,
-      {
-        fg: (_c: string, t: string) => t,
-        bold: (t: string) => t,
-      } as never,
-    );
-    assert.ok(comp, "component factory should return a component");
-    assert.equal(typeof comp.render, "function", "component should have a render method");
-
-    // update doesn't call setWidget again (mutable state)
-    const snap = createWorkflowSnapshot(fakeMeta());
-    display.update(snap);
-    assert.equal(setWidget.mock.callCount(), 2, "update should call setWidget to re-register");
-
-    // But the component's render function returns the latest snapshot lines
-    const lines = comp.render(80);
-    assert.ok(Array.isArray(lines), "render should return lines");
-    assert.ok(lines.length > 0, "rendered lines should not be empty");
-  });
-
-  it("complete does not re-register widget (constructor did it)", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus: mock.fn() },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never);
-    assert.equal(setWidget.mock.callCount(), 1, "constructor registers widget once");
-
-    const snap = createWorkflowSnapshot(fakeMeta());
-    display.complete(snap);
-
-    // Complete updates mutable state, doesn't re-register
-    assert.equal(setWidget.mock.callCount(), 2, "complete should call setWidget to re-register");
-  });
-
-  it("clear removes widget and status", async () => {
-    const { createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never, { showStatus: true });
-    // Constructor registers the widget once
-    assert.equal(setWidget.mock.callCount(), 1);
-
-    display.clear();
-
-    // Clear calls setWidget(undefined) to remove it + setStatus(undefined)
-    assert.equal(setWidget.mock.callCount(), 2, "constructor + clear = 2 calls");
-    assert.equal(setWidget.mock.calls[1].arguments[1], undefined, "widget should be cleared");
-    assert.equal(setStatus.mock.callCount(), 1);
-    assert.equal(setStatus.mock.calls[0].arguments[1], undefined, "status should be cleared");
-  });
-
-  it("does nothing when hasUI is false", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: false,
-      ui: { setWidget, setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never);
-    const snap = createWorkflowSnapshot(fakeMeta());
-    display.update(snap);
-    display.complete(snap);
-    display.clear();
-
-    assert.equal(setWidget.mock.callCount(), 0, "should not call setWidget when no UI");
-  });
-
-  it("sets status line when showStatus is enabled", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setStatus = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget: mock.fn(), setStatus },
-    };
-
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "wf", showStatus: true });
-    const snap = createWorkflowSnapshot(fakeMeta("test-wf"));
-    snap.agents = [agent(1, "a1", "done", "Research"), agent(2, "a2", "running", "Research")] as never[];
-    display.update(snap);
-
-    assert.equal(setStatus.mock.callCount(), 1);
-    const [, statusText] = setStatus.mock.calls[0].arguments;
-    assert.ok(statusText.includes("test-wf"), "status should include workflow name");
-  });
-
-  it("re-renders via setWidget even when showStatus is false (default)", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const ctx = {
-      hasUI: true,
-      ui: { setWidget, setStatus: mock.fn() },
-    };
-
-    // showStatus defaults to false
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "wf-no-status" });
-    assert.equal(setWidget.mock.callCount(), 1, "constructor registers widget once");
-
-    // update() re-registers the widget (invalidation signal to pi-tui)
-    const snap = createWorkflowSnapshot(fakeMeta("no-status-wf"));
-    display.update(snap);
-    assert.equal(setWidget.mock.callCount(), 2, "update must re-register widget (invalidation signal)");
-
-    // Extract the re-registered factory and verify it renders the latest snapshot
-    const [, factory2] = setWidget.mock.calls[1].arguments;
-    assert.equal(typeof factory2, "function", "factory must be a function");
-    const comp2 = factory2(null, { fg: (_c, t) => t, bold: (t) => t });
-    assert.equal(typeof comp2.render, "function", "factory must produce a component with render()");
-
-    // Spy on render to prove it produces updated output
-    const renderSpy = comp2.render;
-    const lines2 = renderSpy(80);
-    assert.ok(lines2.length > 0, "render() returned non-empty lines with showStatus=false");
-    assert.ok(
-      lines2.some((l) => l.includes("no-status-wf")),
-      "render output includes snapshot workflow name",
-    );
-    assert.ok(
-      lines2.some((l) => l.includes("0/0")),
-      "render output includes agent count from snapshot",
-    );
-
-    // complete() must also re-register the factory
-    display.complete(snap);
-    assert.equal(setWidget.mock.callCount(), 3, "complete must re-register widget (invalidation signal)");
-
-    // Verify the post-complete factory also renders updated content
-    const [, factory3] = setWidget.mock.calls[2].arguments;
-    const comp3 = factory3(null, { fg: (_c, t) => t, bold: (t) => t });
-    const lines3 = comp3.render(80);
-    assert.ok(
-      lines3.some((l) => l.includes("no-status-wf")),
-      "post-complete render shows workflow name",
-    );
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// createToolUpdateWorkflowDisplay lifecycle
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe("createToolUpdateWorkflowDisplay lifecycle", () => {
-  it("update calls onUpdate with rendered text when streamToolUpdates is true", async () => {
-    const { createWorkflowSnapshot, createToolUpdateWorkflowDisplay } = await loadDisplay();
-
-    const onUpdate = mock.fn();
-    const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, { streamToolUpdates: true });
-    const snap = createWorkflowSnapshot(fakeMeta());
-    display.update(snap);
-
-    assert.equal(onUpdate.mock.callCount(), 1);
-    const [{ content }] = onUpdate.mock.calls[0].arguments;
-    assert.ok(Array.isArray(content), "content should be an array");
-    assert.equal(content[0].type, "text");
-    assert.ok(content[0].text.includes("Workflow"), "should include workflow status text");
-  });
-
-  it("update does NOT call onUpdate when streamToolUpdates is false", async () => {
-    const { createWorkflowSnapshot, createToolUpdateWorkflowDisplay } = await loadDisplay();
-
-    const onUpdate = mock.fn();
-    const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, { streamToolUpdates: false });
-    display.update(createWorkflowSnapshot(fakeMeta()));
-
-    assert.equal(onUpdate.mock.callCount(), 0, "should not update when streaming is disabled");
-  });
-
-  it("complete emits final render with completed flag", async () => {
-    const { createWorkflowSnapshot, createToolUpdateWorkflowDisplay } = await loadDisplay();
-
-    const onUpdate = mock.fn();
-    const display = createToolUpdateWorkflowDisplay(onUpdate, undefined, { streamToolUpdates: true });
-    const snap = createWorkflowSnapshot(fakeMeta("done-wf"));
-    display.complete(snap);
-
-    const [{ content }] = onUpdate.mock.calls[0].arguments;
-    assert.ok(content[0].text.includes("done-wf"), "should include workflow name");
-  });
-
-  it("clear does not throw", async () => {
-    const { createToolUpdateWorkflowDisplay } = await loadDisplay();
-    const display = createToolUpdateWorkflowDisplay(undefined, undefined);
-    assert.doesNotThrow(() => display.clear());
-  });
-
-  it("accepts a widget ctx and delegates to widget lifecycle", async () => {
-    const { createWorkflowSnapshot, createToolUpdateWorkflowDisplay } = await loadDisplay();
-
-    const setWidget = mock.fn();
-    const ctx = { hasUI: true, ui: { setWidget, setStatus: mock.fn() } };
-    const display = createToolUpdateWorkflowDisplay(undefined, ctx as never, { key: "tool-wf" });
-
-    // Constructor registers the component factory once
-    assert.equal(setWidget.mock.callCount(), 1, "constructor should register widget once");
-
-    // update/complete re-register the widget to trigger re-render
-    display.update(createWorkflowSnapshot(fakeMeta()));
-    assert.equal(setWidget.mock.callCount(), 2, "update should call setWidget to re-register");
-
-    display.complete(createWorkflowSnapshot(fakeMeta("done")));
-    assert.equal(setWidget.mock.callCount(), 3, "complete should call setWidget to re-register");
-
-    // clear removes the widget
-    display.clear();
-    assert.equal(setWidget.mock.callCount(), 4, "clear should remove widget (4th call)");
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Pure helpers: preview, shorten, statusIcon, statusLine
+// Pure helpers: preview
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("display pure helpers", () => {
@@ -596,21 +337,6 @@ describe("display pure helpers", () => {
     const result = preview(arr, 50);
     assert.ok(result.length > 0, "result should not be empty");
     assert.ok(result.includes("1"), "should contain 1");
-  });
-
-  it("statusLine shows completed state", async () => {
-    const { createWorkflowSnapshot, createWidgetWorkflowDisplay } = await loadDisplay();
-    // statusLine is internal to display.ts — tested via widget display
-    const setStatus = mock.fn();
-    const ctx = { hasUI: true, ui: { setWidget: mock.fn(), setStatus } };
-    const display = createWidgetWorkflowDisplay(ctx as never, { key: "s", showStatus: true });
-    const snap = createWorkflowSnapshot(fakeMeta("bench"));
-    snap.agents = [agent(1, "a1", "done", "Research")] as never[];
-    snap.agentCount = 1;
-    snap.doneCount = 1;
-    display.complete(snap);
-    const [, statusText] = setStatus.mock.calls[0].arguments;
-    assert.ok(statusText.includes("✓"), "completed status shows checkmark");
   });
 });
 
@@ -792,88 +518,112 @@ describe("recomputeWorkflowSnapshot", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// renderWorkflowLines edge cases
+// renderWorkflowText edge cases
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("renderWorkflowLines edge cases", () => {
+describe("renderWorkflowText edge cases", () => {
   it("handles empty agents array", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const lines = renderWorkflowLines(snap);
-    assert.ok(lines.length > 0, "should still produce output");
-    assert.ok(lines[0].includes("0/0"), "should show 0/0 done");
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
+    const summary = renderWorkflowText(createWorkflowSnapshot(fakeMeta())).split("\n")[1];
+    assert.ok(summary.includes("0/0 done"), "should show 0/0 done");
   });
 
   it("handles multiple phases with varying agent counts", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines, recomputeWorkflowSnapshot } = await loadDisplay();
+    const { createWorkflowSnapshot, renderWorkflowText, recomputeWorkflowSnapshot } = await loadDisplay();
     const snap = recomputeWorkflowSnapshot(createWorkflowSnapshot(fakeMeta("t", "d", ["Alpha", "Beta"])));
     snap.agents = [
       agent(1, "a1", "done", "Alpha"),
       agent(2, "a2", "done", "Beta"),
       agent(3, "a3", "running", "Beta"),
     ] as never[];
-    const text = renderWorkflowLines(recomputeWorkflowSnapshot(snap)).join("\n");
-    assert.ok(text.includes("Alpha"), "should contain Alpha");
-    assert.ok(text.includes("Beta"), "should contain Beta");
-    assert.ok(text.includes("running"), "should show running in Beta");
+    const text = renderWorkflowText(recomputeWorkflowSnapshot(snap));
+    assert.ok(text.includes("✓ Alpha 1/1"), "Alpha is complete");
+    assert.ok(text.includes("▶ Beta 1/2 · 1 running"), "Beta shows its running agent");
   });
 
-  it("mentions the workflow name in the first line", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta("check-everything"));
-    const lines = renderWorkflowLines(snap);
-    assert.ok(lines[0].includes("check-everything"), "should contain check-everything");
+  it("mentions the workflow name in the summary line", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
+    const summary = renderWorkflowText(createWorkflowSnapshot(fakeMeta("check-everything"))).split("\n")[1];
+    assert.ok(summary.includes("check-everything"), "should contain check-everything");
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TUI rendering: no markdown syntax leaked into display
+// Phase grouping: the text view and the navigator list the same phases
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("TUI rendering has no markdown syntax", () => {
-  it("renderWorkflowLines uses [id] instead of #id prefix", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
+describe("phase grouping shared by the text view and the navigator", () => {
+  /** Phase titles in the order the text view prints them. */
+  function textPhaseTitles(text: string): string[] {
+    return text
+      .split("\n")
+      .filter((line) => /^ {2}[▶✓ ] [^[…]/.test(line))
+      .map((line) => line.slice(4).replace(/ \d+\/\d+.*$/, ""));
+  }
+
+  it("lists an agent-only phase after the declared ones instead of folding it into another group", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText, recomputeWorkflowSnapshot } = await loadDisplay();
+    const { phaseRows } = await import("../src/navigator/rows.js");
+    const snap = createWorkflowSnapshot(fakeMeta("t", "d", ["Declared"]));
+    snap.agents = [agent(1, "declared-agent", "done", "Declared"), agent(2, "extra-agent", "done", "Extra")] as never[];
+    const text = renderWorkflowText(recomputeWorkflowSnapshot(snap));
+    assert.deepEqual(textPhaseTitles(text), ["Declared", "Extra"]);
+    assert.deepEqual(
+      phaseRows(snap).map((row) => row.title),
+      ["Declared", "Extra"],
+    );
+    assert.match(text, /✓ Extra 1\/1\n {4}\[2\] ✓ extra-agent/);
+  });
+
+  it("orders agent-only and phase-less groups by first appearance on both surfaces", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText, recomputeWorkflowSnapshot } = await loadDisplay();
+    const { phaseRows } = await import("../src/navigator/rows.js");
+    const snap = createWorkflowSnapshot(fakeMeta("t", "d", ["Plan", "Ship"]));
+    snap.agents = [
+      agent(1, "late", "running", "Late"),
+      agent(2, "orphan", "queued"),
+      agent(3, "planner", "done", "Plan"),
+      agent(4, "late-2", "error", "Late"),
+    ] as never[];
+    const expected = ["Plan", "Ship", "Late", "(no phase)"];
+    const text = renderWorkflowText(recomputeWorkflowSnapshot(snap));
+    assert.deepEqual(textPhaseTitles(text), expected);
+    assert.deepEqual(
+      phaseRows(snap).map((row) => [row.title, row.done, row.total]),
+      [
+        ["Plan", 1, 1],
+        ["Ship", 0, 0],
+        ["Late", 0, 2],
+        ["(no phase)", 0, 1],
+      ],
+    );
+    assert.ok(text.includes("▶ Late 0/2 · 1 running · 1 errors"), "the agent-only phase carries its own tally");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Text view: no markdown syntax leaked into display
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("renderWorkflowText has no markdown syntax", () => {
+  it("uses [id] instead of #id prefix", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta("t", "d", ["Phase"]));
     snap.agents = [agent(1, "agent-1", "done", "Phase")] as never[];
-    const text = renderWorkflowLines(snap).join("\n");
-    // Should use bracket notation, not hash notation
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("[1]"), "should use [id] instead of #id");
     assert.ok(!text.includes("#1"), "should NOT use #1 prefix");
   });
 
-  it("renderWorkflowLines has no **bold** markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
-    assert.ok(!text.includes("**"), "should not have bold markdown markers");
-  });
-
-  it("renderWorkflowLines has no ## heading markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
-    assert.ok(!text.includes("##"), "should not have heading markdown markers");
-  });
-
-  it("renderWorkflowLines has no code fence markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowLines(snap).join("\n");
-    assert.ok(!text.includes("```"), "should not have code fence markers");
-  });
-
-  it("renderWorkflowText has no **bold** markers", async () => {
+  it("has no bold, heading, or code fence markers while running or once completed", async () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowText(snap, true);
-    assert.ok(!text.includes("**"), "completed text should not have bold markers");
-  });
-
-  it("renderWorkflowText completed has no ## heading markers", async () => {
-    const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
-    const snap = createWorkflowSnapshot(fakeMeta());
-    const text = renderWorkflowText(snap, true);
-    assert.ok(!text.includes("##"), "completed text should not have heading markers");
+    snap.agents = [agent(1, "a1", "done", "Research")] as never[];
+    for (const text of [renderWorkflowText(snap), renderWorkflowText(snap, true)]) {
+      assert.ok(!text.includes("**"), "should not have bold markdown markers");
+      assert.ok(!text.includes("##"), "should not have heading markdown markers");
+      assert.ok(!text.includes("```"), "should not have code fence markers");
+    }
   });
 });
 

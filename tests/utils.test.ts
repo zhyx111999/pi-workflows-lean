@@ -360,21 +360,20 @@ describe("display", () => {
     assert.ok(completed.includes("completed"), "should contain completed");
   });
 
-  it("renderWorkflowLines shows phases", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await load();
+  it("renderWorkflowText shows phases", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText } = await load();
     const meta: WorkflowMeta = { name: "wf", description: "d", phases: [{ title: "Research" }] };
     const snap = createWorkflowSnapshot(meta);
     snap.agents = [
       { id: 1, label: "agent-1", prompt: "x", status: "done", phase: "Research" },
     ] as WorkflowAgentSnapshot[];
-    const lines = renderWorkflowLines(snap);
-    const text = lines.join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("Research"), "should contain Research");
     assert.ok(text.includes("agent-1"), "should contain agent-1");
   });
 
-  it("renderWorkflowLines shows errors count", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await load();
+  it("renderWorkflowText shows errors count", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText } = await load();
     const meta: WorkflowMeta = { name: "wf", description: "d", phases: [{ title: "Test" }] };
     const snap = createWorkflowSnapshot(meta);
     snap.agents = [
@@ -382,30 +381,16 @@ describe("display", () => {
       { id: 2, label: "a2", prompt: "x", status: "done", phase: "Test" },
     ] as WorkflowAgentSnapshot[];
     snap.errorCount = 1;
-    const lines = renderWorkflowLines(snap);
-    const text = lines.join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("errors"), "should contain errors");
   });
 
-  it("renderWorkflowLines shows result previews when enabled", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await load();
-    const meta: WorkflowMeta = { name: "wf", description: "d" };
-    const snap = createWorkflowSnapshot(meta);
-    snap.agents = [
-      { id: 1, label: "a1", prompt: "x", status: "done", resultPreview: "found 3 issues" },
-    ] as WorkflowAgentSnapshot[];
-    const lines = renderWorkflowLines(snap, { showResultPreviews: true });
-    const text = lines.join("\n");
-    assert.ok(text.includes("found 3 issues"), "should contain found 3 issues");
-  });
-
-  it("renderWorkflowLines shows token info when available", async () => {
-    const { createWorkflowSnapshot, renderWorkflowLines } = await load();
+  it("renderWorkflowText shows token info when available", async () => {
+    const { createWorkflowSnapshot, renderWorkflowText } = await load();
     const meta: WorkflowMeta = { name: "wf", description: "d" };
     const snap = createWorkflowSnapshot(meta);
     snap.tokenUsage = { input: 100, output: 50, total: 150, cost: 0.002 };
-    const lines = renderWorkflowLines(snap);
-    const text = lines.join("\n");
+    const text = renderWorkflowText(snap);
     assert.ok(text.includes("150"), "should contain 150");
     assert.ok(text.includes("$0.0020"), "should contain $0.0020");
   });
