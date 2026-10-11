@@ -432,7 +432,7 @@ describe("workflows-models-command", () => {
 
       assert.ok(titles[0]?.includes("global"), `title should indicate global scope: ${titles[0]}`);
       const menu = selectCalls[0]?.join("\n") ?? "";
-      assert.ok(menu.includes("Editing global tiers"), `menu was:\n${menu}`);
+      assert.ok(!menu.includes("─"), "the menu offers only choices that act");
       assert.ok(menu.includes("small tier → global/small"), `menu was:\n${menu}`);
       assert.ok(menu.includes("Switch to project"), `menu was:\n${menu}`);
     });
@@ -476,7 +476,7 @@ describe("workflows-models-command", () => {
 
       assert.ok(titles[0]?.includes("project"), `title should indicate project scope: ${titles[0]}`);
       const menu = selectCalls[0]?.join("\n") ?? "";
-      assert.ok(menu.includes("Editing project tiers"), `menu was:\n${menu}`);
+      assert.ok(!menu.includes("─"), "the menu offers only choices that act");
       assert.ok(menu.includes("small tier → project/small"), `menu was:\n${menu}`);
       assert.ok(menu.includes("medium tier → global/medium"), `menu was:\n${menu}`);
       assert.ok(menu.includes("Switch to global"), `menu was:\n${menu}`);
