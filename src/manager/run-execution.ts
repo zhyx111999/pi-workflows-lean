@@ -26,8 +26,9 @@ export interface ExecOptions {
   /** Durable checkpoint response being replayed by this execution. */
   resumeCheckpoint?: WorkflowCheckpoint;
   /**
-   * Grace (ms) for the final drain once this run is aborted (default 10_000;
-   * Infinity = unbounded). A host setting, not persisted with the run.
+   * Grace (ms) for agents told to stop: the final drain once this run is
+   * aborted, and a timed-out attempt (default 10_000; Infinity = unbounded).
+   * A host setting, not persisted with the run.
    */
   drainAbortGraceMs?: number;
   /**

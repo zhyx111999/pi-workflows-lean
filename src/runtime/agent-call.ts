@@ -34,6 +34,16 @@ export function createAgent(ctx: RunContext) {
   };
 
   const runAgentCall = async (prompt: string, agentOptions: AgentOptions): Promise<unknown> => {
+    // An un-awaited chain can reach agent() after the terminal drain. Checked
+    // here, with no await before the replay below, so a late call neither
+    // reports to the host nor touches the disposed store, replayed or live.
+    if (state.agentCallbacksClosed) {
+      throw new WorkflowError(
+        "agent() was called after the run ended; await every agent() call before the script returns",
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
     ctx.throwIfAborted();
     validateThinkingLevel(agentOptions.thinking);
 

@@ -67,13 +67,24 @@ test("SharedStore.applyDelta: replaying parallel-agent deltas in callSeq order i
   assert.equal(store.get("y"), 2, "agent 3 write must be present");
 });
 
-test("SharedStore.dispose clears map and agent deltas", () => {
+test("SharedStore.dispose clears every entry and rejects later writes", () => {
   const store = new SharedStore();
   store.put("k", "v");
   store.trackPut("k2", "v2", "run-1:1");
   store.dispose();
   assert.equal(store.get("k"), undefined);
-  assert.deepEqual(store.commitDelta("run-1:1"), {});
+  assert.equal(store.has("k2"), false);
+  assert.deepEqual(store.snapshot(), {});
+
+  const disposed = /disposed/;
+  assert.throws(() => store.put("k", "late"), disposed);
+  assert.throws(() => store.trackPut("k", "late", "run-1:2"), disposed);
+  assert.throws(() => store.applyDelta({ k: "late" }), disposed);
+  assert.throws(() => store.restore({ k: "late" }), disposed);
+  assert.throws(() => store.commitDelta("run-1:1"), disposed, "a disposed store cannot hand out a delta to journal");
+  store.discardDelta("run-1:1");
+  store.dispose();
+  assert.deepEqual(store.snapshot(), {}, "nothing reached the disposed store");
 });
 
 test("SharedStore.discardDelta rolls back to the pre-window value, not an intermediate write", () => {
