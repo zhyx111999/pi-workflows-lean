@@ -117,7 +117,7 @@ function renderPhasesAgents(
   const agents = selPhase ? agentsOf(selPhase.phase) : [];
 
   if (width < LW_MIN + RW_MIN - 1) {
-    return renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, bodyCap, inAgents);
+    return renderSinglePane(state, phases, selPhaseIdx, agents, agentsOf, width, theme, bodyCap, inAgents);
   }
 
   const leftW = computeLeftWidth(phases, width);
@@ -163,6 +163,7 @@ function renderSinglePane(
   phases: PhaseRow[],
   selPhaseIdx: number,
   agents: AgentRow[],
+  agentsOf: (phase: PhaseKey) => AgentRow[],
   width: number,
   theme: ThemeLike,
   bodyCap: number,
@@ -188,7 +189,7 @@ function renderSinglePane(
       phases.length,
       state.cursor,
       bodyCap,
-      (i) => leftPhaseRow(phases[i], i, i === state.cursor, [], innerW, theme),
+      (i) => leftPhaseRow(phases[i], i, i === state.cursor, agentsOf(phases[i].phase), innerW, theme),
       moreRow(innerW, theme),
     );
   }

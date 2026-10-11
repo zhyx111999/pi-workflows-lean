@@ -5,6 +5,7 @@ import type { ThemeLike } from "../display.js";
 import { fmtCompact, fmtTokenSegment, tokenFigures } from "../display.js";
 import { ELLIPSIS, shortModel } from "./format.js";
 import type { AgentRow, PhaseRow } from "./rows.js";
+import type { ListOverflow } from "./viewport.js";
 
 /** Narrowest usable Phases pane, in cells. */
 export const LW_MIN = 14;
@@ -140,9 +141,10 @@ export function rightAgentRow(
   return truncateToWidth(out, innerW, "", true);
 }
 
-/** The row marking more items below a pane's window (content field, exact width = innerW). */
-export function moreRow(innerW: number, theme: ThemeLike): string {
-  return truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
+/** The rows marking more items above or below a pane's window (content field, exact width = innerW). */
+export function moreRow(innerW: number, theme: ThemeLike): (overflow: ListOverflow) => string {
+  return (overflow) =>
+    truncateToWidth(theme.fg("dim", `  ${overflow === "above" ? "↑" : "↓"} ${ELLIPSIS}`), innerW, "", true);
 }
 
 /** Model column start aligned across agent rows, clamped to the field. */

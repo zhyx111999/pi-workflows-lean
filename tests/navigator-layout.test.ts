@@ -86,28 +86,37 @@ function renderRun(
   return renderNavigator(state, model, width, undefined, viewportRows);
 }
 
-const MARKER_ROW = /^│ {2}… *│/;
+const MARKER_ROW = /^│ {2}[↑↓] … *│/;
 
-test("listPaneRows keeps the active item visible and gives the overflow marker its own row", () => {
+test("listPaneRows keeps the active item visible and marks hidden items above and below on rows of their own", () => {
   for (let total = 0; total <= 8; total++) {
     for (let cap = 1; cap <= 6; cap++) {
       for (let active = 0; active < Math.max(1, total); active++) {
-        const rows = listPaneRows(total, active, cap, (i) => `item ${i}`, "more");
+        const rows = listPaneRows(
+          total,
+          active,
+          cap,
+          (i) => `item ${i}`,
+          (overflow) => overflow,
+        );
         const where = `total=${total} cap=${cap} active=${active}`;
         assert.ok(rows.length <= cap, `${where}: ${rows.length} rows exceed the cap`);
         if (total === 0) {
           assert.deepEqual(rows, [], where);
           continue;
         }
-        const items = rows.filter((row) => row !== "more").map((row) => Number(row.slice("item ".length)));
+        const items = rows.filter((row) => row.startsWith("item ")).map((row) => Number(row.slice("item ".length)));
         assert.ok(items.includes(active), `${where}: active item hidden in ${JSON.stringify(rows)}`);
         items.forEach((index, k) => {
           if (k > 0) assert.equal(index, items[k - 1] + 1, `${where}: window is not contiguous`);
         });
-        const last = items[items.length - 1];
-        const marked = rows.includes("more");
-        if (marked) assert.equal(rows[rows.length - 1], "more", `${where}: marker is not the last row`);
-        assert.equal(marked, cap > 1 && last < total - 1, `${where}: marker ${marked} with last item ${last}`);
+        const [first, last] = [items[0], items[items.length - 1]];
+        const below = rows.at(-1) === "below";
+        const above = rows[0] === "above";
+        assert.ok(!rows.slice(1, -1).some((row) => !row.startsWith("item ")), `${where}: a marker inside the window`);
+        assert.equal(below, cap > 1 && last < total - 1, `${where}: below marker ${below} with last item ${last}`);
+        if (above) assert.ok(first > 0, `${where}: an above marker with nothing above`);
+        if (cap >= 3) assert.equal(above, first > 0, `${where}: above marker ${above} with first item ${first}`);
       }
     }
   }
@@ -196,4 +205,26 @@ test("navigator overlay stays inside the host's allocation at every terminal siz
   navigator.handleInput?.("\r");
   assert.match(navigator.render(80).join("\n"), /Phases/);
   sweep("phases");
+});
+
+test("the one-pane phase list colours each phase by its agents' status, as the two-pane view does", () => {
+  const manager = fakeManager([2, 1, 1]);
+  const run = manager.getRun("r0");
+  assert.ok(run);
+  run.snapshot.agents[0].status = "running";
+  run.snapshot.agents[2].status = "error";
+  // Colour names as distinct ANSI codes, which take no width, so layout is unchanged.
+  const codes: Record<string, number> = { error: 31, success: 32, warning: 33, accent: 36, muted: 37, dim: 90 };
+  const ansi = { fg: (c: string, s: string) => `\x1b[${codes[c] ?? 39}m${s}\x1b[39m`, bold: (s: string) => s };
+  const colours = (width: number) => {
+    const model = new NavigatorModel(manager);
+    const state = new NavigatorState();
+    state.drill(model);
+    state.move(1, 3); // leave the first row, whose selection styling hides its status colour
+    const text = renderNavigator(state, model, width, ansi as never, 20).join("\n");
+    return [...text.matchAll(/\x1b\[(\d+)m(\d\/\d)/g)].map((m) => `${m[2]}:${m[1]}`);
+  };
+  const twoPane = colours(80);
+  assert.ok(twoPane.includes(`1/2:${codes.warning}`), JSON.stringify(twoPane));
+  assert.deepEqual(colours(30), twoPane);
 });
