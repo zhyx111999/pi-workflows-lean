@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stopRunWatchers } from "../src/run-watchers.js";
 import { SUBAGENTS_TOOL_NAME } from "../src/subagents-tool.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
 import { buildForcedWorkflowPrompt } from "../src/workflow-editor.js";
@@ -374,7 +375,7 @@ test("/workflows rm without id warns usage", async () => {
 });
 
 test("/workflows rm <id> warns when deleteRun returns false", async () => {
-  const h = harness({ deleteRun: () => false });
+  const h = harness({ deleteRun: () => false, findRun: () => undefined });
   await h.run("rm run-missing");
   assert.ok(
     h.notified.some((n) => n.message.includes("No run")),
@@ -437,34 +438,11 @@ test("/workflows save without name warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows save <name> saves the most recent run with a script and registers a live command", async () => {
-  const saved: Array<{ name: string; description?: string; script: string; location?: string }> = [];
-  const storage = {
-    save: (w: { name: string; description?: string; script: string; location?: string }) => {
-      const idx = saved.findIndex((s) => s.name === w.name);
-      if (idx >= 0) saved[idx] = w;
-      else saved.push(w);
-      return { ...w, id: "saved-1", path: `/tmp/${w.name}.json`, savedAt: "now" };
-    },
-    load: (name: string) => saved.find((s) => s.name === name) ?? null,
-    list: () => saved,
-  };
-
-  const runs = [
-    { runId: "old", workflowName: "old", status: "completed", script: null, agents: [], logs: [] },
-    {
-      runId: "recent",
-      workflowName: "scan",
-      status: "completed",
-      script: "export const meta = { name: 'scan', description: 'scan' }; export SCRIPT_V1",
-      agents: [],
-      logs: [],
-    },
-  ];
-
-  const started: string[] = [];
-  const manager = {
+/** A manager fake that finds runs in any session and lists this session's runs. */
+function runsManager(runs: Array<Record<string, unknown>>, started: string[] = []) {
+  return {
     listRuns: () => runs,
+    findRun: (id: string) => runs.find((run) => run.runId === id),
     getSnapshot: () => null,
     getRun: () => undefined,
     pause: () => false,
@@ -476,138 +454,101 @@ test("/workflows save <name> saves the most recent run with a script and registe
       return { runId: "bg-from-save", promise: new Promise(() => {}) };
     },
   } as unknown as WorkflowManager;
+}
 
-  const commands: Array<{ name: string; handler: Handler; description?: string }> = [];
-  let workflowsHandler: Handler | undefined;
+/** The /workflows handler and its registered commands over a real project storage. */
+function saveCommandHarness(manager: WorkflowManager, takenCommands: string[] = []) {
+  const cwd = mkdtempSync(join(tmpdir(), "pwl-save-cmd-"));
+  const storage = createWorkflowStorage(cwd);
+  const commands: Array<{ name: string; handler: Handler }> = takenCommands.map((name) => ({
+    name,
+    handler: async () => {},
+  }));
   registerWorkflowCommands(
     {
       getCommands: () => commands.map((c) => ({ name: c.name })),
-      registerCommand: (name: string, opts: { handler: Handler; description?: string }) => {
-        commands.push({ name, handler: opts.handler, description: opts.description });
-        if (name === "workflows") workflowsHandler = opts.handler;
-      },
+      registerCommand: (name: string, opts: { handler: Handler }) => commands.push({ name, handler: opts.handler }),
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    commandDeps({ manager, storage, cwd: "/cwd" }),
+    commandDeps({ manager, storage, cwd }),
   );
-
-  assert.ok(workflowsHandler, "workflows command must register");
   const notified: Array<{ message: string; type?: string }> = [];
-  await workflowsHandler("save my-scan", {
-    ui: { notify: (m: string, t?: string) => notified.push({ message: m, type: t }) },
-  });
-
-  assert.equal(saved.length, 1, "should persist one workflow");
-  assert.equal(saved[0].name, "my-scan");
-  assert.equal(saved[0].script, runs[1].script);
-  assert.ok(
-    notified.some((n) => n.message.includes("Saved") && n.message.includes("recent")),
-    "should notify Saved with the source run id",
-  );
-
-  const savedCmd = commands.find((c) => c.name === "my-scan");
-  assert.ok(savedCmd, "save must register /my-scan");
-  await savedCmd.handler("", {
-    ui: { notify: () => {}, setStatus: () => {} },
-  });
-  assert.deepEqual(started, [runs[1].script], "registered command must run via manager.startInBackground");
-});
-
-test("/workflows save <name> <runId> saves the specified run", async () => {
-  const saved: Array<{ name: string; description: string; script: string }> = [];
-  const storage: any = {
-    save: (w: any) => {
-      saved.push(w);
-      return { ...w, id: "saved-2" };
-    },
-    load: () => null,
+  const run = async (args: string) => {
+    const workflows = commands.find((c) => c.name === "workflows");
+    assert.ok(workflows, "workflows command must register");
+    await workflows.handler(args, {
+      ui: { notify: (m: string, t?: string) => notified.push({ message: m, type: t }) },
+    });
   };
+  return { storage, commands, notified, run, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
+}
 
+test("/workflows save <name> saves the most recent run with a script and registers a live command", async () => {
   const runs = [
+    { runId: "old", workflowName: "old", status: "completed", script: null, agents: [], logs: [] },
     {
-      runId: "run-target",
-      workflowName: "audit",
+      runId: "recent",
+      workflowName: "scan",
       status: "completed",
-      script: "export const meta = { name: 'audit', description: 'audit' }",
+      script: "export const meta = { name: 'scan', description: 'scan' }; export SCRIPT_V1",
       agents: [],
       logs: [],
     },
   ];
-
-  // Override the handler for one invocation
-  const { registerWorkflowCommands: reg2 } = await import("../src/workflow-commands.js");
-  const notified: Array<{ message: string; type?: string }> = [];
-  let handler: any;
-  reg2(
-    {
-      getCommands: () => [{ name: "xxx" }],
-      registerCommand: (_n: string, o: any) => {
-        handler = o.handler;
-      },
-      sendMessage: async () => {},
-    } as unknown as ExtensionAPI,
-    commandDeps({
-      manager: {
-        listRuns: () => runs,
-        getSnapshot: () => null,
-        getRun: () => undefined,
-        pause: () => false,
-        resume: async () => false,
-        stop: () => false,
-        deleteRun: () => false,
-      } as unknown as WorkflowManager,
-      storage,
-    }),
-  );
-
-  if (handler) {
-    await handler("save target-name run-target", {
-      ui: { notify: (m: string, t?: string) => notified.push({ message: m, type: t }) },
-    });
+  const started: string[] = [];
+  const h = saveCommandHarness(runsManager(runs, started));
+  try {
+    await h.run("save my-scan");
+    assert.equal(h.storage.load("my-scan")?.script, runs[1].script);
+    assert.ok(
+      h.notified.some((n) => n.message.includes("Saved") && n.message.includes("recent")),
+      "should notify Saved with the source run id",
+    );
+    const savedCmd = h.commands.find((c) => c.name === "my-scan");
+    assert.ok(savedCmd, "save must register /my-scan");
+    await savedCmd.handler("", { ui: { notify: () => {}, setStatus: () => {} } });
+    assert.deepEqual(started, [runs[1].script], "registered command must run via manager.startInBackground");
+  } finally {
+    h.cleanup();
   }
-  assert.equal(saved.length, 1, "should save one workflow");
-  assert.equal(saved[0].name, "target-name");
-  assert.equal(saved[0].script, runs[0].script);
-  assert.ok(
-    notified.some((n) => n.message.includes("Saved")),
-    "should notify Saved",
-  );
+});
+
+test("/workflows save <name> <runId> saves the named run, wherever it was started", async () => {
+  const target = {
+    runId: "run-target",
+    workflowName: "audit",
+    status: "completed",
+    script: "export const meta = { name: 'audit', description: 'audit' }",
+    toolset: "web-research",
+    agents: [],
+    logs: [],
+  };
+  // The run belongs to another session, so this session's list does not show it.
+  const manager = { ...runsManager([target]), listRuns: () => [] } as unknown as WorkflowManager;
+  const h = saveCommandHarness(manager);
+  try {
+    await h.run("save target-name run-target");
+    const saved = h.storage.load("target-name");
+    assert.equal(saved?.script, target.script);
+    assert.equal(saved?.toolset, "web-research", "the run's toolset goes with it");
+    assert.ok(h.notified.some((n) => n.message.includes("Saved")));
+  } finally {
+    h.cleanup();
+  }
 });
 
 test("/workflows save <name> <runId> warns when run has no script", async () => {
-  const storage: any = { save: (w: any) => w };
-  let handler: any;
-  const { registerWorkflowCommands: reg3 } = await import("../src/workflow-commands.js");
-  const notified: Array<{ message: string; type?: string }> = [];
-  reg3(
-    {
-      getCommands: () => [{ name: "xxx" }],
-      registerCommand: (_n: string, o: any) => {
-        handler = o.handler;
-      },
-      sendMessage: async () => {},
-    } as unknown as ExtensionAPI,
-    commandDeps({
-      manager: {
-        listRuns: () => [{ runId: "no-script", workflowName: "empty", status: "completed", agents: [], logs: [] }],
-        getSnapshot: () => null,
-        getRun: () => undefined,
-        pause: () => false,
-        resume: async () => false,
-        stop: () => false,
-        deleteRun: () => false,
-      } as unknown as WorkflowManager,
-      storage,
-    }),
+  const h = saveCommandHarness(
+    runsManager([{ runId: "no-script", workflowName: "empty", status: "completed", agents: [], logs: [] }]),
   );
-
-  if (handler) {
-    await handler("save empty no-script", {
-      ui: { notify: (m: string, t?: string) => notified.push({ message: m, type: t }) },
-    });
+  try {
+    await h.run("save empty no-script");
+    assert.equal(h.notified.length, 1);
+    assert.match(h.notified[0].message, /No run/, "should warn no script");
+    assert.equal(h.storage.load("empty"), null);
+  } finally {
+    h.cleanup();
   }
-  assert.equal(notified.length, 1);
-  assert.match(notified[0].message, /No run/, "should warn no script");
 });
 
 const OLD_SCRIPT = "export const meta = { name: 'scan', description: 'old' }\nreturn 'old'";
@@ -617,7 +558,9 @@ const NEW_SCRIPT = "export const meta = { name: 'scan', description: 'new' }\nre
 function replaceSaveHarness() {
   const cwd = mkdtempSync(join(tmpdir(), "pwl-save-cmd-"));
   const storage = createWorkflowStorage(cwd);
-  const { path } = storage.save({ name: "scan", description: "scan", script: OLD_SCRIPT, location: "project" });
+  const seeded = storage.save({ name: "scan", description: "scan", script: OLD_SCRIPT });
+  assert.ok(seeded.ok);
+  const { path } = seeded.workflow;
   const run = { runId: "run-new", workflowName: "scan", status: "completed", script: NEW_SCRIPT, agents: [], logs: [] };
   const commands: string[] = [];
   let workflowsHandler: Handler | undefined;
@@ -630,7 +573,7 @@ function replaceSaveHarness() {
       },
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    commandDeps({ manager: { listRuns: () => [run] }, storage, cwd }),
+    commandDeps({ manager: runsManager([run]), storage, cwd }),
   );
   const notified: Array<{ message: string; type?: string }> = [];
   const questions: string[] = [];
@@ -806,16 +749,7 @@ test("/workflows status watch survives a throwing sendMessage/setStatus (audit2 
   assert.equal(progressAndFinalListenerCount(manager), 0, "listeners still torn down");
 });
 
-test("/workflows save <name> warns (not false-success) when the name is host-owned (audit2 #35)", async () => {
-  const saved: Array<{ name: string; description?: string; script: string }> = [];
-  const storage = {
-    save: (w: { name: string; description?: string; script: string }) => {
-      saved.push(w);
-      return { ...w, id: "saved-1", path: `/tmp/${w.name}.json`, savedAt: "now" };
-    },
-    load: () => null,
-    list: () => saved,
-  };
+test("/workflows save refuses a name another extension owns before anything is written", async () => {
   const runs = [
     {
       runId: "recent",
@@ -826,35 +760,71 @@ test("/workflows save <name> warns (not false-success) when the name is host-own
       logs: [],
     },
   ];
-  const manager = {
-    listRuns: () => runs,
-    getSnapshot: () => null,
-    getRun: () => undefined,
-    pause: () => false,
-    resume: async () => false,
-    stop: () => false,
-    deleteRun: () => false,
-  } as unknown as WorkflowManager;
+  const h = saveCommandHarness(runsManager(runs), ["host-owned"]);
+  try {
+    await h.run("save host-owned");
+    assert.equal(h.storage.load("host-owned"), null, "nothing reaches disk");
+    assert.equal(h.notified.length, 1);
+    assert.equal(h.notified[0].type, "error");
+    assert.match(h.notified[0].message, /^Not saved: \/host-owned is already provided/);
+  } finally {
+    h.cleanup();
+  }
+});
 
-  const commands: Array<{ name: string }> = [{ name: "host-owned" }]; // third-party command
-  let workflowsHandler: Handler | undefined;
+/** A /workflows handler over an event-emitting manager whose run-1 is running. */
+function watchHarness() {
+  const snapshot = { name: "demo", phases: [], logs: [], agents: [], agentCount: 1 };
+  const manager: any = new EventEmitter();
+  manager.getRun = (id: string) => (id === "run-1" ? { runId: "run-1", status: "running", snapshot } : undefined);
+  manager.getSnapshot = () => null;
+  manager.listRuns = () => [];
+  let handler: Handler | undefined;
+  const sent: unknown[] = [];
   registerWorkflowCommands(
     {
-      getCommands: () => commands.map((c) => ({ name: c.name })),
-      registerCommand: (name: string, opts: { handler: Handler }) => {
-        if (name === "workflows") workflowsHandler = opts.handler;
+      getCommands: () => [],
+      registerCommand: (_n: string, o: { handler: Handler }) => {
+        handler = o.handler;
       },
-      sendMessage: async () => {},
+      sendMessage: (message: unknown) => sent.push(message),
     } as unknown as ExtensionAPI,
-    commandDeps({ manager, storage, cwd: "/cwd" }),
+    commandDeps({ manager: manager as unknown as WorkflowManager }),
   );
-  const notified: Array<{ message: string; type?: string }> = [];
-  assert.ok(workflowsHandler);
-  await workflowsHandler("save host-owned", {
-    ui: { notify: (m: string, t?: string) => notified.push({ message: m, type: t }) },
+  return { manager: manager as EventEmitter, sent, watch: (ctx: unknown) => handler?.("watch run-1", ctx) };
+}
+
+test("/workflows watch of a run already watched replaces the watcher instead of adding one", async () => {
+  const h = watchHarness();
+  const ui = { notify: () => {}, setStatus: () => {} };
+  await h.watch({ ui });
+  const once = progressAndFinalListenerCount(h.manager);
+  await h.watch({ ui });
+  assert.equal(progressAndFinalListenerCount(h.manager), once, "one set of listeners per run");
+  h.manager.emit("complete", { runId: "run-1" });
+  assert.equal(h.sent.length, 1, "the final snapshot prints once");
+});
+
+test("a watcher whose session went stale stops quietly instead of throwing into the run", async () => {
+  const h = watchHarness();
+  let stale = false;
+  await h.watch({
+    ui: {
+      notify: () => {},
+      setStatus: () => {
+        if (stale) throw new Error("This extension ctx is stale after session replacement");
+      },
+    },
   });
-  assert.equal(saved.length, 1, "the file persisted");
-  assert.equal(notified.length, 1);
-  assert.equal(notified[0].type, "warning", "a refused registration is a warning, not a success");
-  assert.match(notified[0].message, /cannot be registered/);
+  stale = true;
+  assert.doesNotThrow(() => h.manager.emit("phase", { runId: "run-1" }), "progress never throws into the run");
+  assert.equal(progressAndFinalListenerCount(h.manager), 0, "the stale watcher is gone");
+});
+
+test("session shutdown ends every watcher", async () => {
+  const h = watchHarness();
+  await h.watch({ ui: { notify: () => {}, setStatus: () => {} } });
+  assert.ok(progressAndFinalListenerCount(h.manager) > 0);
+  stopRunWatchers();
+  assert.equal(progressAndFinalListenerCount(h.manager), 0);
 });

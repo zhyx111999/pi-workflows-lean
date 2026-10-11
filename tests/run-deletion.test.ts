@@ -198,7 +198,11 @@ const DELETED_FILES = [
     matches: (name: string) => /^doomed.json.events.[0-9a-f-]{36}.jsonl$/.test(name),
     committed: true,
   },
-  { file: "temporary head", matches: (name: string) => name === "doomed.json.tmp", committed: true },
+  {
+    file: "temporary head",
+    matches: (name: string) => /^doomed.json.[0-9a-f-]{36}.tmp$/.test(name),
+    committed: true,
+  },
   { file: "result artifact", matches: (name: string) => name.startsWith("doomed.json.result-"), committed: true },
   { file: "run log", matches: (name: string) => name === "doomed.log", committed: true },
 ];
@@ -219,7 +223,8 @@ for (const { file, matches, committed } of DELETED_FILES) {
       owner.save(record("doomed", "completed"));
       owner.exportResult("doomed", { answer: 42 });
       writeFileSync(join(owner.getRunsDir(), "doomed.log"), "[log] entry\n");
-      writeFileSync(join(owner.getRunsDir(), "doomed.json.tmp"), "{}");
+      // A head write interrupted before its rename leaves its temporary file.
+      writeFileSync(join(owner.getRunsDir(), `doomed.json.${randomUUID()}.tmp`), "{}");
       // A generation switch that crashed before committing leaves its staged log.
       writeFileSync(join(owner.getRunsDir(), `doomed.json.events.${randomUUID()}.jsonl`), "");
 

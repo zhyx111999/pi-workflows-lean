@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { commitRunSave, planRunSave, replacedWorkflowLabel } from "../src/run-save.js";
-import { createWorkflowStorage, type WorkflowStorage } from "../src/workflow-saved.js";
+import { commitRunSave, planRunSave, replacedWorkflowLabel, runSaveDraft } from "../src/run-save.js";
+import { createWorkflowStorage, type SavedWorkflowDraft, type WorkflowStorage } from "../src/workflow-saved.js";
 
 function withStorage(fn: (storage: WorkflowStorage) => void) {
   return () => {
@@ -32,9 +32,22 @@ test(
 );
 
 test(
+  "a run's toolset is part of what it saves, and of whether content is unchanged",
+  withStorage((storage) => {
+    const draftFor = (toolset?: string) =>
+      runSaveDraft({ workflowName: "research", script: "return 1", toolset }, "research") as SavedWorkflowDraft;
+    assert.equal(draftFor("web-research").toolset, "web-research");
+    const created = planRunSave(storage, draftFor("web-research"));
+    assert.ok(created.kind === "create" && commitRunSave(storage, created).ok);
+    assert.equal(planRunSave(storage, draftFor("web-research")).kind, "unchanged");
+    assert.equal(planRunSave(storage, draftFor(undefined)).kind, "replace", "losing the toolset is a change");
+  }),
+);
+
+test(
   "planRunSave treats declared parameters as different content",
   withStorage((storage) => {
-    storage.save({ ...draft, parameters: { topic: { type: "string" } }, location: "project" });
+    assert.ok(storage.save({ ...draft, parameters: { topic: { type: "string" } } }).ok);
     assert.equal(planRunSave(storage, draft).kind, "replace");
   }),
 );
@@ -44,7 +57,9 @@ test(
   withStorage((storage) => {
     // User workflows live under the shared home, so this one gets its own name.
     const shadowing = { ...draft, name: "shadowed" };
-    const user = storage.save({ ...shadowing, script: "return 'user'", location: "user" }, "user");
+    const saved = storage.save({ ...shadowing, script: "return 'user'" }, { location: "user" });
+    assert.ok(saved.ok);
+    const user = saved.workflow;
     const plan = planRunSave(storage, shadowing);
     assert.equal(plan.kind, "replace");
     if (plan.kind !== "replace") return;
@@ -63,7 +78,7 @@ test(
     const plan = planRunSave(storage, draft);
     assert.equal(plan.kind, "create");
     if (plan.kind !== "create") return;
-    storage.save({ ...draft, script: "return 'other'", location: "project" });
+    assert.ok(storage.save({ ...draft, script: "return 'other'" }).ok);
     const result = commitRunSave(storage, plan);
     assert.equal(result.ok, false);
     assert.equal(!result.ok && result.code, "stale");

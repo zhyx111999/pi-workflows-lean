@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionUIContext, initTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, parseKey } from "@earendil-works/pi-tui";
@@ -8,7 +11,12 @@ import { safeInputText, typedText } from "../src/navigator/input-text.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import type { ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
-import { SAVED_WORKFLOW_NAME_RULE, type SavedWorkflow, type WorkflowStorage } from "../src/workflow-saved.js";
+import {
+  createWorkflowStorage,
+  SAVED_WORKFLOW_NAME_RULE,
+  type SavedWorkflow,
+  type WorkflowStorage,
+} from "../src/workflow-saved.js";
 import {
   keyToAction,
   NavigatorModel,
@@ -1069,6 +1077,7 @@ test("restarting a run with a corrupt persisted script notifies an error instead
         args: undefined,
       } as unknown as PersistedRunState,
     ],
+    findRun: (id: string) => fakeManager.listRuns().find((run: PersistedRunState) => run.runId === id),
     getRun: () => undefined,
     startInBackground: (script: string) => {
       // Mirrors the real WorkflowManager.startInBackground, which parses the
@@ -1193,33 +1202,7 @@ test("stopping a run whose manager.stop throws (cold-run lease/persistence failu
 test("navigator save registers via manager + live loadWorkflow so a same-name overwrite runs the latest script", async () => {
   const { ui, notifications, getComponent } = fakeUiCapturingComponent();
 
-  type Stored = { name: string; description?: string; script: string; parameters?: SavedWorkflow["parameters"] };
-  const store = new Map<string, Stored>();
-  const storage = {
-    list: () =>
-      [...store.values()].map((w) => ({
-        name: w.name,
-        description: w.description ?? "",
-        location: "project" as const,
-        path: `/x/${w.name}.json`,
-        savedAt: "2025-01-01",
-      })),
-    save: (w: Stored & { location?: string }) => {
-      const saved = {
-        name: w.name,
-        description: w.description ?? "",
-        script: w.script,
-        parameters: w.parameters,
-        location: "project" as const,
-        path: `/x/${w.name}.json`,
-        savedAt: "2025-01-01",
-      };
-      store.set(w.name, saved);
-      return saved;
-    },
-    load: (name: string) => store.get(name) ?? null,
-    delete: () => true,
-  };
+  const storage = createWorkflowStorage(mkdtempSync(join(tmpdir(), "pwl-nav-save-")));
 
   const run = {
     runId: "run-1",
@@ -1236,6 +1219,7 @@ test("navigator save registers via manager + live loadWorkflow so a same-name ov
     on: () => {},
     off: () => {},
     listRuns: () => [run],
+    findRun: (id: string) => (id === run.runId ? run : undefined),
     getRun: () => undefined,
     startInBackground: (script: string) => {
       started.push(script);
@@ -1273,16 +1257,16 @@ test("navigator save registers via manager + live loadWorkflow so a same-name ov
   component?.handleInput("s");
   assert.ok(notifications.some((n) => n.message.includes("Saved /scan")));
   assert.equal(commands.filter((c) => c.name === "scan").length, 1);
-  assert.equal(store.get("scan")?.script, "export SCRIPT_V1");
+  assert.equal(storage.load("scan")?.script, "export SCRIPT_V1");
 
   // Overwrite the same name with a new script (the second s confirms the
   // replace); registration is idempotent but the live loader must pick up
   // storage's latest value.
   run.script = "export SCRIPT_V2";
   component?.handleInput("s");
-  assert.equal(store.get("scan")?.script, "export SCRIPT_V1", "a replace waits for confirmation");
+  assert.equal(storage.load("scan")?.script, "export SCRIPT_V1", "a replace waits for confirmation");
   component?.handleInput("s");
-  assert.equal(store.get("scan")?.script, "export SCRIPT_V2");
+  assert.equal(storage.load("scan")?.script, "export SCRIPT_V2");
   assert.equal(commands.filter((c) => c.name === "scan").length, 1, "must not double-register the command");
 
   await commands[0].handler("", {

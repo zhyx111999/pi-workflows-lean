@@ -18,6 +18,10 @@ import {
   isSafeSavedWorkflowName,
   resolveSavedScriptPath,
   SAVED_WORKFLOW_NAME_RULE,
+  type SavedWorkflow,
+  type SavedWorkflowDraft,
+  type SavedWorkflowLocation,
+  type WorkflowStorage,
 } from "../src/workflow-saved.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -38,6 +42,18 @@ function withIsolatedHome(fn: (cwd: string, t: TestContext) => Promise<void>) {
   };
 }
 
+/** Save through the guarded API, failing the test unless it wrote. */
+function save(
+  storage: WorkflowStorage,
+  draft: SavedWorkflowDraft,
+  location: SavedWorkflowLocation = "project",
+  replacing?: SavedWorkflow,
+): SavedWorkflow {
+  const result = storage.save(draft, { location, replacing });
+  assert.ok(result.ok, result.ok ? "" : result.message);
+  return result.workflow;
+}
+
 /** Silence `console.warn` for one test and return the messages logged so far. */
 function captureWarnings(t: TestContext): () => string[] {
   const warn = t.mock.method(console, "warn", () => {});
@@ -48,7 +64,7 @@ test(
   "createWorkflowStorage save creates directory and file",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const saved = storage.save({
+    const saved = save(storage, {
       name: "test-wf",
       description: "A test workflow",
       script: "export const meta = { name: 'test', description: 'test' }",
@@ -67,7 +83,8 @@ test(
   "createWorkflowStorage save to user location",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const saved = storage.save(
+    const saved = save(
+      storage,
       {
         name: "user-wf",
         description: "User workflow",
@@ -84,12 +101,13 @@ test(
   "createWorkflowStorage load returns project workflow (takes precedence)",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({
+    save(storage, {
       name: "shared",
       description: "Project version",
       script: "project script",
     });
-    storage.save(
+    save(
+      storage,
       {
         name: "shared",
         description: "User version",
@@ -116,7 +134,8 @@ test(
   "createWorkflowStorage load returns user workflow when no project version exists",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save(
+    save(
+      storage,
       {
         name: "user-only",
         description: "Only in user",
@@ -135,9 +154,9 @@ test(
   "createWorkflowStorage list combines project and user workflows sorted by name",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "b-project", description: "b", script: "b" });
-    storage.save({ name: "a-project", description: "a", script: "a" });
-    storage.save({ name: "c-user", description: "c", script: "c" }, "user");
+    save(storage, { name: "b-project", description: "b", script: "b" });
+    save(storage, { name: "a-project", description: "a", script: "a" });
+    save(storage, { name: "c-user", description: "c", script: "c" }, "user");
 
     const list = storage.list();
     assert.equal(list.length, 3);
@@ -160,19 +179,22 @@ test(
   "createWorkflowStorage delete removes project workflow",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "to-delete", description: "d", script: "d" });
+    save(storage, { name: "to-delete", description: "d", script: "d" });
     assert.ok(storage.load("to-delete"), "load() should succeed");
-    const deleted = storage.delete("to-delete");
-    assert.equal(deleted, true);
+    const deleted = storage.delete(storage.load("to-delete") as SavedWorkflow);
+    assert.deepEqual(deleted, { ok: true });
     assert.equal(storage.load("to-delete"), null);
   }),
 );
 
 test(
-  "createWorkflowStorage delete returns false for nonexistent",
+  "createWorkflowStorage delete reports a row whose workflow is already gone as missing",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    assert.equal(storage.delete("no-such"), false);
+    const row = save(storage, { name: "gone", description: "d", script: "s" });
+    assert.deepEqual(storage.delete(row), { ok: true });
+    const again = storage.delete(row);
+    assert.equal(again.ok === false && again.code, "missing");
   }),
 );
 
@@ -180,12 +202,12 @@ test(
   "createWorkflowStorage delete removes from one location only",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "both", description: "p", script: "p" });
-    storage.save({ name: "both", description: "u", script: "u" }, "user");
+    save(storage, { name: "both", description: "p", script: "p" });
+    save(storage, { name: "both", description: "u", script: "u" }, "user");
     assert.ok(storage.load("both"), "load() should succeed");
-    // Delete only from project
-    const deleted = storage.delete("both", "project");
-    assert.equal(deleted, true);
+    // Deleting the visible (project) row leaves the user tier alone
+    const deleted = storage.delete(storage.load("both") as SavedWorkflow);
+    assert.deepEqual(deleted, { ok: true });
     // User version should still exist
     const userVersion = storage.load("both");
     assert.ok(userVersion, "user version should still exist");
@@ -197,7 +219,7 @@ test(
   "createWorkflowStorage save preserves parameters",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const saved = storage.save({
+    const saved = save(storage, {
       name: "param-wf",
       description: "Has params",
       script: "export const meta = { name: 'p', description: 'p' }",
@@ -220,12 +242,12 @@ test(
   "createWorkflowStorage rejects path-unsafe workflow names",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    assert.throws(
-      () => storage.save({ name: "../escape", description: "bad", script: "bad" }),
-      (error: Error) => error.message === SAVED_WORKFLOW_NAME_RULE,
-    );
+    assert.deepEqual(storage.save({ name: "../escape", description: "bad", script: "bad" }), {
+      ok: false,
+      code: "invalid",
+      message: SAVED_WORKFLOW_NAME_RULE,
+    });
     assert.equal(storage.load("../escape"), null);
-    assert.equal(storage.delete("../escape"), false);
     assert.equal(existsSync(join(workflowProjectPaths(cwd).rootDir, "escape.json")), false);
   }),
 );
@@ -234,7 +256,7 @@ test(
   "createWorkflowStorage file contents are valid JSON with expected fields",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({
+    save(storage, {
       name: "check-json",
       description: "desc",
       script: "export const meta = { name: 'c', description: 'c' }",
@@ -349,13 +371,13 @@ test(
   "save and rename refuse Windows-unsafe names before anything reaches disk",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const source = storage.save({ name: "review", description: "d", script: "s" });
+    const source = save(storage, { name: "review", description: "d", script: "s" });
     const before = readdirSync(workflowProjectPaths(cwd).savedDir).sort();
 
     for (const name of ["review:branch", "CON", "lpt1.json", "review."]) {
-      assert.throws(
-        () => storage.save({ name, description: "d", script: "s" }),
-        (error: Error) => error.message === SAVED_WORKFLOW_NAME_RULE,
+      assert.deepEqual(
+        storage.save({ name, description: "d", script: "s" }),
+        { ok: false, code: "invalid", message: SAVED_WORKFLOW_NAME_RULE },
         `save ${name}`,
       );
       assert.deepEqual(storage.rename(source, name), {
@@ -364,7 +386,6 @@ test(
         message: SAVED_WORKFLOW_NAME_RULE,
       });
       assert.equal(storage.load(name), null);
-      assert.equal(storage.delete(name), false);
     }
     assert.deepEqual(readdirSync(workflowProjectPaths(cwd).savedDir).sort(), before, "no stray file or stream");
     assert.equal(storage.load("review")?.script, "s");
@@ -376,8 +397,8 @@ test(
   withIsolatedHome(async (cwd, t) => {
     const warnings = captureWarnings(t);
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "good", description: "kept", script: "s" });
-    storage.save({ name: "shadowed", description: "user copy", script: "user script" }, "user");
+    save(storage, { name: "good", description: "kept", script: "s" });
+    save(storage, { name: "shadowed", description: "user copy", script: "user script" }, "user");
     const dir = workflowProjectPaths(cwd).savedDir;
     const bad: Record<string, unknown> = {
       "array-name": { name: ["array-name"], description: "d", script: "s" },
@@ -444,7 +465,7 @@ test(
   "createWorkflowStorage save writes atomically (tmp+rename, no leftover .tmp) and leaves a .bak",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "atomic-wf", description: "d", script: "s" });
+    save(storage, { name: "atomic-wf", description: "d", script: "s" });
     const path = join(workflowProjectPaths(cwd).savedDir, "atomic-wf.json");
     assert.ok(existsSync(path), "primary written");
     assert.ok(existsSync(`${path}.bak`), ".bak written");
@@ -465,9 +486,16 @@ test(
       },
     });
     const goodStorage = createWorkflowStorage(cwd);
-    goodStorage.save({ name: "crash-wf", description: "good version", script: "good script" });
+    save(goodStorage, { name: "crash-wf", description: "good version", script: "good script" });
 
-    assert.throws(() => storage.save({ name: "crash-wf", description: "new version", script: "new script" }));
+    const replacing = goodStorage.load("crash-wf") as SavedWorkflow;
+    const failed = storage.save({ name: "crash-wf", description: "new version", script: "new script" }, { replacing });
+    assert.equal(failed.ok === false && failed.code, "io-error");
+    assert.deepEqual(
+      readdirSync(workflowProjectPaths(cwd).savedDir).filter((name) => name.endsWith(".tmp")),
+      [],
+      "the failed write leaves no temporary file",
+    );
 
     // The primary file must be untouched — still the last good save.
     const recovered = goodStorage.load("crash-wf");
@@ -480,7 +508,7 @@ test(
   "createWorkflowStorage load recovers from .bak when the primary is corrupt",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "corrupt-recovery", description: "good", script: "good script" });
+    save(storage, { name: "corrupt-recovery", description: "good", script: "good script" });
     const path = join(workflowProjectPaths(cwd).savedDir, "corrupt-recovery.json");
     writeFileSync(path, "{ truncated by a crash", "utf-8");
 
@@ -494,10 +522,10 @@ test(
   "createWorkflowStorage delete removes the .bak sidecar too",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "del-bak", description: "d", script: "s" });
+    save(storage, { name: "del-bak", description: "d", script: "s" });
     const path = join(workflowProjectPaths(cwd).savedDir, "del-bak.json");
     assert.ok(existsSync(`${path}.bak`), ".bak exists before delete");
-    storage.delete("del-bak");
+    storage.delete(storage.load("del-bak") as SavedWorkflow);
     assert.equal(existsSync(path), false);
     assert.equal(existsSync(`${path}.bak`), false, ".bak cleaned up too");
   }),
@@ -538,7 +566,7 @@ test(
   "strict rename rolls back target and restores source after injected failures",
   withIsolatedHome(async (cwd) => {
     const good = createWorkflowStorage(cwd);
-    const source = good.save({ name: "source", description: "source", script: "source" });
+    const source = save(good, { name: "source", description: "source", script: "source" });
     let failBackup = true;
     const flakyBackup = createWorkflowStorage(cwd, {
       writeFileSync: ((path, data, options) => {
@@ -555,7 +583,7 @@ test(
     assert.equal(existsSync(`${source.path}.bak`), true);
     assert.equal(flakyBackup.rename(source, "target").ok, true);
 
-    const source2 = good.save({ name: "source2", description: "source2", script: "source2" });
+    const source2 = save(good, { name: "source2", description: "source2", script: "source2" });
     let failDelete = true;
     const flakyDelete = createWorkflowStorage(cwd, {
       unlinkSync: ((path) => {
@@ -575,23 +603,10 @@ test(
 );
 
 test(
-  "string delete with a location covers that tier; omitted, it covers both",
-  withIsolatedHome(async (cwd) => {
-    const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "layers", description: "project", script: "p" });
-    storage.save({ name: "layers", description: "user", script: "u" }, "user");
-    assert.equal(storage.delete("layers", "project"), true);
-    assert.equal(storage.load("layers")?.location, "user");
-    assert.equal(storage.delete("layers"), true);
-    assert.equal(storage.load("layers"), null);
-  }),
-);
-
-test(
   "saved mutations reject a same-path external overwrite as stale",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const source = storage.save({ name: "race", description: "old", script: "old" });
+    const source = save(storage, { name: "race", description: "old", script: "old" });
     writeFileSync(source.path, JSON.stringify({ ...source, script: "new" }));
     const renamed = storage.rename(source, "moved");
     const deleted = storage.delete(source);
@@ -739,7 +754,7 @@ test(
   "createWorkflowStorage load resolves scriptPath for a user-scoped saved workflow",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    storage.save({ name: "placeholder", description: "create user dir", script: "x" }, "user");
+    save(storage, { name: "placeholder", description: "create user dir", script: "x" }, "user");
     const userDir = dirname(storage.load("placeholder")?.path ?? "");
     writeFileSync(join(userDir, "user-body.js"), "user companion");
     writeFileSync(
@@ -752,10 +767,10 @@ test(
   }),
 );
 
-test("save() preserves the PREVIOUS version as .bak on overwrite (audit2 #36)", () => {
+test("a replacing save keeps the previous version as .bak", () => {
   const storage = createWorkflowStorage(mkdtempSync(join(tmpdir(), "pi-dw-bak-")));
-  storage.save({ name: "demo", description: "v1", script: "SCRIPT_V1", location: "project" });
-  storage.save({ name: "demo", description: "v2", script: "SCRIPT_V2", location: "project" });
+  const first = save(storage, { name: "demo", description: "v1", script: "SCRIPT_V1" });
+  save(storage, { name: "demo", description: "v2", script: "SCRIPT_V2" }, "project", first);
   const loaded = storage.load("demo");
   assert.equal(loaded?.script, "SCRIPT_V2", "the new version is primary");
   // Corrupt the primary → recovery must yield the PREVIOUS version, not nothing.
@@ -770,26 +785,29 @@ test(
   "save keeps a valid old .bak when the old primary is corrupt",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const first = storage.save({ name: "corrupt-primary", description: "v1", script: "SCRIPT_V1" });
+    const first = save(storage, { name: "corrupt-primary", description: "v1", script: "SCRIPT_V1" });
     writeFileSync(first.path, "{ corrupt primary", "utf8");
 
-    storage.save({ name: "corrupt-primary", description: "v2", script: "SCRIPT_V2" });
+    // load() recovers v1 from the backup, and that is what the caller agrees to replace.
+    const recovered = storage.load("corrupt-primary") as SavedWorkflow;
+    save(storage, { name: "corrupt-primary", description: "v2", script: "SCRIPT_V2" }, "project", recovered);
     assert.equal(JSON.parse(readFileSync(first.path, "utf8")).script, "SCRIPT_V2");
     assert.equal(JSON.parse(readFileSync(`${first.path}.bak`, "utf8")).script, "SCRIPT_V1");
   }),
 );
 
 test(
-  "save replaces a corrupt primary and corrupt .bak with a valid new .bak",
+  "a save never overwrites a target it cannot read",
   withIsolatedHome(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const first = storage.save({ name: "corrupt-both", description: "v1", script: "SCRIPT_V1" });
+    const first = save(storage, { name: "corrupt-both", description: "v1", script: "SCRIPT_V1" });
     writeFileSync(first.path, "{ corrupt primary", "utf8");
     writeFileSync(`${first.path}.bak`, "{ corrupt backup", "utf8");
 
-    storage.save({ name: "corrupt-both", description: "v2", script: "SCRIPT_V2" });
-    assert.equal(JSON.parse(readFileSync(first.path, "utf8")).script, "SCRIPT_V2");
-    assert.equal(JSON.parse(readFileSync(`${first.path}.bak`, "utf8")).script, "SCRIPT_V2");
+    const result = storage.save({ name: "corrupt-both", description: "v2", script: "SCRIPT_V2" });
+    assert.equal(result.ok === false && result.code, "conflict");
+    assert.match(result.ok === false ? result.message : "", /not a readable saved workflow/);
+    assert.equal(readFileSync(first.path, "utf8"), "{ corrupt primary", "the damaged file stays for inspection");
   }),
 );
 
@@ -807,9 +825,75 @@ test(
       }) as typeof writeFileSync,
     });
 
-    assert.doesNotThrow(() => storage.save({ name: "backup-write-failure", description: "new", script: "SCRIPT_NEW" }));
+    assert.doesNotThrow(() =>
+      save(storage, { name: "backup-write-failure", description: "new", script: "SCRIPT_NEW" }),
+    );
     assert.equal(failBackupWrite, false, "the backup write failure must be exercised");
     const path = join(workflowProjectPaths(cwd).savedDir, "backup-write-failure.json");
     assert.equal(JSON.parse(readFileSync(path, "utf8")).script, "SCRIPT_NEW");
+  }),
+);
+
+test(
+  "a save never overwrites a workflow its caller has not seen",
+  withIsolatedHome(async (cwd) => {
+    const windowA = createWorkflowStorage(cwd);
+    const windowB = createWorkflowStorage(cwd);
+    const original = save(windowA, { name: "shared", description: "v1", script: "V1" });
+
+    const conflict = windowB.save({ name: "shared", description: "fresh", script: "FRESH" });
+    assert.equal(conflict.ok === false && conflict.code, "conflict", "a create cannot land on an existing workflow");
+
+    save(windowA, { name: "shared", description: "v2", script: "V2" }, "project", original);
+    const stale = windowB.save({ name: "shared", description: "v3", script: "V3" }, { replacing: original });
+    assert.equal(stale.ok === false && stale.code, "stale", "replacing a version another window replaced is refused");
+    assert.equal(windowA.load("shared")?.script, "V2");
+
+    const deleted = windowB.delete(original);
+    assert.equal(deleted.ok === false && deleted.code, "stale", "deleting by an old row is refused");
+    assert.equal(windowA.load("shared")?.script, "V2");
+  }),
+);
+
+test(
+  "a change while another live process holds the saved-workflow lock reports busy and writes nothing",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    save(storage, { name: "placeholder", description: "creates both dirs", script: "x" });
+    save(storage, { name: "user-placeholder", description: "creates the user dir", script: "x" }, "user");
+    const lock = join(workflowProjectPaths(cwd).savedDir, ".saved-workflows.lock");
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "another-window" }));
+
+    const result = storage.save({ name: "blocked", description: "d", script: "s" });
+    assert.equal(result.ok === false && result.code, "busy");
+    assert.equal(storage.load("blocked"), null);
+    assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "another-window", "the other window keeps its lock");
+  }),
+);
+
+test(
+  "a file whose name field does not match its file name is skipped",
+  withIsolatedHome(async (cwd, t) => {
+    const warnings = captureWarnings(t);
+    const storage = createWorkflowStorage(cwd);
+    const dir = workflowProjectPaths(cwd).savedDir;
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "foo.json"), JSON.stringify({ name: "bar", description: "d", script: "s" }));
+    writeFileSync(join(dir, "Mixed.json"), JSON.stringify({ name: "mixed", description: "d", script: "s" }));
+    assert.deepEqual(
+      storage.list().map((workflow) => workflow.name),
+      [],
+    );
+    assert.equal(storage.load("bar"), null);
+    assert.ok(warnings().some((message) => message.includes("must match exactly")));
+  }),
+);
+
+test(
+  "a saved workflow keeps the toolset its runs need",
+  withIsolatedHome(async (cwd) => {
+    const storage = createWorkflowStorage(cwd);
+    save(storage, { name: "research", description: "d", script: "s", toolset: "web-research" });
+    assert.equal(createWorkflowStorage(cwd).load("research")?.toolset, "web-research");
   }),
 );

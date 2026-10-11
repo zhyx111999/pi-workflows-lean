@@ -132,12 +132,7 @@ export class NavigatorModel {
   deleteSaved(workflow: SavedWorkflow): SavedWorkflowMutationResult {
     const storage = this.getStorage();
     if (!storage) return { ok: false, code: "io-error", message: "Saving is not available (no storage)." };
-    const result = storage.delete(workflow);
-    return typeof result === "boolean"
-      ? result
-        ? { ok: true }
-        : { ok: false, code: "missing", message: "Saved workflow no longer exists." }
-      : result;
+    return storage.delete(workflow);
   }
 
   /** Rename exactly the currently visible saved source. */

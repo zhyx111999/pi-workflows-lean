@@ -11,7 +11,7 @@ import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
 
 /** The parts of a saved workflow a command run needs. */
-type SavedWorkflowScript = Pick<SavedWorkflow, "name" | "script" | "parameters">;
+type SavedWorkflowScript = Pick<SavedWorkflow, "name" | "script" | "parameters" | "toolset">;
 
 function savedCommandOwnedByExtension(pi: ExtensionAPI, name: string): boolean {
   const owner = commandOwner(pi, name);
@@ -75,7 +75,9 @@ export function registerSavedWorkflow(
           return;
         }
         try {
-          const { runId } = getManager().startInBackground(live.script, parseCommandArgs(args, live.parameters));
+          const { runId } = getManager().startInBackground(live.script, parseCommandArgs(args, live.parameters), {
+            toolset: live.toolset,
+          });
           ctx.ui.notify(backgroundStartNotice(live.name, runId, ctx.mode, "result"), "info");
         } catch (error) {
           ctx.ui.notify(`/${live.name} failed: ${error instanceof Error ? error.message : error}`, "error");

@@ -27,7 +27,7 @@ export function executeRunConfirmation(session: NavigatorSession, action: "pause
 /** Start a new background run that repeats the selected run: its script, arguments, and execution options. */
 export function restartRun(session: NavigatorSession, runId: string | undefined): void {
   const { manager, ui } = session;
-  const run = runId ? manager.listRuns().find((candidate) => candidate.runId === runId) : undefined;
+  const run = runId ? manager.findRun(runId) : undefined;
   const restart = run ? restartRequest(run) : undefined;
   if (!run || !restart) {
     ui.notify(runId ? `Cannot restart ${runId} (no script saved)` : "No run selected to restart", "warning");

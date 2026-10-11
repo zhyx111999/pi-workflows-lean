@@ -37,10 +37,10 @@ function recordingStorage() {
   const storage = {
     list: () => [],
     load: () => null,
-    delete: () => false,
+    delete: () => ({ ok: false, code: "missing", message: "Saved workflow no longer exists." }),
     save: (workflow: { name: string }) => {
       writes.push(workflow.name);
-      return savedWorkflow(workflow.name);
+      return { ok: true as const, workflow: savedWorkflow(workflow.name) };
     },
     rename: (_workflow: SavedWorkflow, name: string) => {
       writes.push(name);
@@ -52,7 +52,10 @@ function recordingStorage() {
 
 function managerWithRun(workflowName: string): WorkflowManager {
   const run = { runId: "run-1", workflowName, status: "completed", script: SCRIPT, agents: [], logs: [] };
-  return { listRuns: () => [run] } as unknown as WorkflowManager;
+  return {
+    listRuns: () => [run],
+    findRun: (id: string) => (id === run.runId ? run : undefined),
+  } as unknown as WorkflowManager;
 }
 
 function navigatorSession(
@@ -147,9 +150,9 @@ test("navigator refuses to rename a saved workflow to a Pi command name before w
   assert.match(notified[0].message, /\/reload is a built-in Pi command/);
 });
 
-test("/workflows save under a Pi command name does not report a slash command", async () => {
+test("/workflows save under a Pi command name is refused before anything is written", async () => {
   const { pi, commands } = makeCommandRegistryPi();
-  const { storage } = recordingStorage();
+  const { storage, writes } = recordingStorage();
   registerWorkflowCommands(pi, commandDeps({ manager: managerWithRun("scan"), storage }));
   const workflows = commands.find((command) => command.name === "workflows");
   assert.ok(workflows);
@@ -162,7 +165,8 @@ test("/workflows save under a Pi command name does not report a slash command", 
     ["workflows"],
     "/new must not be registered",
   );
+  assert.deepEqual(writes, [], "nothing reaches disk");
   assert.equal(notified.length, 1);
-  assert.equal(notified[0].type, "warning");
-  assert.match(notified[0].message, /cannot be registered as a slash command: \/new is a built-in Pi command/);
+  assert.equal(notified[0].type, "error");
+  assert.equal(notified[0].message, "Not saved: /new is a built-in Pi command.");
 });

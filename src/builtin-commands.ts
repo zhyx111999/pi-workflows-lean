@@ -107,7 +107,7 @@ export function registerBuiltinWorkflows(pi: ExtensionAPI, { getManager, getCwd,
       // args.trim(), including "="-containing topics (r2 NIT).
       parsed[wholeKey] = raw;
     }
-    startBackground(getManager(), ctx, name, saved.script, parsed);
+    startBackground(getManager(), ctx, name, saved.script, parsed, { toolset: saved.toolset });
     return true;
   }
 

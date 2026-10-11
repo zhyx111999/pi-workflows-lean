@@ -102,7 +102,7 @@ export function resolveWorkflowInvocation(
   ctx: { storage: WorkflowStorage; cwd: string },
 ): BuiltinWorkflowInvocation | undefined {
   const saved = ctx.storage.load(name);
-  if (saved) return { script: saved.script };
+  if (saved) return { script: saved.script, toolset: saved.toolset };
   const builtin = findBuiltinWorkflow(name);
   if (builtin) return builtin.resolve(ctx.cwd, args);
   return undefined;

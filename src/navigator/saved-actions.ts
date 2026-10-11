@@ -1,6 +1,6 @@
 /** Saved-workflow actions started from the navigator: save a run, rename, and delete, keeping `/name` commands in sync. */
 
-import { commitRunSave, planRunSave, type RunSaveWrite } from "../run-save.js";
+import { commitRunSave, planRunSave, type RunSaveWrite, runSaveDraft } from "../run-save.js";
 import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "../saved-commands.js";
 import { isSafeSavedWorkflowName, SAVED_WORKFLOW_NAME_RULE, type SavedWorkflow } from "../workflow-saved.js";
 import { type ItemIdentity, sameIdentity, savedIdentity } from "./items.js";
@@ -34,7 +34,7 @@ function announceSaved(session: NavigatorSession, saved: SavedWorkflow, summary:
  */
 export function saveRunAsWorkflow(session: NavigatorSession, runId: string | undefined): void {
   const { pi, manager, ui, state } = session;
-  const run = runId ? manager.listRuns().find((candidate) => candidate.runId === runId) : undefined;
+  const run = runId ? manager.findRun(runId) : undefined;
   const storage = currentStorage(session);
   if (!run?.script) {
     ui.notify("No saved run script to save", "warning");
@@ -50,7 +50,9 @@ export function saveRunAsWorkflow(session: NavigatorSession, runId: string | und
     ui.notify(availability.message, "error");
     return;
   }
-  const plan = planRunSave(storage, { name, description: run.workflowName, script: run.script });
+  const draft = runSaveDraft(run, name);
+  if (!draft) return;
+  const plan = planRunSave(storage, draft);
   if (plan.kind === "unchanged") announceSaved(session, plan.existing, `/${name} is already saved with this script`);
   else if (plan.kind === "create") writeRunSave(session, plan);
   else
@@ -70,7 +72,8 @@ export function writeRunSave(session: NavigatorSession, plan: RunSaveWrite): voi
   }
   const result = commitRunSave(storage, plan);
   if (result.ok) announceSaved(session, result.workflow, `Saved /${result.workflow.name}`);
-  else if (result.code === "stale") ui.notify(`${result.message} Press s to check again.`, "warning");
+  else if (result.code === "stale" || result.code === "busy")
+    ui.notify(`${result.message} Press s to check again.`, "warning");
   else ui.notify(result.message, "error");
 }
 

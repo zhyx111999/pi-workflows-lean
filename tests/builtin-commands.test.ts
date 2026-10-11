@@ -251,7 +251,11 @@ test("a saved workflow shadows the built-in slash command of the same name", asy
 
   assert.equal(started.length, 1, "should start exactly one run");
   assert.equal(started[0].script, customScript, "the saved script should run, not the built-in's");
-  assert.deepEqual(started[0].exec, {}, "the shadow carries no built-in exec context (e.g. no web tools)");
+  assert.deepEqual(
+    started[0].exec,
+    { toolset: undefined },
+    "the shadow runs with the saved workflow's own toolset (none here), not the built-in's web tools",
+  );
   assert.equal(notified.length, 1);
   assert.equal(notified[0].type, "info");
 });

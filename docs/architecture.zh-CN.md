@@ -143,8 +143,8 @@ WorkflowAgent.run()                          agent.ts
 | `fs-persistence.ts` | 原子写入、备份等文件系统基础操作 |
 | `file-lock.ts` | 跨进程锁文件：完整内容一次发布（硬链接），死进程的锁只由一个进程回收；运行租约与写锁共用 |
 | `workflow-paths.ts` | 目录布局：`~/.pi/workflows/projects/<项目键>/`；Windows 上同一目录的不同写法共用一个项目键 |
-| `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`）：项目级和用户级两层，项目级优先 |
-| `run-save.ts` | 把运行的脚本存为工作流：判断新建、内容相同（跳过，不冲掉备份）或替换同名的不同工作流（调用方先确认，写入前再核对目标未变） |
+| `workflow-saved.ts` | 已保存的工作流（`saved/<name>.json`）：项目级和用户级两层，项目级优先。保存、改名、删除都在两层目录共用的跨进程锁里进行，并核对调用方读到的版本：保存默认要求目标为空，替换必须给出读到的那一版，所以不会覆盖别的窗口刚写的内容；`name` 必须与文件名完全一致；可记录运行需要的 `toolset` |
+| `run-save.ts` | 把运行存为工作流（连同它的工具集）：判断新建、内容相同（跳过，不冲掉备份）或替换同名的不同工作流（调用方先确认，存储层再核对目标未变） |
 | `shared-store.ts` / `logger.ts` | 运行内的键值存储；运行日志 `<runId>.log` |
 
 ### 投递与界面层
@@ -159,7 +159,8 @@ WorkflowAgent.run()                          agent.ts
 | `task-panel/result-text.ts` | 完成、失败、暂停、等待暂停点时的通知文字 |
 | `task-panel/panel-*.ts` | 输入框下方的实时进度面板 |
 | `workflow-ui.ts` + `navigator/` | `/workflows` 导航器：运行列表 → 阶段 → 子代理 → 详情 → 全文分页 |
-| `workflow-commands.ts` / `saved-commands.ts` / `builtin-commands.ts` | 人工使用的斜杠命令；处理函数通过 `CommandDeps`（`command-registry.ts`）的 getter 读取当前的管理器、存储和目录 |
+| `workflow-commands.ts` / `saved-commands.ts` / `builtin-commands.ts` | 人工使用的斜杠命令；处理函数通过 `CommandDeps`（`command-registry.ts`）的 getter 读取当前的管理器、存储和目录。保存前先检查命令名能否注册，不能就不写盘 |
+| `run-watchers.ts` | `/workflows watch` 的状态栏监视：每个运行只有一个，绝不把异常抛进运行，会话结束时全部清掉 |
 | `pi-reserved-commands.ts` | Pi 编辑器自己处理的斜杠命令名单（`/new`、`/reload` 等）：SDK 不导出、`getCommands()` 不列出、注册也不报冲突，所以保存、重命名和注册前都按它拒绝；测试会比对已安装的 SDK |
 | `display.ts` / `agent-history.ts` | 快照与子代理历史的展示格式；数字格式（`fmtFull`、`fmtCompact`）和运行状态图标都只有这一份 |
 | `phase-groups.ts` | 按阶段给子代理分组并统计各状态数：先列声明的阶段，再按首次出现补上只有子代理提到的阶段（含“无阶段”组）；`/workflows status` 文本和导航器都用它，只各自排版 |

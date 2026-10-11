@@ -3,7 +3,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { newLockToken, pidIsAlive, releaseFileLock, tryClaimFileLock } from "./file-lock.js";
 import {
   ensureDir as ensureDirFs,
   listJsonFilesSafe,
@@ -23,8 +24,9 @@ export type SavedWorkflowParameters = Record<
   { type: string; description?: string; required?: boolean; default?: unknown }
 >;
 
-export interface SavedWorkflow {
-  /** Command name (filename without extension). */
+/** What a caller saves; the storage adds where and when. */
+export interface SavedWorkflowDraft {
+  /** Command name, also the file name without its extension. */
   name: string;
   /** Human-readable description. */
   description: string;
@@ -32,6 +34,11 @@ export interface SavedWorkflow {
   script: string;
   /** Optional parameter schema for parameterized workflows. */
   parameters?: SavedWorkflowParameters;
+  /** Named tool set its runs need, such as deep-research's "web-research"; tools themselves are not stored. */
+  toolset?: string;
+}
+
+export interface SavedWorkflow extends SavedWorkflowDraft {
   location: SavedWorkflowLocation;
   /** Full file path. This is part of the row's identity, not display metadata. */
   path: string;
@@ -39,17 +46,33 @@ export interface SavedWorkflow {
   savedAt: string;
 }
 
-export type SavedWorkflowMutationResult =
-  | { ok: true; workflow?: SavedWorkflow }
-  | {
-      ok: false;
-      code: "missing" | "stale" | "conflict" | "invalid" | "io-error";
-      message: string;
-    };
+export interface SavedWorkflowFailure {
+  ok: false;
+  code: "missing" | "stale" | "conflict" | "invalid" | "busy" | "io-error";
+  message: string;
+}
+
+export type SavedWorkflowMutationResult = { ok: true; workflow?: SavedWorkflow } | SavedWorkflowFailure;
+
+/** A save that succeeded always names what it wrote. */
+export type SavedWorkflowSaveResult = { ok: true; workflow: SavedWorkflow } | SavedWorkflowFailure;
+
+/** Where a save writes, and which existing workflow there, if any, it may replace. */
+export interface SaveOptions {
+  /** Default "project". */
+  location?: SavedWorkflowLocation;
+  /**
+   * The workflow at the target the caller agreed to replace, exactly as it
+   * read it. Without it the target must be free. Either way a target that
+   * changed since is left alone, so no save overwrites what its caller has
+   * not seen.
+   */
+  replacing?: SavedWorkflow;
+}
 
 /** Stable content fingerprint used to guard mutations against same-path races. */
 export function savedWorkflowRevision(
-  workflow: Pick<SavedWorkflow, "name" | "description" | "script" | "parameters" | "savedAt">,
+  workflow: Pick<SavedWorkflow, "name" | "description" | "script" | "parameters" | "toolset" | "savedAt">,
 ): string {
   return createHash("sha256")
     .update(
@@ -58,22 +81,28 @@ export function savedWorkflowRevision(
         description: workflow.description,
         script: workflow.script,
         parameters: workflow.parameters ?? null,
+        toolset: workflow.toolset ?? null,
         savedAt: workflow.savedAt,
       }),
     )
     .digest("hex");
 }
 
+/**
+ * Saved workflows on disk. Every change is checked against what the caller
+ * read and runs under a lock shared by all Pi processes, so one window never
+ * overwrites, renames, or deletes a version another window just saved.
+ */
 export interface WorkflowStorage {
-  /** Save a workflow. New saves default to the current project tier. */
-  save(workflow: Omit<SavedWorkflow, "path" | "savedAt">, location?: SavedWorkflowLocation): SavedWorkflow;
+  /** Save a workflow; see SaveOptions for what it may replace. */
+  save(draft: SavedWorkflowDraft, options?: SaveOptions): SavedWorkflowSaveResult;
   /** Load a workflow by name; a project workflow wins over a user one. */
   load(name: string): SavedWorkflow | null;
   /** List visible workflows, one highest-precedence row per command name. */
   list(): SavedWorkflow[];
-  /** Delete precisely the source represented by the visible row. */
-  delete(workflow: SavedWorkflow | string, location?: SavedWorkflowLocation): SavedWorkflowMutationResult | boolean;
-  /** Rename precisely the source represented by the visible row. */
+  /** Delete precisely the source represented by this row, as read. */
+  delete(workflow: SavedWorkflow): SavedWorkflowMutationResult;
+  /** Rename precisely the source represented by this row, as read. */
   rename(workflow: SavedWorkflow, name: string): SavedWorkflowMutationResult;
 }
 
@@ -118,6 +147,7 @@ interface SavedWorkflowFile {
   description: string;
   savedAt: string;
   parameters?: SavedWorkflowParameters;
+  toolset?: string;
   /** An own `script` wins over `scriptPath`, even when it is empty. */
   source: { script: string } | { scriptPath: string };
 }
@@ -149,10 +179,11 @@ function parametersProblem(parameters: Record<string, unknown>): string | undefi
 function checkSavedWorkflowFile(data: unknown): FileCheck {
   const problem = (text: string): FileCheck => ({ ok: false, problem: text });
   if (!isJsonObject(data)) return problem("the file does not hold a JSON object");
-  const { name, description = "", savedAt = "", parameters, script, scriptPath } = data;
+  const { name, description = "", savedAt = "", parameters, toolset, script, scriptPath } = data;
   if (!isSafeSavedWorkflowName(name)) return problem(`"name" is not valid. ${SAVED_WORKFLOW_NAME_RULE}`);
   if (typeof description !== "string") return problem('"description" must be a string');
   if (typeof savedAt !== "string") return problem('"savedAt" must be a string');
+  if (toolset != null && typeof toolset !== "string") return problem('"toolset" must be a string');
   if (parameters != null) {
     if (!isJsonObject(parameters)) return problem('"parameters" must be an object');
     const parameterProblem = parametersProblem(parameters);
@@ -174,6 +205,7 @@ function checkSavedWorkflowFile(data: unknown): FileCheck {
       description,
       savedAt,
       ...(parameters != null && { parameters: parameters as SavedWorkflowParameters }),
+      ...(typeof toolset === "string" && { toolset }),
       source,
     },
   };
@@ -235,6 +267,14 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
     if (data === null) return hasRecord(path) ? skipInvalid(path, "the file is unreadable or not valid JSON") : null;
     const checked = checkSavedWorkflowFile(data);
     if (!checked.ok) return skipInvalid(path, checked.problem);
+    // The file name is how load, rename and delete find a workflow, so a
+    // different "name" (even one differing only in case) could never be acted on.
+    if (checked.file.name !== basename(path, ".json")) {
+      return skipInvalid(
+        path,
+        `"name" is "${checked.file.name}" but the file is ${basename(path)}; they must match exactly`,
+      );
+    }
     const { source, ...fields } = checked.file;
     if ("script" in source) return { ...fields, script: source.script, location, path };
     const scriptFile = resolveSavedScriptPath(dirname(path), source.scriptPath);
@@ -286,9 +326,9 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
     else if (fs.existsSync(snapshot.path)) fs.unlinkSync(snapshot.path);
   };
   const cleanupTarget = (path: string): void => {
-    // Failure injection is intentionally transient. Retry cleanup so a failed
-    // transaction cannot leave a target that blocks the next attempt.
-    for (const candidate of [`${path}.tmp`, path, `${path}.bak`]) {
+    // Retry once, so a transient failure cannot leave a target that blocks
+    // the next attempt.
+    for (const candidate of [path, `${path}.bak`]) {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
           if (!fs.existsSync(candidate)) break;
@@ -329,21 +369,79 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
     }
   };
 
+  /**
+   * Run one change under the lock of both saved directories, taken in a fixed
+   * order. A change reads what is on disk, checks it against what its caller
+   * read, and writes, with no other Pi process changing saved workflows in
+   * between. A lock held by a live process is reported, not waited for.
+   */
+  const locked = <R extends SavedWorkflowMutationResult>(
+    change: () => R | SavedWorkflowFailure,
+  ): R | SavedWorkflowFailure => {
+    const token = newLockToken();
+    const held: string[] = [];
+    try {
+      for (const location of LOCATIONS) {
+        ensureDir(dirs[location]);
+        const lock = join(dirs[location], ".saved-workflows.lock");
+        if (!tryClaimFileLock(fs, lock, { pid: process.pid, token }, (owner) => !pidIsAlive(owner.pid))) {
+          return { ok: false, code: "busy", message: "Another Pi window is changing saved workflows; try again." };
+        }
+        held.push(lock);
+      }
+      return change();
+    } catch (error) {
+      return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+    } finally {
+      for (const lock of held.reverse()) releaseFileLock(fs, lock, token);
+    }
+  };
+
+  /** The target of a save is free, or holds exactly the workflow the caller agreed to replace. */
+  const checkTarget = (path: string, location: SavedWorkflowLocation, replacing: SavedWorkflow | undefined) => {
+    if (!replacing) {
+      if (!hasRecord(path)) return { ok: true } as const;
+      const readable = loadFromFile(path, location) !== null;
+      return {
+        ok: false,
+        code: "conflict",
+        message: readable
+          ? `A saved workflow already exists at ${path}.`
+          : `${path} exists but is not a readable saved workflow; fix or remove it first.`,
+      } as const;
+    }
+    if (replacing.path !== path || replacing.location !== location) {
+      return { ok: false, code: "stale", message: "The workflow to replace is not at the save target." } as const;
+    }
+    return exactCurrent(replacing);
+  };
+
   return {
-    save(workflow, location = "project") {
-      assertSafeSavedWorkflowName(workflow.name);
-      ensureDir(dirs[location]);
-      const path = locationPath(workflow.name, location);
-      const saved: SavedWorkflow = {
-        ...workflow,
-        location,
-        path,
-        savedAt: new Date().toISOString(),
-      };
-      // Overwrite-safe save: keep the PREVIOUS version as .bak —
-      // an accidental same-name save must not destroy the old script.
-      writeJsonAtomicPreservingPreviousBackup(fs, path, saved);
-      return saved;
+    save(draft, { location = "project", replacing } = {}) {
+      if (!isSafeSavedWorkflowName(draft.name))
+        return { ok: false, code: "invalid", message: SAVED_WORKFLOW_NAME_RULE };
+      const path = locationPath(draft.name, location);
+      return locked(() => {
+        const target = checkTarget(path, location, replacing);
+        if (!target.ok) {
+          return target.code === "stale" || target.code === "missing"
+            ? { ok: false, code: "stale", message: `/${draft.name} changed after it was read; nothing was saved.` }
+            : target;
+        }
+        const saved: SavedWorkflow = {
+          name: draft.name,
+          description: draft.description,
+          script: draft.script,
+          ...(draft.parameters && { parameters: draft.parameters }),
+          ...(draft.toolset && { toolset: draft.toolset }),
+          location,
+          path,
+          savedAt: new Date().toISOString(),
+        };
+        // The replaced version stays as .bak, so even an agreed replace can be undone.
+        writeJsonAtomicPreservingPreviousBackup(fs, path, saved);
+        return { ok: true, workflow: saved };
+      });
     },
 
     load(name: string): SavedWorkflow | null {
@@ -366,74 +464,65 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
       return workflows.sort((a, b) => a.name.localeCompare(b.name));
     },
 
-    delete(workflow: SavedWorkflow | string, location?: SavedWorkflowLocation): SavedWorkflowMutationResult | boolean {
-      if (typeof workflow === "string") {
-        if (!isSafeSavedWorkflowName(workflow)) return false;
-        let deleted = false;
-        for (const tier of location ? [location] : LOCATIONS) {
-          const current = loadFromFile(locationPath(workflow, tier), tier);
-          if (!current) continue;
-          const result = removeSource(current.path);
-          if (!result.ok) return false;
-          deleted = true;
-        }
-        return deleted;
-      }
-      const current = exactCurrent(workflow);
-      if (!current.ok) return current;
-      return removeSource(current.workflow.path);
+    delete(workflow) {
+      return locked(() => {
+        const current = exactCurrent(workflow);
+        return current.ok ? removeSource(current.workflow.path) : current;
+      });
     },
 
-    rename(workflow, name): SavedWorkflowMutationResult {
+    rename(workflow, name) {
       if (!isSafeSavedWorkflowName(name)) return { ok: false, code: "invalid", message: SAVED_WORKFLOW_NAME_RULE };
-      const current = exactCurrent(workflow);
-      if (!current.ok) return current;
-      if (name === current.workflow.name) return { ok: true, workflow: current.workflow };
-
-      // A command name is globally resolved by precedence, so a target that is
-      // occupied in any tier is ambiguous even when the current row is hidden by
-      // another tier. Reject before writing instead of mutating a fallback by name.
-      for (const tier of LOCATIONS) {
-        const target = locationPath(name, tier);
-        if (hasRecord(target)) {
-          return { ok: false, code: "conflict", message: `A saved workflow named /${name} already exists.` };
-        }
-      }
-
-      const { location } = current.workflow;
-      const targetPath = locationPath(name, location);
-      const renamed: SavedWorkflow = {
-        ...current.workflow,
-        name,
-        path: targetPath,
-        savedAt: new Date().toISOString(),
-      };
-      let sourcePrimary: FileSnapshot;
-      let sourceBackup: FileSnapshot;
-      try {
-        ensureDir(dirs[location]);
-        sourcePrimary = snapshotFile(current.workflow.path);
-        sourceBackup = snapshotFile(`${current.workflow.path}.bak`);
-        // The replacement must have both primary and backup before the source
-        // can be touched. A failed strict write is cleaned before returning.
-        writeJsonAtomicWithBackupStrict(fs, targetPath, renamed);
-      } catch (error) {
-        cleanupTarget(targetPath);
-        return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
-      }
-      const removed = removeSource(current.workflow.path);
-      if (!removed.ok) {
-        cleanupTarget(targetPath);
-        try {
-          restoreFile(sourcePrimary);
-          restoreFile(sourceBackup);
-        } catch {
-          // The original bytes are restored whenever the injected failure is
-          // transient; cleanup makes the next retry deterministic.
-        }
-        return removed;
-      }
-      return { ok: true, workflow: renamed };
+      return locked(() => renameLocked(workflow, name));
     },
   };
+
+  function renameLocked(workflow: SavedWorkflow, name: string): SavedWorkflowMutationResult {
+    const current = exactCurrent(workflow);
+    if (!current.ok) return current;
+    if (name === current.workflow.name) return { ok: true, workflow: current.workflow };
+
+    // A command name is globally resolved by precedence, so a target that is
+    // occupied in any tier is ambiguous even when the current row is hidden by
+    // another tier. Reject before writing instead of mutating a fallback by name.
+    for (const tier of LOCATIONS) {
+      if (hasRecord(locationPath(name, tier))) {
+        return { ok: false, code: "conflict", message: `A saved workflow named /${name} already exists.` };
+      }
+    }
+
+    const { location } = current.workflow;
+    const targetPath = locationPath(name, location);
+    const renamed: SavedWorkflow = {
+      ...current.workflow,
+      name,
+      path: targetPath,
+      savedAt: new Date().toISOString(),
+    };
+    let sourcePrimary: FileSnapshot;
+    let sourceBackup: FileSnapshot;
+    try {
+      sourcePrimary = snapshotFile(current.workflow.path);
+      sourceBackup = snapshotFile(`${current.workflow.path}.bak`);
+      // The replacement must have both primary and backup before the source
+      // can be touched. A failed strict write is cleaned before returning.
+      writeJsonAtomicWithBackupStrict(fs, targetPath, renamed);
+    } catch (error) {
+      cleanupTarget(targetPath);
+      return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+    }
+    const removed = removeSource(current.workflow.path);
+    if (!removed.ok) {
+      cleanupTarget(targetPath);
+      try {
+        restoreFile(sourcePrimary);
+        restoreFile(sourceBackup);
+      } catch {
+        // The original bytes are restored whenever the failure is transient;
+        // cleanup makes the next retry deterministic.
+      }
+      return removed;
+    }
+    return { ok: true, workflow: renamed };
+  }
 }

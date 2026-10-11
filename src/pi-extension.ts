@@ -13,6 +13,7 @@ import {
   WORKFLOW_EXTENSION_BUILD,
   type WorkflowReloadRuntime,
 } from "./extension-reload.js";
+import { stopRunWatchers } from "./run-watchers.js";
 import { registerAllSavedWorkflows } from "./saved-commands.js";
 import { createSubagentsControlTool } from "./subagents-control-tool.js";
 import { createSubagentsTool } from "./subagents-tool.js";
@@ -189,6 +190,8 @@ export default function extension(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (event?: SessionShutdownEvent) => {
     usageLimitScheduler.dispose();
+    // Watchers report through this session's context, which is about to go stale.
+    stopRunWatchers();
     // Always stop live sends first so a completion racing teardown cannot
     // deliver into the outgoing session (or throw on a just-stale ctx and be
     // lost). The runtime is staged for the next generation only when that

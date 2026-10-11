@@ -5,39 +5,47 @@
  * writes nothing, so the backup still holds the version before it.
  */
 
-import { type SavedWorkflow, savedWorkflowRevision, type WorkflowStorage } from "./workflow-saved.js";
-
-/** The saved workflow a run's script becomes. */
-export interface RunSaveDraft {
-  name: string;
-  description: string;
-  script: string;
-}
+import type { PersistedRunState } from "./run-persistence.js";
+import type { SavedWorkflow, SavedWorkflowDraft, SavedWorkflowSaveResult, WorkflowStorage } from "./workflow-saved.js";
 
 /** What saving would do, judged against the workflow `/name` resolves to now. */
 export type RunSavePlan =
-  | { kind: "create"; draft: RunSaveDraft }
+  | { kind: "create"; draft: SavedWorkflowDraft }
   | { kind: "unchanged"; existing: SavedWorkflow }
-  | { kind: "replace"; draft: RunSaveDraft; existing: SavedWorkflow };
+  | { kind: "replace"; draft: SavedWorkflowDraft; existing: SavedWorkflow };
 
 export type RunSaveWrite = Exclude<RunSavePlan, { kind: "unchanged" }>;
 export type RunSaveReplace = Extract<RunSavePlan, { kind: "replace" }>;
 
-export type RunSaveResult =
-  | { ok: true; workflow: SavedWorkflow }
-  | { ok: false; code: "stale" | "failed"; message: string };
+/**
+ * The saved workflow a run becomes under `name`. Its toolset goes with it, so
+ * running the saved workflow gets the same tools (deep-research's web tools).
+ */
+export function runSaveDraft(
+  run: Pick<PersistedRunState, "workflowName" | "script" | "toolset">,
+  name: string,
+): SavedWorkflowDraft | undefined {
+  if (!run.script) return undefined;
+  return {
+    name,
+    description: run.workflowName,
+    script: run.script,
+    ...(run.toolset && { toolset: run.toolset }),
+  };
+}
 
-export function planRunSave(storage: Pick<WorkflowStorage, "load">, draft: RunSaveDraft): RunSavePlan {
+export function planRunSave(storage: Pick<WorkflowStorage, "load">, draft: SavedWorkflowDraft): RunSavePlan {
   const existing = storage.load(draft.name);
   if (!existing) return { kind: "create", draft };
   return sameContent(existing, draft) ? { kind: "unchanged", existing } : { kind: "replace", draft, existing };
 }
 
 /** A save writes no parameters, so an existing workflow that declares some is different content. */
-function sameContent(existing: SavedWorkflow, draft: RunSaveDraft): boolean {
+function sameContent(existing: SavedWorkflow, draft: SavedWorkflowDraft): boolean {
   return (
     existing.script === draft.script &&
     existing.description === draft.description &&
+    (existing.toolset ?? "") === (draft.toolset ?? "") &&
     Object.keys(existing.parameters ?? {}).length === 0
   );
 }
@@ -48,24 +56,20 @@ export function replacedWorkflowLabel(existing: SavedWorkflow): string {
 }
 
 /**
- * Write a planned save, but only while `/name` still resolves to what the plan
- * was made against: a workflow saved, edited, or deleted since then is not
- * what the user agreed to replace.
+ * Write a planned save to the project. A replaced project workflow must still
+ * be exactly the version the user agreed to replace; a user workflow of the
+ * same name is shadowed, not changed, so then the project target must be free.
  */
-export function commitRunSave(storage: Pick<WorkflowStorage, "load" | "save">, plan: RunSaveWrite): RunSaveResult {
-  const { name } = plan.draft;
-  try {
-    const expected = plan.kind === "replace" ? plan.existing : null;
-    if (!sameSource(storage.load(name), expected)) {
-      return { ok: false, code: "stale", message: `/${name} changed after it was checked; nothing was saved.` };
-    }
-    return { ok: true, workflow: storage.save({ ...plan.draft, location: "project" }) };
-  } catch (error) {
-    return { ok: false, code: "failed", message: error instanceof Error ? error.message : String(error) };
+export function commitRunSave(storage: Pick<WorkflowStorage, "save">, plan: RunSaveWrite): SavedWorkflowSaveResult {
+  const replacing = plan.kind === "replace" && plan.existing.location === "project" ? plan.existing : undefined;
+  const result = storage.save(plan.draft, { location: "project", replacing });
+  // A workflow that appeared since the plan was made makes the plan stale, as a changed one does.
+  if (!result.ok && result.code === "conflict") {
+    return {
+      ok: false,
+      code: "stale",
+      message: `/${plan.draft.name} changed after it was checked; nothing was saved.`,
+    };
   }
-}
-
-function sameSource(current: SavedWorkflow | null, expected: SavedWorkflow | null): boolean {
-  if (!current || !expected) return current === expected;
-  return current.path === expected.path && savedWorkflowRevision(current) === savedWorkflowRevision(expected);
+  return result;
 }

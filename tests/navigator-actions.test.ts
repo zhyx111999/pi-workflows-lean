@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionUIContext } from "@earendil-works/pi-coding
 import type { Component } from "@earendil-works/pi-tui";
 import type { PersistedRunState } from "../src/run-persistence.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
-import { createWorkflowStorage, type WorkflowStorage } from "../src/workflow-saved.js";
+import { createWorkflowStorage, type SavedWorkflow, type WorkflowStorage } from "../src/workflow-saved.js";
 import { openWorkflowNavigator } from "../src/workflow-ui.js";
 
 const OLD_SCRIPT = "export const meta = { name: 'scan', description: 'old' }\nreturn 'old'";
@@ -64,8 +64,16 @@ function managerWithRun(run: { workflowName: string; script: string }): Workflow
     on: () => {},
     off: () => {},
     listRuns: () => [record],
+    findRun: (id: string) => (id === record.runId ? record : undefined),
     getRun: () => undefined,
   } as unknown as WorkflowManager;
+}
+
+/** Save a project workflow /scan holding `script`, replacing `replacing` when given. */
+function seed(storage: WorkflowStorage, script: string, replacing?: SavedWorkflow): SavedWorkflow {
+  const result = storage.save({ name: "scan", description: "scan", script }, { replacing });
+  assert.ok(result.ok, result.ok ? "" : result.message);
+  return result.workflow;
 }
 
 function withProject(fn: (cwd: string) => Promise<void>) {
@@ -123,7 +131,7 @@ test(
   "navigator save asks before replacing a different same-name workflow and never loses the old script",
   withProject(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const { path } = storage.save({ name: "scan", description: "scan", script: OLD_SCRIPT, location: "project" });
+    const { path } = seed(storage, OLD_SCRIPT);
     const nav = await openNavigator(managerWithRun({ workflowName: "scan", script: NEW_SCRIPT }), storage);
 
     nav.press("s");
@@ -147,7 +155,7 @@ test(
   "navigator save leaves an identical workflow untouched",
   withProject(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const saved = storage.save({ name: "scan", description: "scan", script: NEW_SCRIPT, location: "project" });
+    const saved = seed(storage, NEW_SCRIPT);
     const before = readFileSync(saved.path, "utf8");
     const nav = await openNavigator(managerWithRun({ workflowName: "scan", script: NEW_SCRIPT }), storage);
 
@@ -161,7 +169,7 @@ test(
   "navigator save replace is cancelled by Esc and refused when the target changed after asking",
   withProject(async (cwd) => {
     const storage = createWorkflowStorage(cwd);
-    const { path } = storage.save({ name: "scan", description: "scan", script: OLD_SCRIPT, location: "project" });
+    const { path } = seed(storage, OLD_SCRIPT);
     const nav = await openNavigator(managerWithRun({ workflowName: "scan", script: NEW_SCRIPT }), storage);
 
     nav.press("s");
@@ -170,7 +178,8 @@ test(
     assert.equal(savedScripts(path).primary, OLD_SCRIPT);
 
     nav.press("s");
-    storage.save({ name: "scan", description: "scan", script: OTHER_SCRIPT, location: "project" });
+    // Another window replaces the workflow after the prompt was shown.
+    seed(storage, OTHER_SCRIPT, storage.load("scan") ?? undefined);
     nav.press("s");
     assert.equal(savedScripts(path).primary, OTHER_SCRIPT, "a workflow changed after the prompt is not replaced");
     assert.equal(nav.notifications.at(-1)?.type, "warning");

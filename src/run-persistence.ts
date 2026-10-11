@@ -562,12 +562,16 @@ export function createRunPersistence(
         failure ??= { error };
       }
     };
-    cleanUp(`${path}.tmp`, true);
     // The event log and any staged generation logs a compaction left behind.
     for (const log of records.logFiles(path)) cleanUp(log, true);
     try {
       for (const name of _existsSync(runsDir) ? fs.readdirSync(runsDir) : []) {
-        if (name === `${runId}.log` || name.startsWith(`${runId}.json.result-`)) cleanUp(join(runsDir, name), true);
+        // The run log, exported results, and temporary files of interrupted writes.
+        const runData =
+          name === `${runId}.log` ||
+          name.startsWith(`${runId}.json.result-`) ||
+          (name.startsWith(`${runId}.json.`) && name.endsWith(".tmp"));
+        if (runData) cleanUp(join(runsDir, name), true);
         // Lock debris (claim candidates, reap guards) of processes that are gone
         // is removed but is not run data; a live process's claim stays untouched.
         else if (isLockDebrisName(name) && isDeadLockDebris(fs, join(runsDir, name)))

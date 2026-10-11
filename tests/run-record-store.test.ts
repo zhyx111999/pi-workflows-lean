@@ -147,7 +147,12 @@ test(
     let headRenames = 0;
     const fs = fsWith({
       renameSync: ((from, to) => {
-        if (String(from) === `${path}.tmp` && String(to) === path && ++headRenames === 2)
+        if (
+          String(from).startsWith(`${path}.`) &&
+          String(from).endsWith(".tmp") &&
+          String(to) === path &&
+          ++headRenames === 2
+        )
           throw new Error("injected head rename failure");
         return real.renameSync(from, to);
       }) as PersistenceFsLayer["renameSync"],
@@ -258,13 +263,14 @@ test(
     rp.save(state(runId));
     const path = join(workflowProjectPaths(cwd).runsDir, `${runId}.json`);
     const staged = `${path}.events.${randomUUID()}.jsonl`;
-    writeFileSync(`${path}.tmp`, "stale tmp", "utf8");
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    writeFileSync(temporary, "stale tmp", "utf8");
     writeFileSync(staged, "interrupted generation switch", "utf8");
     assert.ok(existsSync(path));
     assert.ok(existsSync(`${path}.bak`));
     assert.ok(existsSync(`${path}.events.jsonl`));
     assert.equal(rp.delete(runId), true);
-    for (const candidate of [path, `${path}.bak`, `${path}.tmp`, `${path}.events.jsonl`, staged])
+    for (const candidate of [path, `${path}.bak`, temporary, `${path}.events.jsonl`, staged])
       assert.equal(existsSync(candidate), false, `${candidate} should be deleted`);
     assert.equal(rp.load(runId), null);
   }),

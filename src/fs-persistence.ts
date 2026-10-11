@@ -19,6 +19,7 @@
  * copies.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -103,10 +104,24 @@ export function writeJsonAtomicWithBackupStrict(fs: PersistenceFsLayer, path: st
   writeJsonAtomic(fs, path, data, true);
 }
 
+/**
+ * Write `json` to `path` through a temporary file of its own and an atomic
+ * rename. The temporary name is unique, so concurrent writers never write into
+ * each other's file; a failed write leaves no temporary file behind.
+ */
+function replaceFile(fs: PersistenceFsLayer, path: string, json: string): void {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, json);
+    fs.renameSync(temporary, path);
+  } finally {
+    unlinkIfExistsSafe(fs, temporary);
+  }
+}
+
 function writeJsonAtomic(fs: PersistenceFsLayer, path: string, data: unknown, strictBackup: boolean): void {
   const json = JSON.stringify(data, null, 2);
-  fs.writeFileSync(`${path}.tmp`, json);
-  fs.renameSync(`${path}.tmp`, path);
+  replaceFile(fs, path, json);
   if (strictBackup) {
     fs.writeFileSync(`${path}.bak`, json);
     return;
@@ -144,11 +159,10 @@ export function writeJsonAtomicPreservingPreviousBackup(fs: PersistenceFsLayer, 
     previous = undefined; // preserve the existing .bak instead of copying garbage
   }
   const json = JSON.stringify(data, null, 2);
-  fs.writeFileSync(`${path}.tmp`, json);
-  fs.renameSync(`${path}.tmp`, path);
+  replaceFile(fs, path, json);
   if (previous === undefined && fs.existsSync(`${path}.bak`)) {
     // Keep the existing backup only when it still parses — a corrupt .bak is
-    // not a recovery source, and the new content is strictly better (r2 NIT).
+    // not a recovery source, and the new content is strictly better.
     try {
       JSON.parse(fs.readFileSync(`${path}.bak`, "utf8"));
       return; // keep the last good backup

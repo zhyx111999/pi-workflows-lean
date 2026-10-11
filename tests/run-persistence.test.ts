@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdtempSync,
@@ -1055,7 +1056,7 @@ test(
     rp.save(state);
 
     const { runsDir } = workflowProjectPaths(cwd);
-    writeFileSync(join(runsDir, `${runId}.json.tmp`), JSON.stringify(state));
+    writeFileSync(join(runsDir, `${runId}.json.${randomUUID()}.tmp`), JSON.stringify(state));
     const lease = rp.acquireRunLease(runId);
     assert.ok(lease, "the lock exists before delete");
 
