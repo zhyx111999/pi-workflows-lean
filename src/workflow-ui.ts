@@ -50,7 +50,7 @@ import {
 } from "./navigator/items.js";
 import { handleConfirmKey, handleTextInput, runBrowseAction } from "./navigator/key-input.js";
 import { subscribeToRunUpdates } from "./navigator/live-updates.js";
-import { boxOverlayLines, overlayContentRows, overlayInnerWidth, overlayOptions } from "./navigator/overlay-box.js";
+import { boxOverlayLines, overlayLayout, overlayOptions } from "./navigator/overlay-box.js";
 import { persistedToSnapshot } from "./navigator/persisted-snapshot.js";
 import { NavigatorTextRenderCache } from "./navigator/render-cache.js";
 import { renderNavigatorFrame } from "./navigator/render-frame.js";
@@ -688,11 +688,19 @@ export function openWorkflowNavigator(
           focused = v;
         },
         render: (width: number) => {
-          const rows = overlayContentRows(tui.terminal?.rows ?? 24);
+          const layout = overlayLayout(width, tui.terminal?.rows ?? 24);
           const lines = model.withRenderFrame(() =>
-            renderNavigatorFrame(state, model, overlayInnerWidth(width), theme, rows, markdownTheme, renderCache),
+            renderNavigatorFrame(
+              state,
+              model,
+              layout.contentWidth,
+              theme,
+              layout.contentRows,
+              markdownTheme,
+              renderCache,
+            ),
           );
-          return boxOverlayLines(lines, width, theme, focused);
+          return boxOverlayLines(lines, layout, theme, focused);
         },
         handleInput: (data: string) => act(data),
         invalidate: () => {},
