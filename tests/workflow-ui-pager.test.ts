@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
-import type { AgentHistoryEntry } from "../src/agent-history.js";
+import { type AgentHistoryEntry, compactAgentHistory } from "../src/agent-history.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "../src/display.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
@@ -189,11 +189,28 @@ test("pager footer labels escape as back instead of duplicating the summary hint
   assert.doesNotMatch(footer, /esc summary/);
 });
 
-test("raw read results inherit syntax highlighting from the requested path", () => {
-  const history: AgentHistoryEntry[] = [
-    { role: "assistant", kind: "toolCall", toolName: "read", text: '{"path":"src/example.ts"}' },
-    { role: "tool", kind: "toolResult", toolName: "read", text: "const answer: number = 42;" },
-  ];
+test("parallel read results take syntax highlighting from their own call's path", () => {
+  const history = compactAgentHistory([
+    {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "call-ts", name: "read", arguments: { path: "src/example.ts" } },
+        { type: "toolCall", id: "call-py", name: "read", arguments: { path: "scripts/example.py" } },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "call-ts",
+      toolName: "read",
+      content: [{ type: "text", text: "const answer: number = 42;" }],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "call-py",
+      toolName: "read",
+      content: [{ type: "text", text: "answer = 42" }],
+    },
+  ]);
   const model = modelForAgent({
     id: 1,
     label: "reader",
@@ -207,7 +224,38 @@ test("raw read results inherit syntax highlighting from the requested path", () 
   const text = renderNavigator(state, model, 100, undefined, 30, plainMarkdownTheme).join("\n");
 
   assert.match(text, /\[typescript\] const answer: number = 42;/);
+  assert.match(text, /\[python\] answer = 42/);
   assert.match(text, /\[json\] \{"path":"src\/example.ts"\}/);
+});
+
+test("a read result without its own call renders as Markdown rather than borrowing another call's path", () => {
+  const history: AgentHistoryEntry[] = [
+    {
+      role: "assistant",
+      kind: "toolCall",
+      toolName: "read",
+      toolCallId: "call-py",
+      path: "example.py",
+      text: '{"path":"example.py"}',
+    },
+    { role: "tool", kind: "toolResult", toolName: "read", toolCallId: "call-trimmed", text: "const a = 1;" },
+    { role: "tool", kind: "toolResult", toolName: "read", text: "const b = 2;" },
+  ];
+  const model = modelForAgent({
+    id: 1,
+    label: "reader",
+    phase: "Work",
+    prompt: "read it",
+    status: "running",
+    history,
+  });
+  const state = enterAgentDetail(model);
+  state.togglePager();
+  const text = renderNavigator(state, model, 100, undefined, 30, plainMarkdownTheme).join("\n");
+
+  assert.match(text, /const a = 1;/);
+  assert.match(text, /const b = 2;/);
+  assert.doesNotMatch(text, /\[python\]/);
 });
 
 test("write calls render source code instead of a raw JSON argument envelope", () => {
