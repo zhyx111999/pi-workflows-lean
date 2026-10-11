@@ -11,6 +11,8 @@ export interface ScriptCalls {
   readonly pending: Set<Promise<unknown>>;
   /** Rejections that had no script handler yet when they happened, in order. */
   readonly failures: TrackedFailure[];
+  /** Promises the script created itself that rejected and are still unhandled (see script-rejections.ts). */
+  readonly ownRejections: Map<Promise<unknown>, unknown>;
 }
 
 interface TrackedFailure {
@@ -21,8 +23,8 @@ interface TrackedFailure {
 
 /** A rejection the script never attached a handler to. */
 export interface UnobservedFailure {
-  /** The workflow global whose promise, or a promise derived from it, rejected. */
-  readonly global: string;
+  /** The workflow global whose promise, or a promise derived from it, rejected; absent for a promise the script made itself. */
+  readonly global?: string;
   readonly error: unknown;
 }
 
@@ -64,7 +66,7 @@ class ScriptPromise extends Promise<unknown> {
 }
 
 export function createScriptCalls(): ScriptCalls {
-  return { pending: new Set<Promise<unknown>>(), failures: [] };
+  return { pending: new Set<Promise<unknown>>(), failures: [], ownRejections: new Map() };
 }
 
 /**
@@ -91,9 +93,11 @@ export function trackScriptCalls<A extends unknown[]>(
 
 /** The failures whose promise the script never handled, in the order they happened. Final once nothing is pending. */
 export function unobservedFailures(calls: ScriptCalls): UnobservedFailure[] {
-  return calls.failures
+  const fromGlobals = calls.failures
     .filter(({ promise }) => !observedPromises.has(promise))
     .map(({ global, error }) => ({ global, error }));
+  const own = [...calls.ownRejections.values()].map((error) => ({ error }));
+  return [...fromGlobals, ...own];
 }
 
 function track(calls: ScriptCalls, global: string, source: Promise<unknown>): Promise<unknown> {

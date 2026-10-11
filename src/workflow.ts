@@ -36,7 +36,8 @@ import { resolveAgentTimeoutMs, resolveConcurrency } from "./runtime/run-limits.
 import { finishRun, type ScriptOutcome } from "./runtime/run-teardown.js";
 import { trackScriptCalls } from "./runtime/script-calls.js";
 import { readMetaExport } from "./runtime/script-meta.js";
-import { createScriptContext, runScript } from "./runtime/script-vm.js";
+import { routeRealmRejections } from "./runtime/script-rejections.js";
+import { createScriptContext, realmPromisePrototype, runScript } from "./runtime/script-vm.js";
 import { SharedStore } from "./shared-store.js";
 import type { WorkflowRuntimeImplementations } from "./workflow-capability-contract.js";
 
@@ -350,13 +351,25 @@ export async function runWorkflow<T = unknown>(
   // like any script error; the teardown then drains every call the script
   // started and settles the run.
   let outcome: ScriptOutcome;
+  let stopRoutingRejections = () => {};
   try {
     const context = createScriptContext(createScriptGlobals(ctx), logger);
+    // Promises the script makes itself must not take the host down if it leaves one rejected.
+    const own = state.calls.ownRejections;
+    stopRoutingRejections = routeRealmRejections(realmPromisePrototype(context), {
+      rejected: (promise, reason) => own.set(promise, reason),
+      handled: (promise) => own.delete(promise),
+    });
     outcome = { ok: true, value: await runScript(context, body, `${meta.name || "workflow"}.js`) };
   } catch (error) {
     outcome = { ok: false, error };
   }
-  const result = (await finishRun(ctx, outcome)) as T;
+  let result: T;
+  try {
+    result = (await finishRun(ctx, outcome)) as T;
+  } finally {
+    stopRoutingRejections();
+  }
 
   const logFile = logger.persist();
   if (logFile) log(`Logs persisted to ${logFile}`);

@@ -113,6 +113,7 @@ WorkflowAgent.run()                          agent.ts
 | `fanout.ts` | `parallel()` 与 `pipeline()`：可恢复的分支失败返回 `null` |
 | `checkpoint.ts` / `durable-json.ts` | 暂停点；暂停点数据必须能无损地存进 JSON |
 | `script-calls.ts` | 跟踪 `agent()`、`parallel()`、`pipeline()`、`checkpoint()` 交给脚本的每个 promise：脚本没 await 的调用也不会让 Pi 进程因未处理的 rejection 退出，并记下脚本从未处理的失败 |
+| `script-rejections.ts` | 脚本自己创建、又没处理的 rejected promise（例如没 await 的 async 函数抛错）按脚本 realm 认领，记为运行失败而不让 Pi 退出；其他来源的未处理 rejection 仍按 Node 默认行为结束进程 |
 | `run-teardown.ts` | 收尾：脚本抛错时先封存运行，等待所有尚未结束的调用，再一次性判定结果——脚本没 await 的暂停点照样暂停，没 await 的不可恢复失败让运行失败，可恢复失败只记日志 |
 
 ### 子代理层：一个子代理会话（`agent.ts` + `agent/`）

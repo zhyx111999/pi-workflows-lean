@@ -1,8 +1,10 @@
 /**
  * Child-process entry for tests/unawaited-script-calls.test.ts. It runs the
- * workflow in UNAWAITED_RUN_SCRIPT through a WorkflowManager without any
- * unhandledRejection listener, so an unhandled rejection ends this process as
- * it would end Pi, and prints the persisted run state as one JSON line.
+ * workflow in UNAWAITED_RUN_SCRIPT through a WorkflowManager in a process with
+ * Node's default rejection handling, as Pi has, so an unhandled rejection the
+ * runtime fails to contain ends this process, and prints the persisted run
+ * state as one JSON line. With UNAWAITED_FOREIGN_REJECTION set it then leaves
+ * a rejection of its own unhandled, which must still end the process.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +39,6 @@ try {
   const record = manager.getPersistence().load(runId);
   process.stdout.write(
     `${JSON.stringify({
-      unhandledRejectionListeners: process.listenerCount("unhandledRejection"),
       status: record?.status,
       error: record?.error,
       checkpoint: record?.checkpoint && { id: record.checkpoint.checkpointId, status: record.checkpoint.status },
@@ -46,3 +47,4 @@ try {
 } finally {
   rmSync(cwd, { recursive: true, force: true });
 }
+if (process.env.UNAWAITED_FOREIGN_REJECTION) void Promise.reject(new Error("a rejection outside any workflow"));

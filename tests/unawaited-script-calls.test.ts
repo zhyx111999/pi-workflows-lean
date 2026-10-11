@@ -12,27 +12,28 @@ const ISOLATED_HOME = pathToFileURL(fileURLToPath(new URL("./helpers/isolated-ho
 const workflow = (body: string) => `export const meta = { name: 'unawaited', description: 'un-awaited call' }\n${body}`;
 
 interface ChildRunState {
-  unhandledRejectionListeners: number;
   status?: string;
   error?: string;
   checkpoint?: { id: string; status: string };
 }
 
 /**
- * Run a workflow in a fresh process that, like Pi, has no unhandledRejection
- * listener: there Node turns an unhandled rejection into an exit with code 1.
+ * Run a workflow in a fresh process with Node's default rejection handling, as
+ * Pi has: there an unhandled rejection ends the process with exit code 1.
  */
-function runInChildProcess(body: string): ChildRunState {
-  const child = spawnSync(process.execPath, ["--import", "tsx", "--import", ISOLATED_HOME, CHILD], {
+function spawnChild(body: string, extraEnv: Record<string, string> = {}) {
+  return spawnSync(process.execPath, ["--import", "tsx", "--import", ISOLATED_HOME, CHILD], {
     cwd: ROOT,
-    env: { ...process.env, UNAWAITED_RUN_SCRIPT: workflow(body) },
+    env: { ...process.env, UNAWAITED_RUN_SCRIPT: workflow(body), ...extraEnv },
     encoding: "utf8",
     timeout: 120_000,
   });
+}
+
+function runInChildProcess(body: string): ChildRunState {
+  const child = spawnChild(body);
   assert.equal(child.status, 0, `the process must survive the un-awaited call:\n${child.stderr}`);
-  const state = JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "") as ChildRunState;
-  assert.equal(state.unhandledRejectionListeners, 0, "the child must not install an unhandledRejection listener");
-  return state;
+  return JSON.parse(child.stdout.trim().split("\n").at(-1) ?? "") as ChildRunState;
 }
 
 const fatalAgent = {
@@ -63,6 +64,34 @@ test("an un-awaited pipeline() with a nonrecoverable stage failure keeps the pro
 return 'must not complete'`);
   assert.equal(state.status, "failed");
   assert.match(state.error ?? "", /fatal agent failure/);
+});
+
+test("a promise the script rejects and never handles keeps the process alive and fails the run", () => {
+  const state = runInChildProcess(`Promise.reject(new Error('bare script rejection'))
+return 'must not complete'`);
+  assert.equal(state.status, "failed");
+  assert.match(state.error ?? "", /bare script rejection/);
+});
+
+test("an async function the script never awaits keeps the process alive when it throws, and fails the run", () => {
+  const state = runInChildProcess(`;(async () => { await agent('first'); throw new Error('async helper broke') })()
+return 'must not complete'`);
+  assert.equal(state.status, "failed");
+  assert.match(state.error ?? "", /async helper broke/);
+});
+
+test("a script that handles its own rejection later still completes", () => {
+  const state = runInChildProcess(`const late = Promise.reject(new Error('handled later'))
+await agent('between')
+await late.catch(() => {})
+return 'done'`);
+  assert.equal(state.status, "completed");
+});
+
+test("a rejection outside any workflow still ends the process, as Node does by default", () => {
+  const child = spawnChild("return 'done'", { UNAWAITED_FOREIGN_REJECTION: "1" });
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /a rejection outside any workflow/);
 });
 
 test("an un-awaited agent() with a nonrecoverable failure fails the run with that error", async () => {

@@ -20,6 +20,13 @@ export function createScriptContext(implementations: Readonly<Record<string, unk
   return context;
 }
 
+/** The Promise.prototype of the script's own realm, which every promise the script makes itself inherits from. */
+export function realmPromisePrototype(context: vm.Context): object {
+  return PROMISE_PROTOTYPE.runInContext(context) as object;
+}
+
+const PROMISE_PROTOTYPE = new vm.Script("Promise.prototype");
+
 /**
  * Compile and start the script body as an async function. A syntax error throws
  * synchronously; the returned promise settles with the script's return value.
