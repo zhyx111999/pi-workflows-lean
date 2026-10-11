@@ -6,6 +6,7 @@ import { SUBAGENTS_TOOL_NAME } from "../src/subagents-tool.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
 import { buildForcedWorkflowPrompt } from "../src/workflow-editor.js";
 import type { WorkflowManager } from "../src/workflow-manager.js";
+import { commandDeps } from "./helpers/command-deps.js";
 
 type Handler = (args: string, ctx: any) => Promise<void>;
 
@@ -82,7 +83,7 @@ function harness(
     ...managerOverrides,
   };
 
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager, commandOptions);
+  registerWorkflowCommands(pi as unknown as ExtensionAPI, commandDeps({ manager, ...commandOptions }));
   const ctx = { ui: { notify: (message: string, type?: string) => notified.push({ message, type }) } };
   const run = (args: string, ctxOverrides: Record<string, unknown> = {}) => {
     if (!handler) throw new Error("command not registered");
@@ -225,7 +226,7 @@ test("registerWorkflowCommands is idempotent (skips when already registered)", (
       registrations++;
     },
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, {} as unknown as WorkflowManager);
+  registerWorkflowCommands(pi as unknown as ExtensionAPI, commandDeps({ manager: {} as unknown as WorkflowManager }));
   assert.equal(registrations, 0);
 });
 
@@ -256,7 +257,10 @@ test("/workflows status watches a running run: live status bar + prints on compl
     },
     sendMessage: async (m: any) => printed.push(m.content),
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager);
+  registerWorkflowCommands(
+    pi as unknown as ExtensionAPI,
+    commandDeps({ manager: manager as unknown as WorkflowManager }),
+  );
   const ctx = { ui: { notify: () => {}, setStatus: (_k: string, t?: string) => statusLine.push(t) } };
 
   assert.ok(handler, "handler should exist");
@@ -429,14 +433,6 @@ test("/workflows save without name warns usage", async () => {
   assert.match(h.notified[0].message, /Usage/);
 });
 
-test("/workflows save <name> warns when no storage configured", async () => {
-  const h = harness();
-  await h.run("save my-workflow");
-  assert.equal(h.notified.length, 1);
-  assert.equal(h.notified[0].type, "error");
-  assert.match(h.notified[0].message, /Saving is not available/);
-});
-
 test("/workflows save <name> saves the most recent run with a script and registers a live command", async () => {
   const saved: Array<{ name: string; description?: string; script: string; location?: string }> = [];
   const storage = {
@@ -488,8 +484,7 @@ test("/workflows save <name> saves the most recent run with a script and registe
       },
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    manager,
-    { storage, cwd: "/cwd" },
+    commandDeps({ manager, storage, cwd: "/cwd" }),
   );
 
   assert.ok(workflowsHandler, "workflows command must register");
@@ -546,16 +541,18 @@ test("/workflows save <name> <runId> saves the specified run", async () => {
       },
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    {
-      listRuns: () => runs,
-      getSnapshot: () => null,
-      getRun: () => undefined,
-      pause: () => false,
-      resume: async () => false,
-      stop: () => false,
-      deleteRun: () => false,
-    } as unknown as WorkflowManager,
-    { storage },
+    commandDeps({
+      manager: {
+        listRuns: () => runs,
+        getSnapshot: () => null,
+        getRun: () => undefined,
+        pause: () => false,
+        resume: async () => false,
+        stop: () => false,
+        deleteRun: () => false,
+      } as unknown as WorkflowManager,
+      storage,
+    }),
   );
 
   if (handler) {
@@ -585,16 +582,18 @@ test("/workflows save <name> <runId> warns when run has no script", async () => 
       },
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    {
-      listRuns: () => [{ runId: "no-script", workflowName: "empty", status: "completed", agents: [], logs: [] }],
-      getSnapshot: () => null,
-      getRun: () => undefined,
-      pause: () => false,
-      resume: async () => false,
-      stop: () => false,
-      deleteRun: () => false,
-    } as unknown as WorkflowManager,
-    { storage },
+    commandDeps({
+      manager: {
+        listRuns: () => [{ runId: "no-script", workflowName: "empty", status: "completed", agents: [], logs: [] }],
+        getSnapshot: () => null,
+        getRun: () => undefined,
+        pause: () => false,
+        resume: async () => false,
+        stop: () => false,
+        deleteRun: () => false,
+      } as unknown as WorkflowManager,
+      storage,
+    }),
   );
 
   if (handler) {
@@ -643,7 +642,10 @@ test("/workflows status watch ends when the run is deleted (audit2 #34)", async 
     },
     sendMessage: async () => {},
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager);
+  registerWorkflowCommands(
+    pi as unknown as ExtensionAPI,
+    commandDeps({ manager: manager as unknown as WorkflowManager }),
+  );
   const ctx = { ui: { notify: () => {}, setStatus: (_k: string, t?: string) => statusLine.push(t) } };
   assert.ok(handler);
   await handler("status run-1", ctx);
@@ -690,7 +692,10 @@ test("/workflows status watch survives a throwing sendMessage/setStatus (audit2 
       throw new Error("stale ctx");
     },
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager as unknown as WorkflowManager);
+  registerWorkflowCommands(
+    pi as unknown as ExtensionAPI,
+    commandDeps({ manager: manager as unknown as WorkflowManager }),
+  );
   const ctx = {
     ui: {
       notify: () => {},
@@ -748,8 +753,7 @@ test("/workflows save <name> warns (not false-success) when the name is host-own
       },
       sendMessage: async () => {},
     } as unknown as ExtensionAPI,
-    manager,
-    { storage, cwd: "/cwd" },
+    commandDeps({ manager, storage, cwd: "/cwd" }),
   );
   const notified: Array<{ message: string; type?: string }> = [];
   assert.ok(workflowsHandler);

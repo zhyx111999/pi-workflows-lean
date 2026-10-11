@@ -5,6 +5,7 @@ import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "../src/
 import { parseWorkflowScript } from "../src/workflow.js";
 import type { WorkflowManager } from "../src/workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "../src/workflow-saved.js";
+import { commandDeps } from "./helpers/command-deps.js";
 import { makeCommandRegistryPi, makeNotifyCtx } from "./helpers/mock-pi.js";
 
 /** Fake WorkflowStorage exposing only fixed `load()` results — enough for the shadow tests. */
@@ -53,7 +54,7 @@ function makeFakeManager() {
 
 test("registerBuiltinWorkflows registers the deep-research command", () => {
   const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager: makeFakeManager().manager }));
   assert.deepEqual(
     commands.map((c) => c.name),
     ["deep-research"],
@@ -62,7 +63,7 @@ test("registerBuiltinWorkflows registers the deep-research command", () => {
 
 test("registerBuiltinWorkflows is idempotent — skips already registered commands", () => {
   const { pi, commands } = makeCommandRegistryPi(["deep-research"]);
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager: makeFakeManager().manager }));
   assert.equal(commands.length, 0, "should not re-register when already present");
 });
 
@@ -86,7 +87,7 @@ test("saved workflow cannot claim a built-in name occupied by a third-party comm
 
 test("saved workflow may shadow a built-in only after this extension owns its handler", () => {
   const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager: makeFakeManager().manager }));
   assert.equal(savedWorkflowCommandAvailability(pi, "deep-research").ok, true);
   const result = registerSavedWorkflow(
     pi,
@@ -120,7 +121,10 @@ test("saved workflow rejects an ordinary third-party command name", () => {
 
 test("registerBuiltinWorkflows deep-research handler validates empty args (returns early)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager, storage: makeFakeStorage({}) });
+  registerBuiltinWorkflows(
+    pi,
+    commandDeps({ cwd: "/tmp", manager: makeFakeManager().manager, storage: makeFakeStorage({}) }),
+  );
   const deepResearchHandler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(deepResearchHandler, "deep-research handler should exist");
 
@@ -135,7 +139,7 @@ test("registerBuiltinWorkflows deep-research handler validates empty args (retur
 test("built-in handlers start a background run and return immediately (#104)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage: makeFakeStorage({}) }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -155,7 +159,7 @@ test("built-in handlers start a background run and return immediately (#104)", a
 test("background start notice is mode-aware: TUI points at the task panel, other hosts at /workflows status", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage: makeFakeStorage({}) }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -177,7 +181,7 @@ test("background start notice is mode-aware: TUI points at the task panel, other
 test("deep-research passes web tools on top of coding tools to its run", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage: makeFakeStorage({}) }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -203,7 +207,7 @@ test("startInBackground throwing synchronously surfaces as an error notify, not 
       throw new Error("lease unavailable");
     },
   } as unknown as WorkflowManager;
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage: makeFakeStorage({}) });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage: makeFakeStorage({}) }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -216,7 +220,7 @@ test("startInBackground throwing synchronously surfaces as an error notify, not 
 
 test("registerBuiltinWorkflows creates handlers with expected structure", () => {
   const { pi, commands } = makeCommandRegistryPi();
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager: makeFakeManager().manager });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager: makeFakeManager().manager }));
 
   const deepResearchCmd = commands.find((c) => c.name === "deep-research");
   assert.ok(deepResearchCmd, "deep-research should be registered");
@@ -238,7 +242,7 @@ test("a saved workflow shadows the built-in slash command of the same name", asy
   const { manager, started } = makeFakeManager();
   const customScript = "export const meta = { name: 'custom_deep_research', description: 'override' }\nreturn 1";
   const storage = makeFakeStorage({ "deep-research": { script: customScript } });
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -257,7 +261,7 @@ test("a saved workflow shadow skips the built-in's own argument validation", asy
   const { manager, started } = makeFakeManager();
   const customScript = "export const meta = { name: 'custom_research', description: 'override' }\nreturn 1";
   const storage = makeFakeStorage({ "deep-research": { script: customScript } });
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -276,7 +280,7 @@ test("deep-research still runs the built-in when no saved workflow shadows it", 
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
   const storage = makeFakeStorage({});
-  registerBuiltinWorkflows(pi, { cwd: "/tmp", manager, storage });
+  registerBuiltinWorkflows(pi, commandDeps({ cwd: "/tmp", manager, storage }));
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
 
@@ -291,13 +295,16 @@ test("deep-research still runs the built-in when no saved workflow shadows it", 
 test("a saved shadow of a builtin receives the builtin's positional argument (audit2 #43)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, {
-    cwd: "/tmp",
-    manager,
-    storage: makeFakeStorage({
-      "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+  registerBuiltinWorkflows(
+    pi,
+    commandDeps({
+      cwd: "/tmp",
+      manager,
+      storage: makeFakeStorage({
+        "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+      }),
     }),
-  });
+  );
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
   const { ctx } = makeNotifyCtx();
@@ -310,13 +317,16 @@ test("a saved shadow of a builtin receives the builtin's positional argument (au
 test("a saved shadow does not override an explicitly named argument (audit2 #43)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, {
-    cwd: "/tmp",
-    manager,
-    storage: makeFakeStorage({
-      "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+  registerBuiltinWorkflows(
+    pi,
+    commandDeps({
+      cwd: "/tmp",
+      manager,
+      storage: makeFakeStorage({
+        "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+      }),
     }),
-  });
+  );
   const handler = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(handler);
   const { ctx } = makeNotifyCtx();
@@ -328,16 +338,19 @@ test("a saved shadow does not override an explicitly named argument (audit2 #43)
 test("shadow positional mapping: equals-only topics and declared defaults (audit2 #43 r1)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, {
-    cwd: "/tmp",
-    manager,
-    storage: makeFakeStorage({
-      "deep-research": {
-        script: "export const meta = { name: 'shadow', description: 's' }",
-        parameters: { question: { default: "DEFAULT" } },
-      },
+  registerBuiltinWorkflows(
+    pi,
+    commandDeps({
+      cwd: "/tmp",
+      manager,
+      storage: makeFakeStorage({
+        "deep-research": {
+          script: "export const meta = { name: 'shadow', description: 's' }",
+          parameters: { question: { default: "DEFAULT" } },
+        },
+      }),
     }),
-  });
+  );
   const { ctx } = makeNotifyCtx();
   const deep = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(deep);
@@ -354,13 +367,16 @@ test("shadow positional mapping: equals-only topics and declared defaults (audit
 test("shadow whole-string mapping keeps equals-containing topics whole (audit2 #43 r2)", async () => {
   const { pi, commands } = makeCommandRegistryPi();
   const { manager, started } = makeFakeManager();
-  registerBuiltinWorkflows(pi, {
-    cwd: "/tmp",
-    manager,
-    storage: makeFakeStorage({
-      "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+  registerBuiltinWorkflows(
+    pi,
+    commandDeps({
+      cwd: "/tmp",
+      manager,
+      storage: makeFakeStorage({
+        "deep-research": { script: "export const meta = { name: 'shadow', description: 's' }" },
+      }),
     }),
-  });
+  );
   const deep = commands.find((c) => c.name === "deep-research")?.handler;
   assert.ok(deep);
   const { ctx } = makeNotifyCtx();

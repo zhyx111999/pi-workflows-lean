@@ -54,34 +54,23 @@ import {
   summarizeResult,
 } from "./task-panel/result-text.js";
 import type { ManagedRun, WorkflowManager } from "./workflow-manager.js";
-import type { WorkflowStorage } from "./workflow-saved.js";
 import type { WorkflowSettings } from "./workflow-settings.js";
-
-export interface TaskPanelOptions {
-  storage?: WorkflowStorage;
-  cwd?: string;
-  /**
-   * Live settings loader. When provided, the panel reads it fresh (with a short
-   * TTL cache) on each render so `/workflows-progress` takes effect without a
-   * restart. Omitted in tests / minimal hosts → always compact.
-   */
-  loadSettings?: () => WorkflowSettings;
-}
 
 // ─── Live panel ────────────────────────────────────────────────────────────────
 
 /**
  * Install the live "workflows running" panel below the editor. It redraws on
  * every manager event and is informational only — the user opens the navigator
- * with /workflows. The unused `_pi` keeps the public signature stable.
+ * with /workflows. `loadSettings` is read fresh (with a short TTL cache) on each
+ * render, so `/workflows-progress` takes effect without a restart; without it
+ * the panel is always compact.
  */
 export function installTaskPanel(
-  _pi: ExtensionAPI,
   manager: WorkflowManager,
   ui: ExtensionUIContext,
-  opts: TaskPanelOptions = {},
+  loadSettings?: () => WorkflowSettings,
 ): void {
-  ui.setWidget("workflow-tasks", panelWidget(manager, opts.loadSettings), { placement: "belowEditor" });
+  ui.setWidget("workflow-tasks", panelWidget(manager, loadSettings), { placement: "belowEditor" });
 }
 
 // ─── Delivered messages ────────────────────────────────────────────────────────
@@ -363,15 +352,11 @@ export function resumeResultDelivery(manager: WorkflowManager): void {
 
 // ─── Result delivery ───────────────────────────────────────────────────────────
 
-type DeliveryManager = WorkflowManager & {
-  __deliveryInstalled?: boolean;
-  /** Last loadSettings seen on install — used when binding endpoints. */
-  __deliveryLoadSettings?: () => WorkflowSettings;
-};
-
-function deliveryManager(manager: WorkflowManager): DeliveryManager {
-  return manager as DeliveryManager;
-}
+/**
+ * Managers whose delivery listeners are installed, with the last loadSettings
+ * seen on install (used when binding endpoints).
+ */
+let deliveryInstalls = new WeakMap<WorkflowManager, { loadSettings?: () => WorkflowSettings }>();
 
 // turn_end is registered once per ExtensionAPI instance (pi.on has no off()), and
 // each handler looks up that instance's latest manager: several live pi
@@ -398,8 +383,10 @@ export function installResultDelivery(
   manager: WorkflowManager,
   opts: { loadSettings?: () => WorkflowSettings } = {},
 ): void {
-  const m = deliveryManager(manager);
-  m.__deliveryLoadSettings = opts.loadSettings;
+  const installed = deliveryInstalls.get(manager);
+  const install = installed ?? {};
+  install.loadSettings = opts.loadSettings;
+  deliveryInstalls.set(manager, install);
   patchAgentSessionCapture();
 
   // After each turn, bind the session if its send was not captured yet, then
@@ -412,12 +399,11 @@ export function installResultDelivery(
     pi.on?.("turn_end", (_event: unknown, ctx?: { sessionManager?: { getSessionId?: () => string } }) => {
       const activeManager = turnEndDeliveryManagers.get(pi)?.manager;
       if (!activeManager) return;
-      const active = deliveryManager(activeManager);
       let sid: string | undefined;
       try {
-        sid = ctx?.sessionManager?.getSessionId?.() ?? activeManager.getSessionId?.();
+        sid = ctx?.sessionManager?.getSessionId?.() ?? activeManager.getSessionId();
       } catch {
-        sid = activeManager.getSessionId?.();
+        sid = activeManager.getSessionId();
       }
       if (!sid) return;
 
@@ -426,7 +412,7 @@ export function installResultDelivery(
         probeHostSessionSend(pi, sid);
         if (boundSessionSends.get(sid)) {
           bindSessionDelivery(sid, pi, {
-            loadSettings: active.__deliveryLoadSettings,
+            loadSettings: deliveryInstalls.get(activeManager)?.loadSettings,
             manager: activeManager,
             sessionManager: ctx?.sessionManager,
           });
@@ -452,8 +438,7 @@ export function installResultDelivery(
     }
   }
 
-  if (m.__deliveryInstalled) return;
-  m.__deliveryInstalled = true;
+  if (installed) return;
 
   manager.on("complete", ({ runId }: { runId: string }) => {
     const run = manager.getRun(runId);
@@ -462,7 +447,7 @@ export function installResultDelivery(
     const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
     const content = deliverText(run, {
       resultPath: persistedResultPath(manager, runId, run.result?.result),
-      maxChars: deliveredMaxChars(endpoint?.loadSettings ?? m.__deliveryLoadSettings),
+      maxChars: deliveredMaxChars(endpoint?.loadSettings ?? install.loadSettings),
     });
     routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
   });
@@ -497,6 +482,7 @@ export function _resetDeliveryRegistriesForTests(): void {
   sessionEndpoints.clear();
   probedSessionIds.clear();
   turnEndDeliveryManagers = new WeakMap<ExtensionAPI, { manager: WorkflowManager }>();
+  deliveryInstalls = new WeakMap<WorkflowManager, { loadSettings?: () => WorkflowSettings }>();
 }
 
 /** @internal test helper — register a confirming session send directly. */
@@ -522,14 +508,12 @@ export function _isProbedForTests(sessionId: string): boolean {
 /** @internal test helper — inspect a session's endpoint state. */
 export function _getSessionDeliveryEndpointForTests(
   sessionId: string,
-): { suspended: boolean; generation: number; hasSend: boolean; hasAppend: boolean } | undefined {
+): { suspended: boolean; generation: number; hasSend: boolean } | undefined {
   const ep = sessionEndpoints.get(sessionId);
   if (!ep) return undefined;
   return {
     suspended: ep.suspended,
     generation: ep.generation,
     hasSend: typeof ep.send === "function",
-    // Append is never an ACK; the field stays so the inspected shape is unchanged.
-    hasAppend: false,
   };
 }

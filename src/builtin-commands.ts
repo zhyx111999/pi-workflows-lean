@@ -12,11 +12,10 @@
 import type { ExtensionAPI, ExtensionCommandContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { BuiltinWorkflowInvocation } from "./builtin-workflows.js";
 import { findBuiltinWorkflow } from "./builtin-workflows.js";
-import { claimCommand, isCommandRegistered } from "./command-registry.js";
+import { type CommandDeps, claimCommand, isCommandRegistered } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
 import { parseCommandArgs } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
-import { createWorkflowStorage, type WorkflowStorage } from "./workflow-saved.js";
 
 function alreadyRegistered(pi: ExtensionAPI, name: string): boolean {
   return isCommandRegistered(pi, name);
@@ -89,26 +88,7 @@ function resolveBuiltinOrNotify(
   }
 }
 
-export function registerBuiltinWorkflows(
-  pi: ExtensionAPI,
-  opts: {
-    cwd?: string;
-    manager?: WorkflowManager;
-    storage?: WorkflowStorage;
-    /** Live accessors — preferred when the extension may replace manager/cwd after session_start. */
-    getManager?: () => WorkflowManager;
-    getCwd?: () => string;
-    getStorage?: () => WorkflowStorage;
-  },
-): void {
-  const getManager = (): WorkflowManager => {
-    const m = opts.getManager?.() ?? opts.manager;
-    if (!m) throw new Error("registerBuiltinWorkflows: no WorkflowManager");
-    return m;
-  };
-  const getCwd = () => opts.getCwd?.() ?? opts.cwd ?? process.cwd();
-  const getStorage = () => opts.getStorage?.() ?? opts.storage ?? createWorkflowStorage(getCwd());
-
+export function registerBuiltinWorkflows(pi: ExtensionAPI, { getManager, getCwd, getStorage }: CommandDeps): void {
   /**
    * A project/user saved workflow always takes precedence over a built-in of
    * the same name — on every path, not just the `subagents` tool's `name`

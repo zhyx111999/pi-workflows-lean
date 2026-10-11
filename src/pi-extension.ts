@@ -211,10 +211,7 @@ export default function extension(pi: ExtensionAPI) {
     dropSessionDelivery(outgoingSessionId);
   });
 
-  registerWorkflowCommands(pi, getManager, {
-    getStorage,
-    getCwd,
-  });
+  registerWorkflowCommands(pi, { getManager, getStorage, getCwd });
   registerWorkflowProgressCommands(pi, {
     load: () => loadWorkflowSettings({ cwd: getCwd() }),
     save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, getCwd()),
@@ -317,11 +314,7 @@ export default function extension(pi: ExtensionAPI) {
       }
     }
 
-    installTaskPanel(pi, manager, ctx.ui, {
-      storage,
-      cwd,
-      loadSettings: () => loadWorkflowSettings({ cwd: getCwd() }),
-    });
+    installTaskPanel(manager, ctx.ui, () => loadWorkflowSettings({ cwd: getCwd() }));
   });
 
   // Keep mainModel in sync with mid-session /model (and cycle/restore). Without

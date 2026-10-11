@@ -16,6 +16,7 @@ import {
 } from "../src/task-panel.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
+import { commandDeps } from "./helpers/command-deps.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
 const SESSION = "deletion-session";
@@ -122,7 +123,7 @@ function workflowsCommand(manager: WorkflowManager) {
     },
     sendMessage: async (message: { content: string }) => void printed.push(message.content),
   };
-  registerWorkflowCommands(pi as unknown as ExtensionAPI, manager);
+  registerWorkflowCommands(pi as unknown as ExtensionAPI, commandDeps({ manager }));
   const ctx = { ui: { notify: (message: string) => notified.push(message), setStatus: () => {} } };
   return { run: (args: string) => handler?.(args, ctx), printed, notified };
 }

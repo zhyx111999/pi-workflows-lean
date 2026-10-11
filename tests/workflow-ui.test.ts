@@ -1160,7 +1160,7 @@ test("deleting a saved workflow whose storage.delete throws (e.g. EACCES) notifi
     },
   };
 
-  openWorkflowNavigator({} as ExtensionAPI, fakeManager, ui, { storage }).catch(() => {});
+  openWorkflowNavigator({} as ExtensionAPI, fakeManager, ui, { getStorage: () => storage }).catch(() => {});
   await Promise.resolve();
   await Promise.resolve();
 
@@ -1276,10 +1276,7 @@ test("navigator save registers via manager + live loadWorkflow so a same-name ov
   } as unknown as ExtensionAPI;
 
   openWorkflowNavigator(pi, fakeManager, ui, {
-    storage,
-    cwd: "/cwd",
     getStorage: () => storage,
-    getCwd: () => "/cwd",
     getManager: () => fakeManager,
   }).catch(() => {});
   await Promise.resolve();
@@ -1463,9 +1460,9 @@ test("component rename strips astral format characters and keeps the same safe n
     getRun: () => undefined,
   } as unknown as WorkflowManager;
 
-  openWorkflowNavigator({} as ExtensionAPI, manager, ui, { storage: storage as unknown as WorkflowStorage }).catch(
-    () => {},
-  );
+  openWorkflowNavigator({} as ExtensionAPI, manager, ui, {
+    getStorage: () => storage as unknown as WorkflowStorage,
+  }).catch(() => {});
   await Promise.resolve();
   await Promise.resolve();
   const component = getComponent();
@@ -1524,9 +1521,9 @@ test("component manager refresh invalidates a stale confirmation instead of acti
     },
   } as unknown as WorkflowManager;
 
-  openWorkflowNavigator({} as ExtensionAPI, manager, ui, { storage: storage as unknown as WorkflowStorage }).catch(
-    () => {},
-  );
+  openWorkflowNavigator({} as ExtensionAPI, manager, ui, {
+    getStorage: () => storage as unknown as WorkflowStorage,
+  }).catch(() => {});
   await Promise.resolve();
   await Promise.resolve();
   const component = getComponent();
@@ -1593,7 +1590,7 @@ test("component rename handles a legacy source and live-loads only the new slash
     () => manager,
     () => (current?.name === "legacy-old" ? current : null),
   );
-  openWorkflowNavigator(pi, manager, ui, { storage: storage as unknown as WorkflowStorage }).catch(() => {});
+  openWorkflowNavigator(pi, manager, ui, { getStorage: () => storage as unknown as WorkflowStorage }).catch(() => {});
   await Promise.resolve();
   await Promise.resolve();
   const component = getComponent();
@@ -1648,9 +1645,9 @@ test("component saved detail exposes confirmation before delete", async () => {
     listRuns: () => [] as PersistedRunState[],
     getRun: () => undefined,
   } as unknown as WorkflowManager;
-  openWorkflowNavigator({} as ExtensionAPI, manager, ui, { storage: storage as unknown as WorkflowStorage }).catch(
-    () => {},
-  );
+  openWorkflowNavigator({} as ExtensionAPI, manager, ui, {
+    getStorage: () => storage as unknown as WorkflowStorage,
+  }).catch(() => {});
   await Promise.resolve();
   await Promise.resolve();
   const component = getComponent();
@@ -1693,7 +1690,7 @@ test("a manager event with the target unchanged does NOT cancel a pending confir
     delete: () => true,
   } as unknown as WorkflowStorage;
 
-  openWorkflowNavigator({} as ExtensionAPI, manager, ui, { storage }).catch(() => {});
+  openWorkflowNavigator({} as ExtensionAPI, manager, ui, { getStorage: () => storage }).catch(() => {});
   await Promise.resolve();
   await Promise.resolve();
   const component = getComponent();

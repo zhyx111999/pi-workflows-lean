@@ -4,6 +4,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { CommandDeps } from "./command-registry.js";
 import {
   fmtFull,
   fmtTokenSegment,
@@ -107,31 +108,8 @@ function renderPersistedStatus(run: PersistedRunState): string {
   return lines.join("\n");
 }
 
-export interface WorkflowCommandOptions {
-  /** Saved-workflow storage, enabling `/workflows save`. */
-  storage?: WorkflowStorage;
-  /** Live storage accessor when the extension may replace storage after session_start. */
-  getStorage?: () => WorkflowStorage | undefined;
-  /** Working directory for saved workflows registered via `save`. */
-  cwd?: string;
-  /** Live cwd accessor. */
-  getCwd?: () => string;
-  /** Live manager accessor; preferred over a closed-over manager. */
-  getManager?: () => WorkflowManager;
-}
-
 /** Register the `/workflows` command against the shared manager. Idempotent. */
-export function registerWorkflowCommands(
-  pi: ExtensionAPI,
-  manager: WorkflowManager | (() => WorkflowManager),
-  opts: WorkflowCommandOptions = {},
-): void {
-  // Prefer opts.getManager when provided; otherwise accept a getter (or value)
-  // as the second argument. Both forms are supported so embedders can pass
-  // either a live accessor bag or a bare manager.
-  const getManager = opts.getManager ?? (typeof manager === "function" ? manager : () => manager);
-  const getCwd = () => opts.getCwd?.() ?? opts.cwd ?? process.cwd();
-  const getStorage = () => opts.getStorage?.() ?? opts.storage;
+export function registerWorkflowCommands(pi: ExtensionAPI, { getManager, getStorage }: CommandDeps): void {
   try {
     const taken = (pi.getCommands?.() ?? []).some((c: { name: string }) => c.name === "workflows");
     if (taken) return;
@@ -192,13 +170,7 @@ export function registerWorkflowCommands(
           // an explicit `list`, gets the plain-text run list.
           const wantsNavigator = sub !== "list" || parts.length === 0;
           if (wantsNavigator && ctx.mode === "tui") {
-            await openWorkflowNavigator(pi, manager, ctx.ui, {
-              storage: getStorage(),
-              cwd: getCwd(),
-              getStorage,
-              getCwd,
-              getManager,
-            });
+            await openWorkflowNavigator(pi, manager, ctx.ui, { getStorage, getManager });
             return;
           }
           const runs = manager.listRuns();
@@ -274,7 +246,6 @@ export function registerWorkflowCommands(
           const name = id;
           if (!name) return ctx.ui.notify("Usage: /workflows save <name> [runId]", "warning");
           const storage = getStorage();
-          if (!storage) return ctx.ui.notify("Saving is not available (no storage configured)", "error");
           const runs = manager.listRuns();
           const runIdArg = parts[2];
           // Pick the named run, else the most recent run that still has its script.
@@ -298,7 +269,7 @@ export function registerWorkflowCommands(
           // Always re-resolve storage at invocation — do not close over the
           // instance from this save call, or a later project switch leaves
           // the loader pointed at the source project's store.
-          const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage()?.load(name));
+          const registration = registerSavedWorkflow(pi, saved, getManager, () => getStorage().load(name));
           // Surface a refused registration: the file persisted,
           // but a host/extension-owned name never becomes a slash command —
           // reporting plain success would silently mislead.

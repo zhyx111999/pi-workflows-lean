@@ -1,4 +1,16 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { WorkflowManager } from "./workflow-manager.js";
+import type { WorkflowStorage } from "./workflow-saved.js";
+
+/**
+ * What a command handler reads at invocation. Getters, because the extension
+ * replaces its manager, storage, and cwd when a session switches projects.
+ */
+export interface CommandDeps {
+  getManager(): WorkflowManager;
+  getStorage(): WorkflowStorage;
+  getCwd(): string;
+}
 
 export type CommandOwner = "builtin" | "saved";
 

@@ -628,16 +628,11 @@ export function keyToAction(keyId: string | undefined, kind: ViewKind, itemKind?
 }
 
 export interface NavigatorOptions {
-  storage?: WorkflowStorage;
-  /** Live storage accessor when the extension may replace storage after session_start. */
+  /** The storage in effect now; the extension can replace it after session_start. */
   getStorage?: () => WorkflowStorage | undefined;
-  cwd?: string;
-  /** Live cwd accessor. */
-  getCwd?: () => string;
   /**
-   * Live manager accessor used when registering a saved `/name` command from the
-   * navigator. Prefer this over the closed-over `manager` argument so saves run
-   * through the current session's manager (background path), not a stale snapshot.
+   * The manager a saved `/name` command registered from the navigator runs on,
+   * so it uses the current session's manager rather than this snapshot.
    */
   getManager?: () => WorkflowManager;
 }
@@ -652,7 +647,7 @@ export function openWorkflowNavigator(
   ui: ExtensionUIContext,
   opts: NavigatorOptions = {},
 ): Promise<void> {
-  const model = new NavigatorModel(manager, () => opts.getStorage?.() ?? opts.storage);
+  const model = new NavigatorModel(manager, () => opts.getStorage?.());
   const state = new NavigatorState();
   const session: NavigatorSession = { pi, manager, ui, options: opts, model, state };
 

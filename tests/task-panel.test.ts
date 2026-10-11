@@ -192,8 +192,8 @@ type TaskPanelModule = {
   _getStealMapForTests: () => ReadonlyMap<string, StableSend>;
   _getSessionDeliveryEndpointForTests: (
     sessionId: string,
-  ) => { suspended: boolean; generation: number; hasSend: boolean; hasAppend: boolean } | undefined;
-  installTaskPanel: (pi: ExtensionAPI | null, manager: unknown, ui: unknown) => void;
+  ) => { suspended: boolean; generation: number; hasSend: boolean } | undefined;
+  installTaskPanel: (manager: unknown, ui: unknown, loadSettings?: unknown) => void;
   installHostSessionCapture: (sessionClass: typeof AgentSession) => void;
 };
 
@@ -258,7 +258,6 @@ describe("installResultDelivery", () => {
       setSessionId: (id: string | undefined) => void;
       adoptLiveRunsToSession: (newId: string | undefined, previousSessionId?: string) => number;
       listLiveRuns: () => unknown[];
-      __deliveryInstalled?: boolean;
       listRuns?: () => unknown[];
     };
     manager.getRun = (id: string) => runs.get(id);
@@ -2810,7 +2809,7 @@ describe("installTaskPanel", () => {
       },
     };
 
-    mod.installTaskPanel(null, manager, ui);
+    mod.installTaskPanel(manager, ui);
     assert.equal(registeredName, "workflow-tasks");
     assert.equal(registeredPlacement, "belowEditor");
   });
@@ -2833,7 +2832,7 @@ describe("installTaskPanel", () => {
       },
     };
 
-    mod.installTaskPanel(null, manager, ui);
+    mod.installTaskPanel(manager, ui);
     let renders = 0;
     const component = factory?.(
       { requestRender: () => renders++ },
@@ -2880,7 +2879,7 @@ describe("installTaskPanel", () => {
     };
     const theme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
 
-    mod.installTaskPanel(null, manager, ui);
+    mod.installTaskPanel(manager, ui);
     const component = factory?.({ requestRender: () => {} }, theme);
     const lines = component?.render(24) ?? [];
 
@@ -3356,7 +3355,7 @@ describe("installTaskPanel mode selection", () => {
         factory = f;
       },
     };
-    mod.installTaskPanel(null, manager as never, ui as never, { loadSettings } as never);
+    mod.installTaskPanel(manager as never, ui as never, loadSettings as never);
     const comp = factory?.({ requestRender: () => {} }, theme);
     const lines = comp?.render(120) ?? [];
     comp?.dispose?.();
