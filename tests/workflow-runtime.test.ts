@@ -1669,6 +1669,37 @@ return { received: args && args.value }`;
   assert.equal(result.result.received, 42);
 });
 
+test("runWorkflow gives the script a deeply frozen copy of args, so the persisted args never change", async () => {
+  const args = { items: [3, 1, 2], nested: { value: 1 } };
+  const result = await runWorkflow<{ sortError: string; editError: string; sorted: number[] }>(
+    `export const meta = { name: 'args_frozen', description: 'frozen args' }
+const attempt = (edit) => { try { edit(); return 'none' } catch (e) { return e.name } }
+return {
+  sortError: attempt(() => args.items.sort()),
+  editError: attempt(() => { args.nested.value = 2 }),
+  sorted: [...args.items].sort(),
+}`,
+    { agent: countingAgent().runner, persistLogs: false, args },
+  );
+
+  assert.equal(result.result.sortError, "TypeError");
+  assert.equal(result.result.editError, "TypeError");
+  assert.deepEqual([...result.result.sorted], [1, 2, 3]);
+  assert.deepEqual(args, { items: [3, 1, 2], nested: { value: 1 } });
+  assert.equal(Object.isFrozen(args), false, "the caller's own object is left alone");
+});
+
+test("runWorkflow rejects args that would not survive persistence unchanged", async () => {
+  await assert.rejects(
+    runWorkflow("export const meta = { name: 'args_lossy', description: 'lossy args' }\nreturn args", {
+      agent: countingAgent().runner,
+      persistLogs: false,
+      args: { ratio: Number.NaN },
+    }),
+    /workflow args must be a lossless JSON value/,
+  );
+});
+
 test("runWorkflow log function works inside script", async () => {
   const script = `export const meta = { name: 'log_test', description: 'logging' }
 log('hello from script')
@@ -1717,6 +1748,32 @@ return { cwd: process.cwd() }`;
 
   assert.equal(typeof result.result.cwd, "string");
   assert.ok(result.result.cwd.length > 0, "result.cwd should not be empty");
+});
+
+test("runWorkflow process.cwd() stays the run's cwd when the host process changes directory", async () => {
+  const hostCwd = process.cwd();
+  const elsewhere = mkdtempSync(join(tmpdir(), "pi-run-cwd-"));
+  try {
+    const result = await runWorkflow<{ cwd: string; processCwd: string }>(
+      `export const meta = { name: 'cwd_stable', description: 'cwd' }
+await agent('move')
+return { cwd, processCwd: process.cwd() }`,
+      {
+        agent: {
+          async run() {
+            process.chdir(elsewhere);
+            return "moved";
+          },
+        },
+        persistLogs: false,
+      },
+    );
+    assert.equal(result.result.cwd, hostCwd);
+    assert.equal(result.result.processCwd, hostCwd);
+  } finally {
+    process.chdir(hostCwd);
+    rmSync(elsewhere, { recursive: true, force: true });
+  }
 });
 
 test("runWorkflow returns empty logs array when nothing logged", async () => {
