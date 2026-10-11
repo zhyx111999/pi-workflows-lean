@@ -19,6 +19,8 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { RunRecordUnreadableError } from "../src/errors.js";
 import { defaultPersistenceFs, type PersistenceFsLayer } from "../src/fs-persistence.js";
+import { bindDiagnosticSink } from "../src/host-diagnostics.js";
+import { persistedToSnapshot } from "../src/navigator/persisted-snapshot.js";
 import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { createRunRecordStore } from "../src/run-record-store.js";
 import { WorkflowManager } from "../src/workflow-manager.js";
@@ -806,6 +808,61 @@ test(
 );
 
 test(
+  "a record whose committed log is missing or short is skipped everywhere, reported once, and still removable",
+  withFixture(async (cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save(state("short-log"));
+    rp.save(state("no-log"));
+    rp.save(state("intact"));
+    const runsDir = rp.getRunsDir();
+    const shortLog = join(runsDir, "short-log.json.events.jsonl");
+    writeFileSync(shortLog, readFileSync(shortLog, "utf8").slice(0, 10));
+    rmSync(join(runsDir, "no-log.json.events.jsonl"));
+
+    const reports: string[] = [];
+    const release = bindDiagnosticSink((message) => reports.push(message));
+    try {
+      const reader = createRunPersistence(cwd);
+      assert.deepEqual(
+        reader.list().map((run) => run.runId),
+        ["intact"],
+        "a view is listed only when load() could read it",
+      );
+      reader.list();
+      assert.throws(() => reader.loadPreview("short-log"), RunRecordUnreadableError);
+      assert.throws(() => reader.loadPreview("no-log"), RunRecordUnreadableError);
+      assert.equal(reports.length, 2, "each damaged record is reported once, not on every refresh");
+      for (const runId of ["short-log", "no-log"]) {
+        assert.ok(reports.some((message) => message.includes(`Remove it with /workflows rm ${runId}`)));
+      }
+
+      const manager = new WorkflowManager({ cwd });
+      assert.equal(manager.findRun("short-log"), undefined);
+      assert.equal(manager.deleteRun("short-log"), true, "a damaged record can still be removed by id");
+    } finally {
+      release();
+    }
+  }),
+);
+
+test(
+  "damage inside a log of the right size fails a lazy field read as an unreadable record",
+  withFixture((cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save(state("bit-rot", [{ index: 0, hash: "h", result: "paid result" }]));
+    const log = join(rp.getRunsDir(), "bit-rot.json.events.jsonl");
+    const text = readFileSync(log, "utf8");
+    writeFileSync(log, text.replace("paid result", "PAID RESULT"));
+
+    const view = createRunPersistence(cwd)
+      .list()
+      .find((run) => run.runId === "bit-rot");
+    assert.ok(view, "the head and a full-size log list the run");
+    assert.throws(() => view.journal, RunRecordUnreadableError);
+  }),
+);
+
+test(
   "a head that parses but is not a valid commit falls back to its backup like a torn one",
   withFixture((cwd) => {
     const rp = createRunPersistence(cwd);
@@ -820,5 +877,23 @@ test(
       reader.list().some((run) => run.runId === "bad-head"),
       "listed exactly as load() reads it",
     );
+  }),
+);
+
+test(
+  "the navigator shows a listed run with a damaged log as damaged instead of failing",
+  withFixture((cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save(state("bit-rot-view", [{ index: 0, hash: "h", result: "paid result" }]));
+    const log = join(rp.getRunsDir(), "bit-rot-view.json.events.jsonl");
+    writeFileSync(log, readFileSync(log, "utf8").replace("paid result", "PAID RESULT"));
+
+    const view = createRunPersistence(cwd)
+      .list()
+      .find((run) => run.runId === "bit-rot-view");
+    assert.ok(view);
+    const snapshot = persistedToSnapshot(view);
+    assert.equal(snapshot.agents.length, 0);
+    assert.match(snapshot.logs[0], /cannot be read: .*Remove it with \/workflows rm bit-rot-view/);
   }),
 );

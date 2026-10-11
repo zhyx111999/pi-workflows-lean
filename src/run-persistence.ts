@@ -6,7 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { RunTokenUsage } from "./agent-usage.js";
 import type { WorkflowAgentSnapshot } from "./display.js";
-import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
+import { RunRecordDeletedError, RunRecordUnreadableError, WorkflowErrorCode } from "./errors.js";
 import {
   isDeadLockDebris,
   type LockOwner,
@@ -22,6 +22,7 @@ import {
   resolvePersistenceFs,
   unlinkIfExistsSafe,
 } from "./fs-persistence.js";
+import { reportDiagnostic } from "./host-diagnostics.js";
 import type { AgentTimestamps } from "./manager/agent-rows.js";
 import { settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import { createRunRecordStore } from "./run-record-store.js";
@@ -441,6 +442,15 @@ export function createRunPersistence(
     return view;
   };
 
+  // list() runs on every navigator refresh; one report per record and damage is enough.
+  const reportedDamage = new Set<string>();
+  const reportDamagedOnce = (runId: string, error: RunRecordUnreadableError) => {
+    const key = `${runId}\n${error.message}`;
+    if (reportedDamage.has(key)) return;
+    reportedDamage.add(key);
+    reportDiagnostic(`Skipped workflow run ${runId}: ${error.message}. Remove it with /workflows rm ${runId}`);
+  };
+
   const computeList = (): PersistedRunState[] => {
     const candidates = new Map<string, RecordFiles>();
     for (const name of listFilesSafe(fs, runsDir)) {
@@ -457,10 +467,11 @@ export function createRunPersistence(
       try {
         const view = listView(runId, files);
         if (view) views.push(view);
-      } catch {
+      } catch (error) {
         // Skip damaged or vanished records without caching the failure: a
         // transient read error must not hide a valid record until it changes.
         listViews.delete(runId);
+        if (error instanceof RunRecordUnreadableError) reportDamagedOnce(runId, error);
       }
     }
     return views.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());

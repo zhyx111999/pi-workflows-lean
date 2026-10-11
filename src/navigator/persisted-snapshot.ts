@@ -1,10 +1,31 @@
 /** Rebuilds a display snapshot from a persisted run record so finished and other-session runs can be browsed. */
 
 import type { WorkflowSnapshot } from "../display.js";
+import { RunRecordUnreadableError } from "../errors.js";
 import type { PersistedRunState } from "../run-persistence.js";
 import { asText } from "./as-text.js";
 
 export function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
+  try {
+    return rebuildSnapshot(p);
+  } catch (error) {
+    if (!(error instanceof RunRecordUnreadableError)) throw error;
+    // A listed record whose log is damaged: show why its details are missing.
+    return {
+      name: asText(p.workflowName),
+      phases: [],
+      logs: [`${error.message}. Remove it with /workflows rm ${p.runId}`],
+      agents: [],
+      agentCount: 0,
+      runningCount: 0,
+      doneCount: 0,
+      errorCount: 0,
+      runId: p.runId,
+    };
+  }
+}
+
+function rebuildSnapshot(p: PersistedRunState): WorkflowSnapshot {
   // Corrupt arrays must not crash the overlay. Resumable runs keep each full
   // result only in the journal, not also in agents[], so done agents are
   // rehydrated by call identity; the positional index is the fallback for

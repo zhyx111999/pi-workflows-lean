@@ -5,7 +5,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { aggregateAgentUsage } from "./display.js";
-import { RunRecordUnreadableError } from "./errors.js";
+import { errorMessage, RunRecordUnreadableError } from "./errors.js";
 import { type PersistenceFsLayer, unlinkIfExistsSafe, writeJsonAtomicWithBackup } from "./fs-persistence.js";
 import { INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import type { PersistedRunState } from "./run-persistence.js";
@@ -386,22 +386,40 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
       }
     }
   }
-  function read(path: string): PersistedRunState | null {
-    const head = readHead(fs, path);
-    if (!head) return null;
-    // A committed-but-damaged log fails closed, rather than silently replaying
-    // an older paid-call prefix. Only a corrupt/missing head uses its backup.
+  /**
+   * The run `head` commits to. A committed-but-damaged log fails closed,
+   * rather than silently replaying an older paid-call prefix; only a corrupt
+   * or missing head uses its backup.
+   */
+  function replayCommitted(path: string, head: Head): PersistedRunState {
     try {
-      return structuredClone(replay(path, head));
+      return replay(path, head);
     } catch (error) {
-      throw error instanceof RunRecordUnreadableError
-        ? error
-        : new RunRecordUnreadableError(path, (error as Error).message);
+      throw error instanceof RunRecordUnreadableError ? error : new RunRecordUnreadableError(path, errorMessage(error));
     }
   }
+  function read(path: string): PersistedRunState | null {
+    const head = readHead(fs, path);
+    return head ? structuredClone(replayCommitted(path, head)) : null;
+  }
+  /**
+   * The light view of a run, or null when it has none. A head whose log is
+   * missing or shorter than its commit (a retired generation's, or a torn
+   * file) is unreadable here already, so a view never lists a record load()
+   * cannot read; damage inside a log of the right size surfaces when a lazy
+   * field is read.
+   */
   function peek(path: string): PersistedRunState | null {
     const head = readHead(fs, path);
-    return head ? preview(path, head) : null;
+    if (!head) return null;
+    let size: number;
+    try {
+      ({ size } = logFile(path, head));
+    } catch (error) {
+      throw new RunRecordUnreadableError(path, `committed run log is missing (${errorMessage(error)})`);
+    }
+    if (size < head.bytes) throw new RunRecordUnreadableError(path, "Truncated committed run log");
+    return preview(path, head);
   }
   /** A light view of a run from its head; fields outside the index load the log on first access. */
   function preview(path: string, head: Head): PersistedRunState {
@@ -414,7 +432,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
         Object.defineProperty(view, key, {
           enumerable: true,
           configurable: true,
-          get: () => structuredClone((replay(path, head) as unknown as Record<string, unknown>)[key]),
+          get: () => structuredClone((replayCommitted(path, head) as unknown as Record<string, unknown>)[key]),
         });
     // Markers are needed to route pending delivery without loading results.
     if (head.pendingDelivery) {
@@ -423,7 +441,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
         Object.defineProperty(marker, "text", {
           enumerable: true,
           get: () => {
-            const full = replay(path, head).pendingDelivery;
+            const full = replayCommitted(path, head).pendingDelivery;
             return full?.kind === "text" ? full.text : undefined;
           },
         });

@@ -591,7 +591,8 @@ export class WorkflowManager extends EventEmitter {
     try {
       run = this.persistence.loadPreview(runId);
     } catch {
-      // A damaged record is unreadable, not deleted; list() skips it as well.
+      // A damaged record is unreadable, not deleted; list() skips it as well,
+      // and /workflows rm still removes it by id.
       return undefined;
     }
     if (!run) this.live.dropIfDeleted(this.runs.get(runId));
