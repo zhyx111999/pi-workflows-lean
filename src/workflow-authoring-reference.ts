@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CapabilityClassification, CapabilitySupport } from "./enums.js";
 import {
+  CAPABILITY_DETAIL_PATH,
   type OptionDescriptor,
   type StaticCapabilityFact,
   WORKFLOW_CAPABILITY_CONTRACT,
@@ -13,9 +14,6 @@ const TABLE_END = "<!-- END GENERATED SUPPORTED WORKFLOW CAPABILITIES -->";
 
 /** Package-relative compact capability index generated from the contract. */
 export const CAPABILITY_INDEX_PATH = "skills/workflow-authoring/references/capabilities.md";
-
-/** Package-relative exhaustive generated capability reference. */
-export const CAPABILITY_DETAIL_PATH = "skills/workflow-authoring/references/capability-details.md";
 
 /** Documents that embed the byte-identical supported-capability table. */
 export const CAPABILITY_TABLE_PUBLICATION_PATHS = [
