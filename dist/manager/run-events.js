@@ -2,6 +2,7 @@
 import { createEmptyAgentUsage, sumAgentUsage } from "../agent-usage.js";
 import { preview } from "../display.js";
 import { isProviderUsageLimit } from "../errors.js";
+import { nextAgentRowId, supersedeAgentRow } from "./agent-rows.js";
 /**
  * runWorkflow callbacks for one execution of `managed`. Per-agent events are
  * matched through `agentsById`, keyed by the call's unique id: concurrent
@@ -45,6 +46,7 @@ export function runEventHooks(managed, sink) {
         onAgentStart: (event) => {
             const row = (event.replayed ? replayedRow(managed, event) : undefined) ?? newRow(managed, event);
             managed.agentsById.set(event.id, row);
+            managed.executionAgentRows.add(row.id);
             // A replayed call launched no child, so it keeps its original timestamps.
             const priorTimestamp = event.replayed ? managed.agentTimestampsByCallId.get(event.id) : undefined;
             const timestamp = priorTimestamp ?? { startedAt: new Date().toISOString() };
@@ -52,7 +54,7 @@ export function runEventHooks(managed, sink) {
             // Mark every replay, even one without a recorded timestamp, so onAgentEnd
             // never treats it as live and overwrites its recorded end time and tokens.
             if (event.replayed)
-                managed.replayedAgentCalls.add(event.id);
+                managed.replayingAgentCalls.add(event.id);
             managed.agentTimestampsByCallId.set(event.id, { ...timestamp });
             sink.emit("agentStart", { runId: managed.runId, ...event });
         },
@@ -104,7 +106,7 @@ export function runEventHooks(managed, sink) {
                 agent.error = event.error;
                 agent.errorCode = event.errorCode;
                 agent.recoverable = event.recoverable;
-                const replayed = managed.replayedAgentCalls.has(event.id);
+                const replayed = managed.replayingAgentCalls.has(event.id);
                 if (!replayed) {
                     if (event.tokenUsage) {
                         agent.tokenUsage = event.tokenUsage;
@@ -122,7 +124,7 @@ export function runEventHooks(managed, sink) {
                     ts.endedAt = new Date().toISOString();
                     managed.agentTimestampsByCallId.set(event.id, { ...ts });
                 }
-                managed.replayedAgentCalls.delete(event.id);
+                managed.replayingAgentCalls.delete(event.id);
                 managed.agentsById.delete(event.id);
             }
             sink.emit("agentEnd", { runId: managed.runId, ...event });
@@ -159,31 +161,35 @@ export function runEventHooks(managed, sink) {
 }
 /**
  * The row seeded from the record at resume for a replayed call, refreshed from
- * the call. Call ids are positional and can repeat, so the last matching row is
- * the latest execution of the call. Label is not part of the call hash, so a
- * label-only edit still replays and must update the row.
+ * the call. A replay is the recorded execution itself, so the row stays as it
+ * is. Label is not part of the call hash, so a label-only edit still replays
+ * and must update the row.
  */
 function replayedRow(managed, event) {
-    const agents = managed.snapshot.agents;
-    for (let i = agents.length - 1; i >= 0; i--) {
-        const seeded = agents[i];
-        if (seeded.callId !== event.id)
-            continue;
-        seeded.label = event.label;
-        seeded.phase = event.phase;
-        seeded.prompt = event.prompt;
-        if (event.model)
-            seeded.model = event.model;
-        return seeded;
-    }
-    return undefined;
+    const seeded = managed.snapshot.agents.find((agent) => agent.callId === event.id);
+    if (!seeded)
+        return undefined;
+    seeded.label = event.label;
+    seeded.phase = event.phase;
+    seeded.prompt = event.prompt;
+    if (event.model)
+        seeded.model = event.model;
+    return seeded;
 }
-/** Append a running row; a replayed call without a seeded row carries its recorded model, session, and tokens. */
+/**
+ * A running row for the call. A call has one row: when this execution re-runs
+ * a call that already has one, the new row takes its place and keeps the
+ * superseded execution as history. Row ids name one execution's row (its
+ * timestamps are kept by id, and executionAgentRows holds the ids of this
+ * execution's rows), so the new row gets a new id. A replayed call without a
+ * seeded row carries its recorded model, session, and tokens.
+ */
 function newRow(managed, event) {
+    const agents = managed.snapshot.agents;
     const prior = event.replayed ? managed.replayedAgentStatesByCallId.get(event.id) : undefined;
     const priorSession = event.replayed ? managed.agentSessionsByCallId.get(event.id) : undefined;
     const row = {
-        id: managed.snapshot.agents.length + 1,
+        id: nextAgentRowId(agents),
         callId: event.id,
         label: event.label,
         phase: event.phase,
@@ -195,8 +201,15 @@ function newRow(managed, event) {
         tokens: prior?.tokens,
         tokenUsage: prior?.tokenUsage,
     };
-    managed.snapshot.agents.push(row);
-    return row;
+    const position = agents.findIndex((agent) => agent.callId === event.id);
+    if (position === -1) {
+        agents.push(row);
+        return row;
+    }
+    const superseded = agents[position];
+    agents[position] = supersedeAgentRow(superseded, managed.agentTimestamps.get(superseded.id), row);
+    managed.agentTimestamps.delete(superseded.id);
+    return agents[position];
 }
 /** Add one settled agent's exact usage to the run total that gets persisted. */
 function commitFinalizedAgentUsage(managed, usage) {

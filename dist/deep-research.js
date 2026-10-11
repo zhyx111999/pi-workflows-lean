@@ -2,13 +2,25 @@
  * Deep research workflow.
  * Built-in workflow for comprehensive research across multiple sources.
  */
+import { MAX_CONCURRENCY } from "./config.js";
+/** Search queries planned when `args.angles` is omitted. */
+export const DEEP_RESEARCH_DEFAULT_ANGLES = 4;
+/**
+ * Upper bound for `args.angles`. Each angle is one research subagent that
+ * runs a web search and two fetches, so cost grows linearly with it, while one
+ * planning call yields few genuinely distinct queries beyond a dozen or so.
+ * Capping at the concurrency ceiling keeps every query in a single wave.
+ */
+export const DEEP_RESEARCH_MAX_ANGLES = MAX_CONCURRENCY;
 /**
  * Generate a deep-research workflow that uses the real web_search/web_fetch tools.
  *
  * The script is static and reads its inputs from `args` (question/angles),
  * so the question is never string-interpolated into source — no escaping hazards.
- * The run supplies the web tools (see builtin-workflows.ts). Every gathered source
- * goes back to the parent model, which checks the claims itself.
+ * builtin-workflows.ts validates `args` before a run starts, so the script trusts
+ * them. The run supplies the web tools (see builtin-workflows.ts). The result keeps
+ * every query with its outcome and sources, so the parent model can check coverage
+ * as well as the claims.
  */
 export function generateDeepResearchWorkflow() {
     return `export const meta = {
@@ -20,8 +32,8 @@ export function generateDeepResearchWorkflow() {
   ],
 }
 
-const question = (args && args.question) || ''
-const angles = (args && args.angles) || 4
+const question = args.question
+const angles = args.angles ?? ${DEEP_RESEARCH_DEFAULT_ANGLES}
 
 phase('Queries')
 const plan = await agent(
@@ -30,9 +42,9 @@ const plan = await agent(
   { label: 'plan queries', schema: { type: 'object', properties: { queries: { type: 'array', items: { type: 'string' } } }, required: ['queries'] } }
 )
 // The planner agent() can return null (e.g. a subagent that died on a terminal
-// provider error) or omit a usable queries array. Mirror the null-tolerance the
-// Gather phase uses below and fall back to the original question as a single
-// query so research still proceeds (degraded) instead of crashing on plan.queries.
+// provider error) or omit a usable queries array. Fall back to the original
+// question as a single query so research still proceeds (degraded) instead of
+// crashing on plan.queries.
 const planned = plan && Array.isArray(plan.queries) ? plan.queries.filter((q) => typeof q === 'string' && q.trim().length > 0) : []
 const queries = (planned.length > 0 ? planned : [question]).slice(0, angles)
 
@@ -46,7 +58,15 @@ const gathered = await parallel(queries.map((q, i) => () =>
     { label: 'research ' + (i + 1), schema: { type: 'object', properties: { sources: { type: 'array', items: { type: 'object', properties: { url: { type: 'string' }, claims: { type: 'array', items: { type: 'string' } } }, required: ['url', 'claims'] } } }, required: ['sources'] } }
   )
 ))
-const allSources = gathered.filter(Boolean).flatMap((g) => (g && g.sources) || [])
+// parallel() turns a failed research agent into null. Keep each query's outcome
+// next to its sources so the parent can tell a query that found nothing (ok with
+// no sources) from one whose research never finished (failed).
+const results = queries.map((query, i) => {
+  const found = gathered[i]
+  return found && Array.isArray(found.sources)
+    ? { query, status: 'ok', sources: found.sources }
+    : { query, status: 'failed' }
+})
 
-return { question, queries, sources: allSources }`;
+return { question, results }`;
 }

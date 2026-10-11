@@ -2,18 +2,22 @@
  * Saved workflows as `/<name>` slash commands. Each saved workflow becomes a
  * command that runs its script, passing parsed arguments through as `args`.
  */
-import { claimCommand, commandOwner, isCommandRegistered } from "./command-registry.js";
+import { claimCommand, commandOwner, isCommandTaken } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
+import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 function savedCommandOwnedByExtension(pi, name) {
     const owner = commandOwner(pi, name);
     return owner === "builtin" || owner === "saved";
 }
 /**
- * Pi cannot unregister a slash command. Distinguish commands this extension
- * owns from built-ins/other extensions before a save or rename reaches disk.
+ * Pi cannot unregister a slash command and never reports a name clash. Refuse a
+ * name Pi or another extension answers before a save or rename reaches disk;
+ * Pi's own commands go first because its editor runs them whoever registered.
  */
 export function savedWorkflowCommandAvailability(pi, name) {
-    if (!isCommandRegistered(pi, name) || savedCommandOwnedByExtension(pi, name))
+    if (PI_RESERVED_COMMANDS.has(name))
+        return { ok: false, message: `/${name} is a built-in Pi command.` };
+    if (!isCommandTaken(pi, name) || savedCommandOwnedByExtension(pi, name))
         return { ok: true };
     return { ok: false, message: `/${name} is already provided by Pi or another extension.` };
 }
@@ -44,7 +48,7 @@ export function registerSavedWorkflow(pi, wf, getManager, load) {
     const availability = savedWorkflowCommandAvailability(pi, wf.name);
     if (!availability.ok)
         return availability;
-    if (isCommandRegistered(pi, wf.name))
+    if (isCommandTaken(pi, wf.name))
         return { ok: true };
     try {
         pi.registerCommand(wf.name, {

@@ -17,7 +17,7 @@ import { workflowProjectKey } from "./workflow-paths.js";
 import { createWorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
-export { installHostSessionCapture } from "./task-panel.js";
+export { useHostSessionClass } from "./task-panel/host-session-capture.js";
 /**
  * Bound for the read-only session-header probe (first line only). Independent of
  * pi's own ~1MiB session scan — we only need the header and keep the read small.
@@ -77,6 +77,36 @@ export function sessionFileCwd(sessionFile) {
         }
     }
 }
+/**
+ * Project identity is the storage key, not the path text: on Windows one
+ * directory has many spellings (letter case, drive letter, `\\?\` prefix,
+ * 8.3 names), and a false mismatch would pause live runs for nothing.
+ */
+function isSameProject(a, b) {
+    return workflowProjectKey(a) === workflowProjectKey(b);
+}
+/**
+ * Whether the next extension generation serves `projectCwd`, so the live
+ * manager can be handed to it instead of paused.
+ * - quit / unknown: nothing will claim the manager.
+ * - resume: fail closed. Only a target session header that reads as this
+ *   project counts; a missing or unreadable one must not carry the manager
+ *   into another project.
+ * - fork: Pi forks stay in the project and the new session file may not exist
+ *   yet, so only a header that reads as another project refuses.
+ * - reload / new: always the same project.
+ */
+function nextGenerationKeepsProject(event, projectCwd) {
+    const reason = event?.reason;
+    if (!reason || !SESSION_REPLACEMENT_REASONS.has(reason))
+        return false;
+    if (reason !== "resume" && reason !== "fork")
+        return true;
+    const targetCwd = sessionFileCwd(event?.targetSessionFile);
+    if (targetCwd === undefined)
+        return reason === "fork";
+    return isSameProject(targetCwd, projectCwd);
+}
 function buildManagerOptions(cwd) {
     const settings = loadWorkflowSettings({ cwd });
     return {
@@ -91,34 +121,23 @@ function buildManagerOptions(cwd) {
     };
 }
 export default function extension(pi) {
+    // Process-wide handoff slot (not cwd-keyed): the previous generation may have
+    // been bound to ctx.cwd while this factory only sees process.cwd(). Claim
+    // whatever is staged; session_start then keeps or rebuilds it based on the
+    // true session project.
+    const runtimeClaim = claimWorkflowRuntime();
+    const previousRuntime = runtimeClaim.compatible;
+    let pausedForMismatch = runtimeClaim.versionMismatch ? pauseStrandedWorkflowRuntime(runtimeClaim.versionMismatch) : 0;
     // Mutable host state. Tools/commands resolve through getters so a
     // session_start that discovers a cross-project cwd can replace the manager
     // without leaving closed-over references pointing at the source project.
     //
-    // Factory-time cwd is process.cwd() only (Pi does not pass the host session
-    // cwd into the factory). The real session cwd arrives on session_start as
-    // ctx.cwd; if it differs we rebuild manager/storage against it and pause
-    // any foreign live runs that rode in via handoff.
-    let cwd = resolve(process.cwd());
+    // Pi does not pass the session cwd into the factory, so a fresh manager
+    // starts from process.cwd() while a claimed one keeps the project it already
+    // serves. The real session cwd arrives on session_start as ctx.cwd.
+    let cwd = resolve(previousRuntime?.manager.getCwd() ?? process.cwd());
     let storage = createWorkflowStorage(cwd);
     let managerOptions = buildManagerOptions(cwd);
-    // Process-wide handoff slot (not cwd-keyed): the previous generation may have
-    // been bound to ctx.cwd while this factory only sees process.cwd(). Claim
-    // whatever is staged; session_start then keeps or rebuilds based on the true
-    // session project (manager.getCwd() vs ctx.cwd).
-    const runtimeClaim = claimWorkflowRuntime();
-    const previousRuntime = runtimeClaim.compatible;
-    let pausedForMismatch = runtimeClaim.versionMismatch ? pauseStrandedWorkflowRuntime(runtimeClaim.versionMismatch) : 0;
-    // Prefer the claimed manager's own project path for construction defaults
-    // when it already points at a real project (not just the launch dir).
-    if (previousRuntime) {
-        const claimedCwd = resolve(previousRuntime.manager.getCwd());
-        if (claimedCwd !== cwd) {
-            cwd = claimedCwd;
-            storage = createWorkflowStorage(cwd);
-            managerOptions = buildManagerOptions(cwd);
-        }
-    }
     let manager = previousRuntime?.manager ?? new WorkflowManager({ cwd, ...managerOptions });
     if (previousRuntime)
         manager.reconfigureAfterReload(managerOptions);
@@ -138,54 +157,24 @@ export default function extension(pi) {
         usageLimitScheduler.dispose();
         // Always stop live sends first so a completion racing teardown cannot
         // deliver into the outgoing session (or throw on a just-stale ctx and be
-        // lost). Replacement reasons stage the runtime for the next generation
-        // only when the destination is the same project; quit/unknown/cross-project
-        // pause in-flight runs onto the journal path.
+        // lost). The runtime is staged for the next generation only when that
+        // generation serves the same project; otherwise in-flight runs pause onto
+        // the journal path.
         const outgoingSessionId = manager.getSessionId();
         suspendResultDelivery(manager);
-        const reason = event?.reason;
         const runtime = {
             cwd,
             extensionVersion: WORKFLOW_EXTENSION_VERSION,
             manager,
+            // A generation that takes the runtime over rebinds delivery itself.
+            release: () => dropSessionDelivery(outgoingSessionId),
         };
-        if (reason && SESSION_REPLACEMENT_REASONS.has(reason)) {
-            // Destination checks differ by reason:
-            // - resume: fail-closed. Only hand off when the target session header
-            //   positively reads as this same project. Missing/corrupt/unreadable
-            //   headers must not smuggle a source-project manager across.
-            // - fork: Pi forks stay in the same project; the new session file may
-            //   not exist yet so a missing header is not a cross-project signal.
-            //   Only refuse when we positively read a different cwd.
-            // - reload/new: same project; always hand off.
-            if (reason === "resume") {
-                const targetCwd = sessionFileCwd(event?.targetSessionFile);
-                if (targetCwd !== cwd) {
-                    pauseStrandedWorkflowRuntime(runtime);
-                    discardWorkflowRuntime(runtime);
-                    dropSessionDelivery(outgoingSessionId);
-                    return;
-                }
-                handoffWorkflowRuntime(runtime);
-                return;
-            }
-            if (reason === "fork") {
-                const targetCwd = sessionFileCwd(event?.targetSessionFile);
-                if (targetCwd && targetCwd !== cwd) {
-                    pauseStrandedWorkflowRuntime(runtime);
-                    discardWorkflowRuntime(runtime);
-                    dropSessionDelivery(outgoingSessionId);
-                    return;
-                }
-                handoffWorkflowRuntime(runtime);
-                return;
-            }
+        if (nextGenerationKeepsProject(event, manager.getCwd())) {
             handoffWorkflowRuntime(runtime);
             return;
         }
         pauseStrandedWorkflowRuntime(runtime);
         discardWorkflowRuntime(runtime);
-        dropSessionDelivery(outgoingSessionId);
     });
     registerWorkflowCommands(pi, { getManager, getStorage, getCwd });
     registerWorkflowProgressCommands(pi, {
@@ -205,9 +194,7 @@ export default function extension(pi) {
         // launching directory across /resume into another project; ctx.cwd is
         // the session header's project path.
         const sessionCwd = resolve(ctx.cwd || process.cwd());
-        // Compare project keys, not path text: on Windows one directory has many
-        // spellings, and a false mismatch would pause live runs for nothing.
-        if (workflowProjectKey(sessionCwd) !== workflowProjectKey(manager.getCwd())) {
+        if (!isSameProject(sessionCwd, manager.getCwd())) {
             // Cross-project: the live manager is for the wrong tree. Pause anything
             // still on it, then rebuild against the real session project.
             const stranded = {
@@ -227,7 +214,8 @@ export default function extension(pi) {
             usageLimitScheduler = new UsageLimitScheduler(manager);
         }
         else if (cwd !== sessionCwd) {
-            // Manager already owns the session project; just align the local cwd/storage.
+            // Same project spelled differently (Windows): adopt the session's
+            // spelling for host-facing paths; the manager and its runs stay.
             cwd = sessionCwd;
             storage = createWorkflowStorage(cwd);
             managerOptions = buildManagerOptions(cwd);

@@ -41,32 +41,25 @@ function writeCallSource(entry) {
         return undefined;
     }
 }
-/** Infer source language for history that pi stores as raw tool text rather than
- * Markdown. Tool-call arguments are JSON; file writes and read results inherit
- * their source language from the requested path. */
-function historyEntryLanguage(history, index) {
-    const entry = history[index];
-    if (!entry)
+/** The call that produced a tool result. Matching on Pi's tool call id keeps
+ * parallel calls apart; a result whose call is not in the history has none. */
+function resultCall(history, result) {
+    if (typeof result.toolCallId !== "string")
         return undefined;
+    return history.find((entry) => entry?.kind === "toolCall" && entry.toolCallId === result.toolCallId);
+}
+/** Source language for history that Pi stores as raw tool text rather than
+ * Markdown. Tool-call arguments are JSON; written source and read results take
+ * their language from their own call's path. */
+function historyEntryLanguage(history, entry) {
     if (entry.kind === "toolCall") {
         const write = writeCallSource(entry);
         return write ? (getLanguageFromPath(write.path) ?? "text") : "json";
     }
     if (entry.kind !== "toolResult" || entry.toolName !== "read")
         return undefined;
-    for (let i = index - 1; i >= 0; i--) {
-        const call = history[i];
-        if (call?.kind !== "toolCall" || call.toolName !== "read")
-            continue;
-        try {
-            const args = JSON.parse(asText(call.text));
-            return typeof args.path === "string" ? getLanguageFromPath(args.path) : undefined;
-        }
-        catch {
-            return undefined;
-        }
-    }
-    return undefined;
+    const path = resultCall(history, entry)?.path;
+    return typeof path === "string" ? getLanguageFromPath(path) : undefined;
 }
 export function renderHistoryEntryLines(history, index, width, markdownTheme, dim, renderCache) {
     const entry = history[index];
@@ -85,7 +78,7 @@ export function renderHistoryEntryLines(history, index, width, markdownTheme, di
     }
     if (editPath)
         return [header];
-    const language = historyEntryLanguage(history, index);
+    const language = historyEntryLanguage(history, entry);
     const text = write?.content ?? asText(entry.text);
     return [
         header,

@@ -1,6 +1,7 @@
 const DEFAULT_MAX_ENTRIES = 40;
 const DEFAULT_MAX_TEXT_CHARS = 2000;
 const DEFAULT_MAX_TOTAL_CHARS = 20000;
+const FILE_TOOLS = new Set(["read", "write", "edit"]);
 export function compactAgentHistory(messages, options = {}) {
     const maxEntries = positiveInt(options.maxEntries, DEFAULT_MAX_ENTRIES);
     const maxTextChars = positiveInt(options.maxTextChars, DEFAULT_MAX_TEXT_CHARS);
@@ -27,21 +28,7 @@ export function compactAgentHistory(messages, options = {}) {
                     entries.push({ role: "assistant", kind: "text", text: block.text, timestamp });
                 }
                 else if (block.type === "toolCall" && typeof block.name === "string") {
-                    const args = asRecord(block.arguments);
-                    const filePath = (block.name === "write" || block.name === "edit") && typeof args?.path === "string" ? args.path : undefined;
-                    const writeContent = block.name === "write" && filePath && typeof args?.content === "string" ? args.content : undefined;
-                    entries.push({
-                        role: "assistant",
-                        kind: "toolCall",
-                        toolName: block.name,
-                        // A write's JSON envelope is both noisy and likely to be truncated
-                        // into invalid JSON. Preserve its source directly so the pager can
-                        // render it as code. Edit calls retain their path so the pager can
-                        // pair the compact call header with the result's native Pi diff.
-                        text: writeContent ?? stringifyCompact(block.arguments ?? {}),
-                        path: filePath,
-                        timestamp,
-                    });
+                    entries.push(toolCallEntry(block, block.name, timestamp));
                 }
             }
             if (typeof message.errorMessage === "string" && message.errorMessage.trim()) {
@@ -58,6 +45,7 @@ export function compactAgentHistory(messages, options = {}) {
                 role: "tool",
                 kind: message.isError ? "error" : "toolResult",
                 toolName,
+                toolCallId: typeof message.toolCallId === "string" ? message.toolCallId : undefined,
                 text,
                 diff,
                 isError: Boolean(message.isError),
@@ -66,6 +54,23 @@ export function compactAgentHistory(messages, options = {}) {
         }
     }
     return fitEntries(entries, maxEntries, maxTextChars, maxTotalChars);
+}
+function toolCallEntry(block, name, timestamp) {
+    const args = asRecord(block.arguments);
+    const path = FILE_TOOLS.has(name) && typeof args?.path === "string" ? args.path : undefined;
+    const writeContent = name === "write" && path && typeof args?.content === "string" ? args.content : undefined;
+    return {
+        role: "assistant",
+        kind: "toolCall",
+        toolName: name,
+        toolCallId: typeof block.id === "string" ? block.id : undefined,
+        // A write's JSON envelope is both noisy and likely to be truncated into
+        // invalid JSON. Preserve its source directly so the pager can render it as
+        // code; the path names its language.
+        text: writeContent ?? stringifyCompact(block.arguments ?? {}),
+        path,
+        timestamp,
+    };
 }
 function fitEntries(entries, maxEntries, maxTextChars, maxTotalChars) {
     const fitted = [];

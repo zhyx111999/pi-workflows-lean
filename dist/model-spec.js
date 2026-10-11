@@ -1,3 +1,4 @@
+import { resolveCliModel } from "@earendil-works/pi-coding-agent";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 /** Validate the separate script/SDK option without changing model-id parsing. */
@@ -8,37 +9,6 @@ export function validateThinkingLevel(value) {
         throw new WorkflowError(`agent thinking must be one of: ${THINKING_LEVELS.join(", ")}`, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
     }
 }
-const DEFAULT_MODEL_PER_PROVIDER = {
-    "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
-    anthropic: "claude-opus-4-8",
-    openai: "gpt-5.4",
-    "azure-openai-responses": "gpt-5.4",
-    "openai-codex": "gpt-5.5",
-    deepseek: "deepseek-v4-pro",
-    google: "gemini-3.1-pro-preview",
-    "google-vertex": "gemini-3.1-pro-preview",
-    "github-copilot": "gpt-5.4",
-    openrouter: "moonshotai/kimi-k2.6",
-    "vercel-ai-gateway": "zai/glm-5.1",
-    zai: "glm-5.1",
-    mistral: "devstral-medium-latest",
-    minimax: "MiniMax-M3",
-    "minimax-cn": "MiniMax-M3",
-    moonshotai: "kimi-k2.6",
-    "moonshotai-cn": "kimi-k2.6",
-    huggingface: "moonshotai/Kimi-K2.6",
-    fireworks: "accounts/fireworks/models/kimi-k2p6",
-    together: "moonshotai/Kimi-K2.6",
-    opencode: "kimi-k2.6",
-    "opencode-go": "kimi-k2.6",
-    "kimi-coding": "kimi-for-coding",
-    "cloudflare-workers-ai": "@cf/moonshotai/kimi-k2.6",
-    "cloudflare-ai-gateway": "workers-ai/@cf/moonshotai/kimi-k2.6",
-    xiaomi: "mimo-v2.5-pro",
-    "xiaomi-token-plan-cn": "mimo-v2.5-pro",
-    "xiaomi-token-plan-ams": "mimo-v2.5-pro",
-    "xiaomi-token-plan-sgp": "mimo-v2.5-pro",
-};
 export function isThinkingLevel(value) {
     return THINKING_LEVELS.includes(value);
 }
@@ -70,221 +40,71 @@ export function splitModelSpecThinking(spec, knownModelSpecs) {
         return { modelSpec: trimmed, thinkingLevel: undefined };
     return { modelSpec: prefix, thinkingLevel: suffix };
 }
-function isAlias(id) {
-    if (id.endsWith("-latest"))
-        return true;
-    return !/-\d{8}$/.test(id);
-}
-function findExactModelReferenceMatch(modelReference, availableModels) {
-    const trimmedReference = modelReference.trim();
-    if (!trimmedReference)
-        return undefined;
-    const normalizedReference = trimmedReference.toLowerCase();
-    const canonicalMatches = availableModels.filter((model) => canonicalModelSpec(model).toLowerCase() === normalizedReference);
-    if (canonicalMatches.length === 1)
-        return canonicalMatches[0];
-    if (canonicalMatches.length > 1)
-        return undefined;
-    const slashIndex = trimmedReference.indexOf("/");
-    if (slashIndex !== -1) {
-        const provider = trimmedReference.slice(0, slashIndex).trim();
-        const modelId = trimmedReference.slice(slashIndex + 1).trim();
-        if (provider && modelId) {
-            const providerMatches = availableModels.filter((model) => model.provider.toLowerCase() === provider.toLowerCase() && model.id.toLowerCase() === modelId.toLowerCase());
-            if (providerMatches.length === 1)
-                return providerMatches[0];
-            if (providerMatches.length > 1)
-                return undefined;
-        }
-    }
-    const idMatches = availableModels.filter((model) => model.id.toLowerCase() === normalizedReference);
-    return idMatches.length === 1 ? idMatches[0] : undefined;
-}
-function tryMatchModel(modelPattern, availableModels, preferredProvider) {
-    const exactMatch = findExactModelReferenceMatch(modelPattern, availableModels);
-    if (exactMatch)
-        return exactMatch;
-    const normalizedPattern = modelPattern.toLowerCase();
-    const matches = availableModels.filter((model) => model.id.toLowerCase().includes(normalizedPattern) || model.name?.toLowerCase().includes(normalizedPattern));
-    const preferredMatches = preferredProvider
-        ? matches.filter((model) => model.provider.toLowerCase() === preferredProvider.toLowerCase())
-        : [];
-    const rankedMatches = preferredMatches.length > 0 ? preferredMatches : matches;
-    if (rankedMatches.length === 0)
-        return undefined;
-    const aliases = rankedMatches.filter((model) => isAlias(model.id));
-    if (aliases.length > 0) {
-        aliases.sort((a, b) => b.id.localeCompare(a.id));
-        return aliases[0];
-    }
-    const datedVersions = rankedMatches.filter((model) => !isAlias(model.id));
-    datedVersions.sort((a, b) => b.id.localeCompare(a.id));
-    return datedVersions[0];
-}
-function parseModelPattern(pattern, availableModels, options) {
-    const exactMatch = tryMatchModel(pattern, availableModels, options?.preferredProvider);
-    if (exactMatch)
-        return { model: exactMatch };
-    const lastColonIndex = pattern.lastIndexOf(":");
-    if (lastColonIndex === -1)
-        return {};
-    const prefix = pattern.slice(0, lastColonIndex);
-    const suffix = pattern.slice(lastColonIndex + 1);
-    if (isThinkingLevel(suffix)) {
-        const result = parseModelPattern(prefix, availableModels, options);
-        if (!result.model)
-            return result;
-        return {
-            model: result.model,
-            thinkingLevel: result.warning ? undefined : suffix,
-            warning: result.warning,
-        };
-    }
-    if (options?.allowInvalidThinkingLevelFallback === false)
-        return {};
-    const result = parseModelPattern(prefix, availableModels, options);
-    if (!result.model)
-        return result;
-    return {
-        model: result.model,
-        warning: `Invalid thinking level "${suffix}" in pattern "${pattern}". Using default instead.`,
-    };
-}
-function buildFallbackModel(provider, modelId, availableModels) {
-    const providerModels = availableModels.filter((model) => model.provider === provider);
-    if (providerModels.length === 0)
-        return undefined;
-    const defaultId = DEFAULT_MODEL_PER_PROVIDER[provider];
-    const baseModel = defaultId
-        ? (providerModels.find((model) => model.id === defaultId) ?? providerModels[0])
-        : providerModels[0];
-    return { ...baseModel, id: modelId, name: modelId };
-}
 /**
- * Resolve a workflow model-tier/agent model string with the same user-facing
- * grammar as Pi CLI `--model`: `provider/modelId[:thinking]`, bare model ids,
- * fuzzy patterns, and exact colon-containing model ids. This is a manual port of
- * pi-coding-agent's `resolveCliModel` (core/model-resolver.ts) — kept in sync by
- * the cross-check property test in tests/model-spec.test.ts, which runs both
- * implementations against the same fuzzed inputs and fails loudly the moment they
- * diverge (see that file for why we don't call pi's export directly: it requires
- * a real runtime class, which has a private constructor pi doesn't expose a
- * lightweight adapter for).
+ * Resolve a workflow model spec (an agent `model`, a tier entry, a phase route)
+ * with Pi's own `--model` resolver, so a spec selects the same model in a
+ * workflow as on the command line: `provider/modelId[:thinking]`, bare ids,
+ * fuzzy patterns, and model ids that contain colons.
+ *
+ * Two workflow rules sit on top, and only for specs without a provider prefix:
+ * - The id is resolved without its thinking suffix. The SDK settles an id that
+ *   several providers share (the only authenticated one, else an ambiguity
+ *   error) only when the id is the whole input, and tier specs usually carry a
+ *   suffix.
+ * - A choice the SDK cannot settle by id goes to the main session's provider
+ *   when that provider catalogs a match (see preferProvider).
  */
-export function resolveModelSpecWithThinking(spec, modelRegistry, options) {
+export function resolveModelSpecWithThinking(spec, modelRuntime, options = {}) {
     const requestedSpec = spec.trim();
     if (!requestedSpec)
         return { requestedSpec, error: "No model spec provided." };
-    const availableModels = modelRegistry.getAll();
-    if (availableModels.length === 0) {
-        return {
-            requestedSpec,
-            error: "No models available. Check your installation or add models to models.json.",
-        };
-    }
-    const providerMap = new Map();
-    for (const model of availableModels) {
-        providerMap.set(model.provider.toLowerCase(), model.provider);
-    }
-    let provider;
-    let pattern = requestedSpec;
-    let inferredProvider = false;
-    const slashIndex = requestedSpec.indexOf("/");
-    if (slashIndex !== -1) {
-        const maybeProvider = requestedSpec.slice(0, slashIndex);
-        const canonicalProvider = providerMap.get(maybeProvider.toLowerCase());
-        if (canonicalProvider) {
-            provider = canonicalProvider;
-            pattern = requestedSpec.slice(slashIndex + 1);
-            inferredProvider = true;
-        }
-    }
-    if (!provider) {
-        const exact = findExactModelReferenceMatch(requestedSpec, availableModels);
-        if (exact) {
-            return { requestedSpec, model: exact, resolvedSpec: canonicalModelSpec(exact) };
-        }
-    }
-    const candidates = provider ? availableModels.filter((model) => model.provider === provider) : availableModels;
-    const { model, thinkingLevel, warning } = parseModelPattern(pattern, candidates, {
-        allowInvalidThinkingLevelFallback: false,
-        ...(provider === undefined ? { preferredProvider: options?.preferredProvider } : {}),
-    });
-    if (model) {
-        // The provider was inferred from a slash prefix (e.g. "moonshotai/kimi-k3"),
-        // but "moonshotai" can be BOTH a real provider name and the vendor segment of
-        // an aggregator's compound model id (OpenRouter et al. name models
-        // "vendor/model"). If the inferred provider has no configured auth and the
-        // exact same string is also a literal model id on a different, authenticated
-        // provider, prefer that one — otherwise a bare aggregator-style pin silently
-        // resolves against an unauthenticated native provider instead of the
-        // aggregator the caller actually has access to.
-        if (inferredProvider && modelRegistry.hasConfiguredAuth && !modelRegistry.hasConfiguredAuth(model)) {
-            const rawExactMatches = availableModels.filter((candidate) => candidate.id.toLowerCase() === requestedSpec.toLowerCase() &&
-                !(candidate.id === model.id && candidate.provider === model.provider));
-            const authenticatedRawMatches = rawExactMatches.filter((candidate) => modelRegistry.hasConfiguredAuth?.(candidate));
-            if (authenticatedRawMatches.length === 1) {
-                const preferred = authenticatedRawMatches[0];
-                return { requestedSpec, model: preferred, resolvedSpec: canonicalModelSpec(preferred) };
-            }
-        }
-        return {
-            requestedSpec,
-            model,
-            thinkingLevel,
-            warning,
-            resolvedSpec: formatModelSpecWithThinking(canonicalModelSpec(model), thinkingLevel),
-        };
-    }
-    if (inferredProvider) {
-        const exact = findExactModelReferenceMatch(requestedSpec, availableModels);
-        if (exact) {
-            return { requestedSpec, model: exact, resolvedSpec: canonicalModelSpec(exact) };
-        }
-        const fallback = parseModelPattern(requestedSpec, availableModels, {
-            allowInvalidThinkingLevelFallback: false,
-            preferredProvider: options?.preferredProvider,
-        });
-        if (fallback.model) {
-            return {
-                requestedSpec,
-                model: fallback.model,
-                thinkingLevel: fallback.thinkingLevel,
-                warning: fallback.warning,
-                resolvedSpec: formatModelSpecWithThinking(canonicalModelSpec(fallback.model), fallback.thinkingLevel),
-            };
-        }
-    }
-    if (provider) {
-        let fallbackPattern = pattern;
-        let fallbackThinking;
-        const lastColon = pattern.lastIndexOf(":");
-        if (lastColon !== -1) {
-            const suffix = pattern.slice(lastColon + 1);
-            if (isThinkingLevel(suffix)) {
-                fallbackPattern = pattern.slice(0, lastColon);
-                fallbackThinking = suffix;
-            }
-        }
-        const fallbackModel = buildFallbackModel(provider, fallbackPattern, availableModels);
-        if (fallbackModel) {
-            const modelWithReasoning = fallbackThinking && fallbackThinking !== "off" ? { ...fallbackModel, reasoning: true } : fallbackModel;
-            const fallbackWarning = warning
-                ? `${warning} Model "${fallbackPattern}" not found for provider "${provider}". Using custom model id.`
-                : `Model "${fallbackPattern}" not found for provider "${provider}". Using custom model id.`;
-            return {
-                requestedSpec,
-                model: modelWithReasoning,
-                thinkingLevel: fallbackThinking,
-                warning: fallbackWarning,
-                resolvedSpec: formatModelSpecWithThinking(canonicalModelSpec(modelWithReasoning), fallbackThinking),
-            };
-        }
-    }
-    const display = provider ? `${provider}/${pattern}` : requestedSpec;
+    const resolved = resolveCliModel({ cliModel: requestedSpec, modelRuntime });
+    const chosen = namesProvider(requestedSpec, modelRuntime)
+        ? resolved
+        : resolveBareSpec(requestedSpec, resolved, modelRuntime, options.preferredProvider);
+    if (!chosen.model)
+        return { requestedSpec, warning: chosen.warning, error: chosen.error };
     return {
         requestedSpec,
-        warning,
-        error: `Model "${display}" not found. Use /workflows-models to choose an available model.`,
+        model: chosen.model,
+        thinkingLevel: chosen.thinkingLevel,
+        warning: chosen.warning,
+        resolvedSpec: formatModelSpecWithThinking(canonicalModelSpec(chosen.model), chosen.thinkingLevel),
     };
+}
+/** Whether the SDK reads the spec as `provider/model`: the text before the first slash names a catalog provider. */
+function namesProvider(spec, modelRuntime) {
+    const slash = spec.indexOf("/");
+    if (slash === -1)
+        return false;
+    const prefix = spec.slice(0, slash).toLowerCase();
+    return modelRuntime.getModels().some((model) => model.provider.toLowerCase() === prefix);
+}
+/** Resolve a spec without a provider prefix; `resolved` is the SDK's answer for the whole spec. */
+function resolveBareSpec(spec, resolved, modelRuntime, preferredProvider) {
+    // The SDK reports a thinking level only after splitting it off the last colon.
+    const thinkingLevel = resolved.thinkingLevel;
+    const reference = thinkingLevel ? spec.slice(0, spec.lastIndexOf(":")) : spec;
+    const byReference = thinkingLevel ? resolveCliModel({ cliModel: reference, modelRuntime }) : resolved;
+    const chosen = preferredProvider
+        ? preferProvider(reference, byReference, modelRuntime, preferredProvider)
+        : byReference;
+    return chosen.model ? { ...chosen, thinkingLevel: thinkingLevel ?? chosen.thinkingLevel } : chosen;
+}
+/**
+ * The SDK settles a reference that is a model id on its own: it returns that
+ * model (the only one, or the only authenticated one) or reports the id as
+ * ambiguous. Everything else is a fuzzy ranking across every provider. The
+ * main session's provider is the better tiebreak for both the ranking and the
+ * ambiguity, since the user already runs on it; an ambiguous id still only
+ * resolves to that same id.
+ */
+function preferProvider(reference, resolved, modelRuntime, provider) {
+    const isReferenceId = (model) => model?.id.toLowerCase() === reference.toLowerCase();
+    if (isReferenceId(resolved.model))
+        return resolved;
+    const preferred = resolveCliModel({ cliProvider: provider, cliModel: reference, modelRuntime });
+    // Given a provider, the SDK invents a custom model id when nothing matches; that is no catalog match.
+    const cataloged = preferred.model && modelRuntime.getModel(preferred.model.provider, preferred.model.id);
+    return cataloged && (resolved.model || isReferenceId(preferred.model)) ? preferred : resolved;
 }

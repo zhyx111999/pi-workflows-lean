@@ -53,9 +53,10 @@ export function clearRunPending(manager, runId, deliveryId, run) {
 export function persistRunPending(manager, run) {
     try {
         // Merge into an existing on-disk record so we don't clobber the
-        // manager's richer write that follows the complete/error emit.
+        // manager's richer write that follows the complete/error emit, nor its
+        // session owner, which only a session move changes.
         const persistence = manager.getPersistence();
-        if (persistence.updateMetadata(run.runId, { pendingDelivery: run.pendingDelivery, sessionId: run.sessionId }))
+        if (persistence.updateMetadata(run.runId, { pendingDelivery: run.pendingDelivery }))
             return "saved";
         if (run.pendingDelivery) {
             persistence.save({

@@ -28,6 +28,12 @@ export class NavigatorTextRenderCache {
         this.resultJson.set(result, json);
         return json;
     }
+    /** Drop every rendered entry. They embed the active theme's ANSI colors, so a
+     * theme change must not reuse them; result JSON is theme-free and stays. */
+    clear() {
+        this.entries.clear();
+        this.weight = 0;
+    }
     set(key, lines, weight) {
         if (weight > MAX_WEIGHT)
             return lines;

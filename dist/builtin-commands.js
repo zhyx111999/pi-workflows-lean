@@ -9,20 +9,9 @@
  * whole session until the workflow finished.
  */
 import { findBuiltinWorkflow } from "./builtin-workflows.js";
-import { claimCommand, isCommandRegistered } from "./command-registry.js";
+import { claimCommand, isCommandTaken } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
 import { parseCommandArgs } from "./saved-commands.js";
-function alreadyRegistered(pi, name) {
-    return isCommandRegistered(pi, name);
-}
-/** Split a command argument string into tokens, respecting single/double quotes. */
-function tokenizeArgs(input) {
-    const tokens = [];
-    for (const m of input.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
-        tokens.push(m[1] ?? m[2] ?? m[3] ?? "");
-    }
-    return tokens;
-}
 /**
  * Start a built-in workflow through the manager's background path and tell the
  * user where to watch it. startInBackground can throw synchronously (script
@@ -87,7 +76,6 @@ export function registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage })
     const SHADOW_WHOLE_STRING_PRIMARY = {
         "deep-research": "question",
     };
-    const SHADOW_TOKENIZED_PRIMARY = {};
     function runSavedShadowIfPresent(name, rawArgs, ctx) {
         const saved = getStorage().load(name);
         if (!saved)
@@ -102,23 +90,10 @@ export function registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage })
             // args.trim(), including "="-containing topics (r2 NIT).
             parsed[wholeKey] = raw;
         }
-        const tokenized = SHADOW_TOKENIZED_PRIMARY[name];
-        if (tokenized && !new RegExp(`(?:^|\\s)${tokenized.primary}=`).test(rawArgs) && raw) {
-            // Quote-aware tokenization, mirroring the builtin handler's own
-            // Quote-aware tokenization of the raw argument string.
-            const tokens = tokenizeArgs(raw);
-            // A leading key=value token means a named-arg-style invocation —
-            // mirror how any saved workflow parses it (no positional mapping).
-            if (tokens.length && !tokens[0].includes("=")) {
-                parsed[tokenized.primary] = tokens[0];
-                if (tokens.length > 1 && parsed[tokenized.rest] === undefined)
-                    parsed[tokenized.rest] = tokens.slice(1);
-            }
-        }
         startBackground(getManager(), ctx, name, saved.script, parsed);
         return true;
     }
-    if (!alreadyRegistered(pi, "deep-research")) {
+    if (!isCommandTaken(pi, "deep-research")) {
         pi.registerCommand("deep-research", {
             description: "Research a question across the web and return sourced claims",
             async handler(args, ctx) {

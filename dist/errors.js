@@ -1,7 +1,7 @@
 /**
  * Workflow-specific error types.
  */
-/** Stable runtime and persistence failure codes exposed to callers and UI surfaces. */
+/** Stable runtime failure codes exposed to callers and UI surfaces. */
 export var WorkflowErrorCode;
 (function (WorkflowErrorCode) {
     /** Agent exceeded timeout. */
@@ -30,8 +30,6 @@ export var WorkflowErrorCode;
     WorkflowErrorCode["MODEL_NOT_FOUND"] = "MODEL_NOT_FOUND";
     /** Agent execution failed. */
     WorkflowErrorCode["AGENT_EXECUTION_ERROR"] = "AGENT_EXECUTION_ERROR";
-    /** Run state persistence failed. */
-    WorkflowErrorCode["PERSISTENCE_ERROR"] = "PERSISTENCE_ERROR";
     /** Unknown error. */
     WorkflowErrorCode["UNKNOWN"] = "UNKNOWN";
 })(WorkflowErrorCode || (WorkflowErrorCode = {}));

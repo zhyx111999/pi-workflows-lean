@@ -5,14 +5,13 @@ import { listAvailableModels } from "./agent/available-models.js";
 import { openChildSession } from "./agent/child-session.js";
 import { ensureFallbackRegistry } from "./agent/model-registry.js";
 import { AgentModelSelector } from "./agent/model-selection.js";
-import { throwIfProviderLimit } from "./agent/provider-limit.js";
 import { SharedResourceLoaders } from "./agent/resource-loaders.js";
 import { SessionManagers } from "./agent/session-managers.js";
 import { buildSubagentTools, subagentExcludedTools } from "./agent/session-tools.js";
 import { TurnProgress } from "./agent/turn-progress.js";
-import { finalAssistantText, lastAssistantText, resolveStructuredOutput } from "./agent/turn-result.js";
+import { assertTurnCompleted, finalAssistantText, resolveStructuredOutput } from "./agent/turn-result.js";
 import { assertProcessesStartIn } from "./agent/windows-cwd.js";
-import { WorkflowError, WorkflowErrorCode } from "./errors.js";
+import { WorkflowError, WorkflowErrorCode, workflowAbortedError } from "./errors.js";
 import { canonicalModelSpec, formatModelSpecWithThinking, validateThinkingLevel, } from "./model-spec.js";
 import { loadModelTierConfig } from "./model-tier-config.js";
 /** Child sessions load no host extensions unless explicitly opted in. */
@@ -129,9 +128,10 @@ export class WorkflowAgent {
                 this.restoreThreadLeaf(sessionManager, threadLeaf);
             throw error;
         }
+        // 4. The turn itself. From here on the session is disposed however the turn
+        //    ends, and no teardown step can skip that or replace the turn's own
+        //    result or error.
         const { session } = child;
-        // 4. The turn itself.
-        const usageBeforeTurn = options.thread ? session.getSessionStats() : undefined;
         // This turn's own transcript, collected from message_end events below rather
         // than sliced out of session.messages with a pre-prompt() length snapshot.
         // Auto-compaction (on by default) can rewrite session.messages inside
@@ -142,34 +142,35 @@ export class WorkflowAgent {
         // the collected window survives compaction, and it naturally spans the
         // schema path's repair re-prompts, which run on this same session.
         const turnMessages = [];
-        // Name a persisted session for session pickers: only when this agent owns
-        // the manager, and for a thread only on its first turn. Best-effort.
-        if (this.persistAgentSessions &&
-            (!this.sessionOptions.sessionManager || options.thread) &&
-            (!options.thread || !threadLeaf) &&
-            options.sessionName) {
-            try {
-                sessionManager.appendSessionInfo(options.sessionName);
-            }
-            catch {
-                // Naming is best-effort; never fail the run over it.
-            }
-        }
-        const progress = new TurnProgress(session, options, usageBeforeTurn);
+        let progress;
         let threadTurnSucceeded = false;
         let unregisterSteer;
         let removeAbortListener;
         let removeProgressListener;
         let removeTurnListener;
         try {
+            // Name a persisted session for session pickers: only when this agent owns
+            // the manager, and for a thread only on its first turn. Best-effort.
+            if (this.persistAgentSessions &&
+                (!this.sessionOptions.sessionManager || options.thread) &&
+                (!options.thread || !threadLeaf) &&
+                options.sessionName) {
+                try {
+                    sessionManager.appendSessionInfo(options.sessionName);
+                }
+                catch {
+                    // Naming is best-effort; never fail the run over it.
+                }
+            }
+            // A threaded session already holds earlier turns' usage.
+            progress = new TurnProgress(session, options, options.thread ? session.getSessionStats() : undefined);
             // With no resolved spec, the display still shows the pre-resolution
-            // mainModel guess; report the model the session actually bound. Inside
-            // the try so a throwing host callback cannot leak the session.
+            // mainModel guess; report the model the session actually bound.
             if (!choice.model && session.model) {
                 options.onModelResolved?.(formatModelSpecWithThinking(canonicalModelSpec(session.model), choice.thinkingLevel));
             }
             if (options.signal?.aborted)
-                throw new Error("Subagent was aborted");
+                throw workflowAbortedError();
             unregisterSteer = options.registerSteer?.((text) => session.steer(text));
             if (options.signal) {
                 const onAbort = () => void session.abort();
@@ -184,14 +185,11 @@ export class WorkflowAgent {
                     turnMessages.push(event.message);
             });
             await session.prompt(this.buildPrompt(prompt, options, Boolean(options.schema)));
-            if (options.signal?.aborted)
-                throw new Error("Subagent was aborted");
-            // The SDK reports a provider usage/quota limit inside the assistant message
-            // instead of throwing. Check it before the result branches so it pauses the
-            // run rather than reading as SCHEMA_NONCOMPLIANCE or an empty answer.
-            throwIfProviderLimit(session.messages, options.label);
+            // Before either result branch, so a cancelled or failed turn is never
+            // read as SCHEMA_NONCOMPLIANCE, an empty answer, or a partial success.
+            assertTurnCompleted(turnMessages, options);
             if (options.schema) {
-                const result = (await resolveStructuredOutput(session, capture, options.schema, options, () => this.lastAssistantText(turnMessages)));
+                const result = (await resolveStructuredOutput(session, turnMessages, capture, options.schema, options));
                 threadTurnSucceeded = true;
                 return result;
             }
@@ -208,15 +206,16 @@ export class WorkflowAgent {
             return text;
         }
         finally {
-            unregisterSteer?.();
-            removeAbortListener?.();
-            removeTurnListener?.();
-            removeProgressListener?.();
-            progress.emitFinalHistory();
-            if (options.thread && !threadTurnSucceeded) {
-                this.restoreThreadLeaf(sessionManager, threadLeaf);
-            }
-            progress.reportFinalUsage();
+            runTeardown([
+                unregisterSteer,
+                removeAbortListener,
+                removeTurnListener,
+                removeProgressListener,
+                () => progress?.emitFinalHistory(),
+                options.thread && !threadTurnSucceeded ? () => this.restoreThreadLeaf(sessionManager, threadLeaf) : undefined,
+                // Before disposal, which tears down the session stats.
+                () => progress?.reportFinalUsage(),
+            ]);
             await child.dispose();
         }
     }
@@ -285,10 +284,22 @@ export class WorkflowAgent {
         }
         return parts.join("\n\n");
     }
-    lastAssistantText(messages) {
-        return lastAssistantText(messages);
-    }
     finalAssistantText(messages) {
         return finalAssistantText(messages);
+    }
+}
+/**
+ * Run every teardown step even when an earlier one throws. The steps are host
+ * callbacks and bookkeeping, so none of them may skip the session's disposal or
+ * replace the turn's own result or error.
+ */
+function runTeardown(steps) {
+    for (const step of steps) {
+        try {
+            step?.();
+        }
+        catch {
+            // Best-effort by design: the turn's outcome is already decided.
+        }
     }
 }

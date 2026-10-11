@@ -1,4 +1,5 @@
-/** Run actions started from the navigator: confirmed pause and stop, and restart from the saved script. */
+/** Run actions started from the navigator: confirmed pause and stop, and restart from the recorded run. */
+import { restartRequest } from "../manager/run-restart.js";
 /** Apply a confirmed pause or stop, re-checking the run's status first. */
 export function executeRunConfirmation(session, action, runId) {
     const { manager, ui, model } = session;
@@ -12,25 +13,25 @@ export function executeRunConfirmation(session, action, runId) {
             return;
         }
         ui.notify(manager.pause(runId) ? `Paused ${runId}` : `Cannot pause ${runId}`, "info");
+        return;
     }
-    else if (action === "stop") {
-        if (status !== "running" && status !== "paused") {
-            ui.notify(`Cannot stop ${runId}`, "warning");
-            return;
-        }
-        ui.notify(manager.stop(runId) ? `Stopped ${runId}` : `Cannot stop ${runId}`, "info");
+    if (status !== "running" && status !== "paused") {
+        ui.notify(`Cannot stop ${runId}`, "warning");
+        return;
     }
+    ui.notify(manager.stop(runId) ? `Stopped ${runId}` : `Cannot stop ${runId}`, "info");
 }
-/** Start a new background run from the selected run's script and arguments. */
+/** Start a new background run that repeats the selected run: its script, arguments, and execution options. */
 export function restartRun(session, runId) {
     const { manager, ui } = session;
     const run = runId ? manager.listRuns().find((candidate) => candidate.runId === runId) : undefined;
-    if (!run?.script) {
+    const restart = run ? restartRequest(run) : undefined;
+    if (!run || !restart) {
         ui.notify(runId ? `Cannot restart ${runId} (no script saved)` : "No run selected to restart", "warning");
         return;
     }
     try {
-        const { runId: newId } = manager.startInBackground(run.script, run.args);
+        const { runId: newId } = manager.startInBackground(restart.script, restart.args, restart.exec);
         ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
     }
     catch (error) {

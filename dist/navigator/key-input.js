@@ -1,48 +1,58 @@
 /** Applies navigator key presses for each input mode: text entry, confirmation, and browsing. */
+import { CONFIRM_KEYS } from "./confirmation.js";
+import { typedText } from "./input-text.js";
 import { savedIdentity } from "./items.js";
 import { executeRunConfirmation, restartRun } from "./run-actions.js";
-import { commitRename, deleteSavedWorkflow, saveRunAsWorkflow } from "./saved-actions.js";
+import { commitRename, deleteSavedWorkflow, saveRunAsWorkflow, writeRunSave } from "./saved-actions.js";
 import { currentSnapshot } from "./session.js";
-/** Filter and rename fields own every keystroke, so pasted text never reaches browse bindings. */
+/**
+ * Filter and rename fields own every keystroke, so pasted text never reaches
+ * browse bindings; any other key only appends the text it types, if any.
+ */
 export function handleTextInput(session, key, data) {
     const { state, model } = session;
-    if (key === "escape" || key === "esc")
+    if (key === "escape")
         state.cancelInput();
-    else if (key === "backspace" || data === String.fromCharCode(127) || data === "\b")
+    // Windows Terminal names a raw BS ctrl+backspace; here it erases one character too.
+    else if (key === "backspace" || data === "\b")
         state.backspaceInput();
-    else if (key === "enter" || key === "return") {
+    else if (key === "enter") {
         if (state.mode === "filter")
             state.applyFilter(model);
         else
             commitRename(session);
     }
     else
-        state.appendInput(data);
+        state.appendInput(typedText(data, key));
 }
-/** Only the key that asked confirms (p for pause, x for stop or delete); any other key cancels. */
+/** Only the key that asked confirms (see CONFIRM_KEYS); any other key cancels. */
 export function handleConfirmKey(session, key) {
     const { state } = session;
-    const pendingAction = state.confirmationAction;
-    const action = (pendingAction === "pause" && key === "p") ||
-        ((pendingAction === "stop" || pendingAction === "deleteSaved") && key === "x")
-        ? pendingAction
-        : undefined;
-    const target = action ? state.confirm(action, currentSnapshot(session)) : undefined;
-    if (!target || !action) {
+    const pending = state.confirmation?.action;
+    const request = pending && key === CONFIRM_KEYS[pending] ? state.confirm(pending, currentSnapshot(session)) : undefined;
+    if (!request) {
         state.cancelConfirmation();
         return;
     }
-    if (target.kind === "run")
-        executeRunConfirmation(session, action, target.runId);
-    else if (action === "deleteSaved")
-        deleteSavedWorkflow(session, target);
+    switch (request.action) {
+        case "pause":
+        case "stop":
+            executeRunConfirmation(session, request.action, request.target.runId);
+            return;
+        case "deleteSaved":
+            deleteSavedWorkflow(session, request.target);
+            return;
+        case "replaceSaved":
+            writeRunSave(session, request.save);
+            return;
+    }
 }
 function currentCount(state, model) {
     if (state.kind === "runs")
         return model.visible(state.filter).items.length;
     if (state.kind === "phases" && state.runId)
         return model.phases(state.runId).length;
-    if (state.kind === "agents" && state.runId && state.phase)
+    if (state.kind === "agents" && state.runId && state.phase !== undefined)
         return model.agents(state.runId, state.phase).length;
     return 0;
 }
@@ -98,19 +108,19 @@ export function runBrowseAction(session, action, close) {
         case "deleteSaved": {
             const workflow = state.activeSaved(snapshot(), model.saved());
             if (workflow)
-                state.beginConfirmation("deleteSaved", savedIdentity(workflow), snapshot());
+                state.beginConfirmation({ action: "deleteSaved", target: savedIdentity(workflow) }, snapshot());
             return true;
         }
         case "pause": {
             const runId = state.activeRunId(model, snapshot());
             if (runId)
-                state.beginConfirmation("pause", { kind: "run", runId }, snapshot());
+                state.beginConfirmation({ action: "pause", target: { kind: "run", runId } }, snapshot());
             return true;
         }
         case "stop": {
             const runId = state.activeRunId(model, snapshot());
             if (runId)
-                state.beginConfirmation("stop", { kind: "run", runId }, snapshot());
+                state.beginConfirmation({ action: "stop", target: { kind: "run", runId } }, snapshot());
             return true;
         }
         case "restart":

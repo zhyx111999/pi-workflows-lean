@@ -57,7 +57,9 @@ function isTypedPrompt(event) {
  *  - `/workflows-progress compact|detailed|status` — switch (or report) the panel mode.
  *  - `/workflows-progress max <1-1000>` — cap agents shown per phase in detailed mode.
  * Both persist via `settingsStore` and take effect on the next live run (the panel
- * live-reads its settings), so no session restart is needed.
+ * live-reads its settings), so no session restart is needed. The panel has no
+ * other source for these values, so a failed save changes nothing and is
+ * reported that way.
  */
 export function registerWorkflowProgressCommands(pi, settingsStore = DEFAULT_SETTINGS_STORE) {
     pi.registerCommand?.("workflows-progress", {
@@ -69,10 +71,10 @@ export function registerWorkflowProgressCommands(pi, settingsStore = DEFAULT_SET
             const verb = (spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx)).toLowerCase();
             const rest = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
             if (verb === "compact" || verb === "detailed") {
-                const saved = persistProgressSettings(settingsStore, { progressPanelMode: verb });
-                await say(saved
+                const failure = saveProgressSettings(settingsStore, { progressPanelMode: verb });
+                await say(failure === undefined
                     ? `Workflow progress panel set to ${verb} — takes effect on the next render of a live run (no restart needed).`
-                    : `Workflow progress panel set to ${verb} for this session, but the preference could not be saved.`);
+                    : `Workflow progress panel mode ${verb} was not saved (${failure}); the panel is still ${loadProgressMode(settingsStore)}.`);
                 return;
             }
             if (verb === "max") {
@@ -86,10 +88,10 @@ export function registerWorkflowProgressCommands(pi, settingsStore = DEFAULT_SET
                     return;
                 }
                 const clamped = Math.min(1000, n);
-                const saved = persistProgressSettings(settingsStore, { progressPanelMaxAgents: clamped });
-                await say(saved
+                const failure = saveProgressSettings(settingsStore, { progressPanelMaxAgents: clamped });
+                await say(failure === undefined
                     ? `Detailed progress now shows up to ${clamped} agents per phase.`
-                    : `Set to ${clamped} for this session, but the preference could not be saved.`);
+                    : `Max ${clamped} was not saved (${failure}); detailed progress still shows up to ${loadProgressMaxAgents(settingsStore)} agents per phase.`);
                 return;
             }
             await say(`Workflow progress panel is ${loadProgressMode(settingsStore)}, showing up to ${loadProgressMaxAgents(settingsStore)} agents per phase. Usage: /workflows-progress compact | detailed | status | max <N>`);
@@ -100,13 +102,14 @@ const DEFAULT_SETTINGS_STORE = {
     load: loadWorkflowSettings,
     save: saveWorkflowSettings,
 };
-function persistProgressSettings(settingsStore, settings) {
+/** Save panel preferences; returns why the save failed, or undefined when it succeeded. */
+function saveProgressSettings(settingsStore, settings) {
     try {
         settingsStore.save(settings);
-        return true;
+        return undefined;
     }
-    catch {
-        return false;
+    catch (error) {
+        return error instanceof Error ? error.message : String(error);
     }
 }
 function loadProgressMode(settingsStore) {

@@ -13,10 +13,7 @@ export function renderNavigatorFrame(state, model, width, theme, viewportRows, m
         snapshot = model.visible(state.effectiveFilter());
         lines.push(...renderRunsList(state, snapshot, theme, viewportRows));
     }
-    else if (state.kind === "phases" && state.runId) {
-        lines.push(...renderRunView(state, model, state.runId, width, theme, viewportRows));
-    }
-    else if (state.kind === "agents" && state.runId && state.phase) {
+    else if (state.runId && (state.kind === "phases" || (state.kind === "agents" && state.phase !== undefined))) {
         lines.push(...renderRunView(state, model, state.runId, width, theme, viewportRows));
     }
     else if (state.kind === "detail" && state.runId && state.agentId != null) {

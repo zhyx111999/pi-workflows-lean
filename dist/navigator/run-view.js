@@ -2,13 +2,13 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { fmtCompact, fmtTokenSegment } from "../display.js";
 import { BX, renderTwoPaneFrame, topTitleSegment } from "./box-frame.js";
-import { ELLIPSIS, pluralize } from "./format.js";
-import { computeLeftWidth, computeModelColStart, LW_MIN, leftPhaseRow, RW_MIN, rightAgentRow } from "./pane-rows.js";
-import { scrollWindow } from "./viewport.js";
+import { ELLIPSIS, phaseLabel, pluralize } from "./format.js";
+import { computeLeftWidth, computeModelColStart, LW_MIN, leftPhaseRow, moreRow, RW_MIN, rightAgentRow, } from "./pane-rows.js";
+import { listPaneRows } from "./viewport.js";
 /** Lines for the "phases" and "agents" views; the cursor sits in the left or right pane respectively. */
 export function renderRunView(state, model, runId, width, theme, viewportRows) {
     const phases = model.phases(runId);
-    state.clamp(state.kind === "agents" && state.phase ? model.agents(runId, state.phase).length : phases.length);
+    state.clamp(state.kind === "agents" && state.phase !== undefined ? model.agents(runId, state.phase).length : phases.length);
     // Body cap: total height minus 2 header + 2 frame rules + blank + footer.
     const bodyCap = Math.max(1, viewportRows - 2 /*header*/ - 2 /*rules*/ - 2 /*blank+footer*/);
     return [
@@ -62,7 +62,7 @@ function runHeader(model, runId, phases, width, theme) {
     return [line0, line1];
 }
 function agentsTitle(phase, agentCount) {
-    return `${phase ? phase.title : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
+    return `${phase ? phaseLabel(phase.title) : "(none)"} · ${agentCount} ${pluralize("agent", agentCount)}`;
 }
 /** The combined Phases | agents frame. The selected phase drives the right pane. */
 function renderPhasesAgents(state, model, runId, phases, width, theme, bodyCap) {
@@ -84,52 +84,15 @@ function renderPhasesAgents(state, model, runId, phases, width, theme, bodyCap) 
     const rightW = width - leftW + 1; // shared divider overlaps 1 cell
     const leftInner = leftW - 2;
     const rightInner = rightW - 2;
-    // Scroll each pane so its active item stays visible.
-    const leftRows = scrollWindow(phases.length, inAgents ? selPhaseIdx : state.cursor, bodyCap);
-    const rightRows = scrollWindow(agents.length, inAgents ? state.cursor : 0, bodyCap);
-    const bodyRows = Math.max(1, Math.min(bodyCap, Math.max(leftRows.count, rightRows.count)));
-    // Left column (Phases).
-    const left = [];
-    for (let k = 0; k < bodyRows; k++) {
-        const idx = leftRows.start + k;
-        if (idx >= phases.length) {
-            left.push(" ".repeat(leftInner));
-            continue;
-        }
-        const p = phases[idx];
-        const selected = !inAgents && idx === state.cursor;
-        let row = leftPhaseRow(p, idx, selected, agentsOf(p.title), leftInner, theme);
-        if (k === bodyRows - 1 && leftRows.more) {
-            row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), leftInner, "", true);
-        }
-        left.push(row);
-    }
-    // Right column (agents of selected phase).
+    // Each pane scrolls on its own so its active item stays visible; the frame pads the shorter one.
+    const left = listPaneRows(phases.length, selPhaseIdx, bodyCap, (i) => leftPhaseRow(phases[i], i, !inAgents && i === state.cursor, agentsOf(phases[i].title), leftInner, theme), moreRow(leftInner, theme));
     const modelColStart = computeModelColStart(agents, rightInner);
-    const right = [];
-    if (agents.length === 0) {
-        const msg = truncateToWidth(theme.fg("dim", "no agents"), rightInner, "", true);
-        for (let k = 0; k < bodyRows; k++)
-            right.push(k === 0 ? msg : " ".repeat(rightInner));
-    }
-    else {
-        for (let k = 0; k < bodyRows; k++) {
-            const idx = rightRows.start + k;
-            if (idx >= agents.length) {
-                right.push(" ".repeat(rightInner));
-                continue;
-            }
-            const selected = inAgents && idx === state.cursor;
-            let row = rightAgentRow(agents[idx], selected, modelColStart, rightInner, theme);
-            if (k === bodyRows - 1 && rightRows.more) {
-                row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), rightInner, "", true);
-            }
-            right.push(row);
-        }
-    }
+    const right = agents.length === 0
+        ? [truncateToWidth(theme.fg("dim", "no agents"), rightInner, "", true)]
+        : listPaneRows(agents.length, inAgents ? state.cursor : 0, bodyCap, (i) => rightAgentRow(agents[i], inAgents && i === state.cursor, modelColStart, rightInner, theme), moreRow(rightInner, theme));
     return renderTwoPaneFrame({
         width,
-        bodyRows,
+        bodyRows: Math.max(1, left.length, right.length),
         left,
         right,
         leftTitle: "Phases",
@@ -142,42 +105,22 @@ function renderPhasesAgents(state, model, runId, phases, width, theme, bodyCap) 
 function renderSinglePane(state, phases, selPhaseIdx, agents, width, theme, bodyCap, inAgents) {
     const innerW = Math.max(1, width - 2);
     const bc = (s) => theme.fg("muted", s);
-    const out = [];
+    let title;
+    let rows;
     if (inAgents) {
-        const title = agentsTitle(phases[selPhaseIdx], agents.length);
-        out.push(bc(BX.tl) + topTitleSegment(title, innerW, false, theme) + bc(BX.tr));
-        const win = scrollWindow(agents.length, state.cursor, bodyCap);
+        title = agentsTitle(phases[selPhaseIdx], agents.length);
         const modelColStart = computeModelColStart(agents, innerW);
-        const rows = Math.max(1, win.count);
-        for (let k = 0; k < rows; k++) {
-            const idx = win.start + k;
-            if (idx >= agents.length) {
-                out.push(bc(BX.v) + " ".repeat(innerW) + bc(BX.v));
-                continue;
-            }
-            let row = rightAgentRow(agents[idx], idx === state.cursor, modelColStart, innerW, theme);
-            if (k === rows - 1 && win.more)
-                row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
-            out.push(bc(BX.v) + row + bc(BX.v));
-        }
+        rows = listPaneRows(agents.length, state.cursor, bodyCap, (i) => rightAgentRow(agents[i], i === state.cursor, modelColStart, innerW, theme), moreRow(innerW, theme));
     }
     else {
-        out.push(bc(BX.tl) + topTitleSegment("Phases", innerW, false, theme) + bc(BX.tr));
-        const win = scrollWindow(phases.length, state.cursor, bodyCap);
-        const rows = Math.max(1, win.count);
-        for (let k = 0; k < rows; k++) {
-            const idx = win.start + k;
-            if (idx >= phases.length) {
-                out.push(bc(BX.v) + " ".repeat(innerW) + bc(BX.v));
-                continue;
-            }
-            const p = phases[idx];
-            let row = leftPhaseRow(p, idx, idx === state.cursor, [], innerW, theme);
-            if (k === rows - 1 && win.more)
-                row = truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
-            out.push(bc(BX.v) + row + bc(BX.v));
-        }
+        title = "Phases";
+        rows = listPaneRows(phases.length, state.cursor, bodyCap, (i) => leftPhaseRow(phases[i], i, i === state.cursor, [], innerW, theme), moreRow(innerW, theme));
     }
-    out.push(bc(BX.bl) + bc(BX.h.repeat(innerW)) + bc(BX.br));
-    return out;
+    if (rows.length === 0)
+        rows.push(" ".repeat(innerW));
+    return [
+        bc(BX.tl) + topTitleSegment(title, innerW, false, theme) + bc(BX.tr),
+        ...rows.map((row) => bc(BX.v) + row + bc(BX.v)),
+        bc(BX.bl) + bc(BX.h.repeat(innerW)) + bc(BX.br),
+    ];
 }

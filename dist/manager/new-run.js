@@ -34,7 +34,8 @@ export function newManagedRun(script, args, owner) {
         agentSessionsByCallId: new Map(),
         replayedAgentStatesByCallId: new Map(),
         agentTimestampsByCallId: new Map(),
-        replayedAgentCalls: new Set(),
+        replayingAgentCalls: new Set(),
+        executionAgentRows: new Set(),
         steerable: new Map(),
     };
 }

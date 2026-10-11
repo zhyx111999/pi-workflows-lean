@@ -11,6 +11,22 @@ export function scrollWindow(total, active, cap) {
     return { start, count: cap, more: start + cap < total };
 }
 /**
+ * Rows for a list pane at most `cap` rows tall: a window of items around
+ * `active`, then `moreRow` when items continue below. The marker takes a row
+ * of its own so it never hides an item; a one-row pane shows the active item
+ * instead of the marker.
+ */
+export function listPaneRows(total, active, cap, itemRow, moreRow) {
+    const fit = scrollWindow(total, active, cap);
+    const marked = fit.more && cap > 1;
+    // A window one row shorter still stops short of the end, so the marker stays truthful.
+    const win = marked ? scrollWindow(total, active, cap - 1) : fit;
+    const rows = Array.from({ length: win.count }, (_, k) => itemRow(win.start + k));
+    if (marked)
+        rows.push(moreRow);
+    return rows;
+}
+/**
  * The slice of a detail body at the state's scroll offset, plus a position
  * indicator when it overflows. The viewport height is fixed so scrolling
  * toward the end never shrinks the overlay.

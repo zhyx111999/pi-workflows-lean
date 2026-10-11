@@ -17,14 +17,14 @@
  * suspended endpoint leaves it pending; nothing falls back to pi.sendMessage.
  *
  * The internals live in ./task-panel/: panel rendering, session endpoints, host
- * send capture, pending markers, retries, and dispatch.
+ * session capture, confirmed sends, pending markers, retries, and dispatch.
  */
-import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { fmtCompact, fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
+import { _resetConfirmedSendsForTests, cancelUnsentWaiters } from "./task-panel/confirmed-send.js";
 import { _resetDeliveryDispatchForTests, flushSessionDiskPending, routeBackgroundDelivery, setPendingTextRenderer, } from "./task-panel/delivery-dispatch.js";
 import { resolveDeliverySessionId, sessionEndpoints, } from "./task-panel/delivery-endpoints.js";
 import { _resetDeliveryRetriesForTests, cancelSessionRetries } from "./task-panel/delivery-retry.js";
-import { _resetHostSendCaptureForTests, boundSessionSends, cancelUnsentWaiters, captureHostSessionSend, } from "./task-panel/host-send-capture.js";
+import { _resetHostSessionCaptureForTests, captureSessionSend } from "./task-panel/host-session-capture.js";
 import { panelWidget } from "./task-panel/panel-widget.js";
 import { deliveredAwaitingClear, forgetAwaitingClear } from "./task-panel/pending-markers.js";
 import { deliveredMaxChars, failedRunText, pausedRunText, persistedResultPath, summarizeResult, } from "./task-panel/result-text.js";
@@ -87,99 +87,11 @@ function pendingResultText(manager, runId, marker, loadSettings, run, persisted)
     return undefined;
 }
 setPendingTextRenderer(pendingResultText);
-// ─── Host session hooks ────────────────────────────────────────────────────────
-/**
- * Custom type of the capture-only probe sent through pi.sendMessage. The patched
- * sendCustomMessage swallows it, so nothing is appended, persisted, or turned.
- */
-export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
-/** Sessions whose probe captured a send. A failed probe stays unmarked and is retried on the next bind. */
-const probedSessionIds = new Set();
-/**
- * A session constructed before the prototype patch (e.g. the one running when
- * the extension reloads) was never captured at construction, and may not send
- * a custom message on its own. One probe through pi.sendMessage forces the
- * capture: the host's void wrapper calls the live session's sendCustomMessage
- * synchronously, and the patch captures that receiver before this returns. A
- * pi.sendMessage that still throws during early startup leaves the session
- * unmarked, so the next bind probes again.
- */
-function probeHostSessionSend(pi, sessionId) {
-    if (probedSessionIds.has(sessionId))
-        return;
-    try {
-        pi.sendMessage({ customType: DELIVERY_PROBE_CUSTOM_TYPE, content: "", display: false }, { triggerTurn: false });
-    }
-    catch {
-        // Best-effort; the bind stays fail-closed without a captured send.
-        return;
-    }
-    if (boundSessionSends.has(sessionId))
-        probedSessionIds.add(sessionId);
-}
-let hostAgentSession = AgentSession;
-const patchedSessionPrototypes = new WeakSet();
-/** Bind delivery capture to the host loader's class, not a sibling SDK peer. */
-export function installHostSessionCapture(sessionClass) {
-    hostAgentSession = sessionClass;
-    patchAgentSessionCapture();
-}
-/**
- * Patch the host AgentSession so every host session's Promise-returning
- * sendCustomMessage is captured. bindCore's `actions.sendMessage` is
- * fire-and-forget and must never be treated as an ACK channel.
- */
-function patchAgentSessionCapture() {
-    try {
-        const proto = hostAgentSession.prototype;
-        if (patchedSessionPrototypes.has(proto))
-            return;
-        const original = proto.sendCustomMessage;
-        // AgentSession shape changed: delivery stays fail-closed without a capture.
-        if (typeof original !== "function")
-            return;
-        patchedSessionPrototypes.add(proto);
-        // Primary hook: `_bindExtensionCore` runs at session construction, before
-        // any extension code, so a new session is captured without a probe.
-        if (typeof proto._bindExtensionCore === "function") {
-            const bindCore = proto._bindExtensionCore;
-            proto._bindExtensionCore = function patchedBindExtensionCore(...args) {
-                try {
-                    captureHostSessionSend(this, false);
-                }
-                catch {
-                    // never break session construction
-                }
-                return bindCore.apply(this, args);
-            };
-        }
-        // Forward with the live session as receiver. A `.bind(proto)` forward would
-        // freeze `this` to the prototype (a bound function ignores `.call(this, …)`),
-        // so `this.agent` would be undefined and every non-trigger send would reject.
-        proto.sendCustomMessage = function patchedSendCustomMessage(message, options) {
-            const isProbe = message?.customType === DELIVERY_PROBE_CUSTOM_TYPE;
-            try {
-                captureHostSessionSend(this, isProbe);
-            }
-            catch {
-                // never break the host send
-            }
-            // The probe exists only to trip this capture: never append it to the
-            // agent state, write a session entry, or start a turn.
-            if (isProbe)
-                return Promise.resolve();
-            return original.call(this, message, options);
-        };
-    }
-    catch {
-        // AgentSession unavailable: delivery stays fail-closed without a capture.
-    }
-}
 // ─── Session endpoints ─────────────────────────────────────────────────────────
 /**
  * Register or refresh the delivery endpoint for a pi session, then flush what is
- * pending for that session only. Requires a confirming send (the captured host
- * sendCustomMessage, or `stableSend` in tests); a durable
+ * pending for that session only. Requires a confirming send: the host session
+ * `pi` is bound to, captured afresh on every bind, or `stableSend`. A durable
  * appendCustomMessageEntry is not an ACK because it starts no turn.
  *
  * Call from session_start, after Pi's bindCore.
@@ -187,7 +99,6 @@ function patchAgentSessionCapture() {
 export function bindSessionDelivery(sessionId, pi, opts = {}) {
     if (!sessionId)
         return;
-    patchAgentSessionCapture();
     // Refuse to bind when the session manager reports a different session.
     try {
         const liveId = opts.sessionManager?.getSessionId?.();
@@ -197,11 +108,7 @@ export function bindSessionDelivery(sessionId, pi, opts = {}) {
     catch {
         // getSessionId unavailable — continue
     }
-    let send = opts.stableSend ?? boundSessionSends.get(sessionId);
-    if (!send) {
-        probeHostSessionSend(pi, sessionId);
-        send = boundSessionSends.get(sessionId);
-    }
+    const send = opts.stableSend ?? captureSessionSend(pi, sessionId);
     const prev = sessionEndpoints.get(sessionId);
     // Already-started sends keep their lock until they settle: a reload is not an
     // SDK abort barrier.
@@ -233,9 +140,10 @@ export function suspendSessionDelivery(sessionId) {
     cancelSessionRetries(sessionId);
 }
 /**
- * Forget a session that will not come back (quit / discard, or the old id after
- * a successful replacement bind). Releases the AgentSession closure held by its
- * captured send; pending markers stay on disk.
+ * Forget a session that will not come back (quit / discard, a stranded handoff,
+ * or the old id after a successful replacement bind). Dropping its endpoint
+ * releases the host session its captured send holds; pending markers stay on
+ * disk.
  */
 export function dropSessionDelivery(sessionId) {
     if (!sessionId)
@@ -243,9 +151,6 @@ export function dropSessionDelivery(sessionId) {
     suspendSessionDelivery(sessionId);
     forgetAwaitingClear(sessionId);
     sessionEndpoints.delete(sessionId);
-    boundSessionSends.delete(sessionId);
-    // The id may be bound again later; let that bind probe afresh.
-    probedSessionIds.delete(sessionId);
 }
 /**
  * Unsuspend and flush one session's pending deliveries (disk). Prefer
@@ -311,7 +216,6 @@ export function installResultDelivery(pi, manager, opts = {}) {
     const install = installed ?? {};
     install.loadSettings = opts.loadSettings;
     deliveryInstalls.set(manager, install);
-    patchAgentSessionCapture();
     // After each turn, bind the session if its send was not captured yet, then
     // flush whatever is still pending for it.
     const existingTurnEnd = turnEndDeliveryManagers.get(pi);
@@ -335,12 +239,15 @@ export function installResultDelivery(pi, manager, opts = {}) {
                 return;
             let endpoint = sessionEndpoints.get(sid);
             if (!endpoint || typeof endpoint.send !== "function") {
-                probeHostSessionSend(pi, sid);
-                if (boundSessionSends.get(sid)) {
+                // Bind only once a send is captured; a failed capture leaves the
+                // session as it was for the next turn to retry.
+                const send = captureSessionSend(pi, sid);
+                if (send) {
                     bindSessionDelivery(sid, pi, {
                         loadSettings: deliveryInstalls.get(activeManager)?.loadSettings,
                         manager: activeManager,
                         sessionManager: ctx?.sessionManager,
+                        stableSend: send,
                     });
                     endpoint = sessionEndpoints.get(sid);
                 }
@@ -398,30 +305,14 @@ export function installResultDelivery(pi, manager, opts = {}) {
 // ─── Test helpers ──────────────────────────────────────────────────────────────
 /** @internal test helper — reset process-wide delivery registries between cases. */
 export function _resetDeliveryRegistriesForTests() {
-    _resetHostSendCaptureForTests();
+    _resetConfirmedSendsForTests();
+    _resetHostSessionCaptureForTests();
     _resetDeliveryDispatchForTests();
     _resetDeliveryRetriesForTests();
     deliveredAwaitingClear.clear();
     sessionEndpoints.clear();
-    probedSessionIds.clear();
     turnEndDeliveryManagers = new WeakMap();
     deliveryInstalls = new WeakMap();
-}
-/** @internal test helper — register a confirming session send directly. */
-export function _registerBoundSessionSendForTests(sessionId, send) {
-    boundSessionSends.set(sessionId, send);
-}
-/** @internal test helper — capture a host-shaped session as the prototype patch would. */
-export function _registerHostSessionForTests(session) {
-    captureHostSessionSend(session);
-}
-/** @internal test helper — inspect which session ids currently hold a captured send. */
-export function _getStealMapForTests() {
-    return boundSessionSends;
-}
-/** @internal test helper — inspect whether a session is marked successfully probed. */
-export function _isProbedForTests(sessionId) {
-    return probedSessionIds.has(sessionId);
 }
 /** @internal test helper — inspect a session's endpoint state. */
 export function _getSessionDeliveryEndpointForTests(sessionId) {

@@ -59,7 +59,9 @@ export class LiveRuns {
     /**
      * The single path to disk. The current-entry check repeats persistRun()'s
      * because the throttled write arrives here directly. Progress writes are
-     * best-effort; `required` writes (checkpoints) throw.
+     * best-effort; `required` writes (checkpoints) throw. The save keeps the
+     * record's session owner, which another process may have moved, and the
+     * run takes it over.
      */
     writeRunToDisk(managed, required = false) {
         if (!this.isCurrent(managed))
@@ -67,7 +69,9 @@ export class LiveRuns {
         try {
             const now = new Date();
             settleAgentsForTerminalRun(managed, now);
-            this.persistence.save(runRecord(managed, now));
+            const record = runRecord(managed, now);
+            this.persistence.save(record);
+            managed.sessionId = record.sessionId;
         }
         catch (err) {
             // Deletion by another process is authoritative: the local copy is stale.

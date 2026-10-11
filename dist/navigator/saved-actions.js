@@ -1,8 +1,9 @@
 /** Saved-workflow actions started from the navigator: save a run, rename, and delete, keeping `/name` commands in sync. */
+import { commitRunSave, planRunSave } from "../run-save.js";
 import { registerSavedWorkflow, savedWorkflowCommandAvailability } from "../saved-commands.js";
-import { isSafeSavedWorkflowName } from "../workflow-saved.js";
+import { isSafeSavedWorkflowName, SAVED_WORKFLOW_NAME_RULE } from "../workflow-saved.js";
 import { sameIdentity, savedIdentity } from "./items.js";
-import { currentStorage } from "./session.js";
+import { currentSnapshot, currentStorage } from "./session.js";
 /** Register `/<name>` for a saved workflow, resolving manager and storage live at run time. */
 function registerSavedCommand(session, saved) {
     const { pi, manager, options } = session;
@@ -11,9 +12,18 @@ function registerSavedCommand(session, saved) {
 function findSaved(session, target) {
     return session.model.saved().find((candidate) => sameIdentity(target, savedIdentity(candidate)));
 }
-/** Save the selected run's script as a project workflow and register its command. */
+/** Register the saved workflow's command and report `summary`, or why the command is missing. */
+function announceSaved(session, saved, summary) {
+    const registered = registerSavedCommand(session, saved);
+    session.ui.notify(registered.ok ? summary : `${summary}, but ${registered.message}`, registered.ok ? "info" : "error");
+}
+/**
+ * Save the selected run's script as a project workflow. A different workflow
+ * already under that name is replaced only after `s` is pressed again; the
+ * same content is not written again, so its backup keeps the earlier version.
+ */
 export function saveRunAsWorkflow(session, runId) {
-    const { pi, manager, ui } = session;
+    const { pi, manager, ui, state } = session;
     const run = runId ? manager.listRuns().find((candidate) => candidate.runId === runId) : undefined;
     const storage = currentStorage(session);
     if (!run?.script) {
@@ -30,20 +40,35 @@ export function saveRunAsWorkflow(session, runId) {
         ui.notify(availability.message, "error");
         return;
     }
-    try {
-        const saved = storage.save({ name, description: run.workflowName, script: run.script, location: "project" });
-        const registered = registerSavedCommand(session, saved);
-        ui.notify(registered.ok ? `Saved /${name}` : `Saved /${name}, but ${registered.message}`, registered.ok ? "info" : "error");
+    const plan = planRunSave(storage, { name, description: run.workflowName, script: run.script });
+    if (plan.kind === "unchanged")
+        announceSaved(session, plan.existing, `/${name} is already saved with this script`);
+    else if (plan.kind === "create")
+        writeRunSave(session, plan);
+    else
+        state.beginConfirmation({ action: "replaceSaved", target: { kind: "run", runId: run.runId }, save: plan }, currentSnapshot(session));
+}
+/** Write a new workflow, or a replace the user confirmed, then register its command. */
+export function writeRunSave(session, plan) {
+    const { ui } = session;
+    const storage = currentStorage(session);
+    if (!storage) {
+        ui.notify("Saving is not available (no storage)", "error");
+        return;
     }
-    catch (error) {
-        ui.notify(error instanceof Error ? error.message : String(error), "error");
-    }
+    const result = commitRunSave(storage, plan);
+    if (result.ok)
+        announceSaved(session, result.workflow, `Saved /${result.workflow.name}`);
+    else if (result.code === "stale")
+        ui.notify(`${result.message} Press s to check again.`, "warning");
+    else
+        ui.notify(result.message, "error");
 }
 /** Apply the typed rename to the workflow it was started on, then move its command. */
 export function commitRename(session) {
     const { pi, ui, model, state } = session;
     if (!isSafeSavedWorkflowName(state.draft)) {
-        ui.notify("Saved workflow name must be a non-empty slash-command-safe name without whitespace, controls, or paths.", "warning");
+        ui.notify(SAVED_WORKFLOW_NAME_RULE, "warning");
         return;
     }
     const rename = state.takeRename();

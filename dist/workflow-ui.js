@@ -23,11 +23,11 @@ import { parseKey } from "@earendil-works/pi-tui";
 import { asText } from "./navigator/as-text.js";
 import { sameConfirmationContext, } from "./navigator/confirmation.js";
 import { FrameMemo } from "./navigator/frame-memo.js";
-import { dropLastGrapheme, safeInputText } from "./navigator/input-text.js";
+import { dropLastGrapheme } from "./navigator/input-text.js";
 import { sameIdentity, savedIdentity, visibleItems, } from "./navigator/items.js";
 import { handleConfirmKey, handleTextInput, runBrowseAction } from "./navigator/key-input.js";
 import { subscribeToRunUpdates } from "./navigator/live-updates.js";
-import { boxOverlayLines, overlayContentRows, overlayInnerWidth, overlayOptions } from "./navigator/overlay-box.js";
+import { boxOverlayLines, overlayLayout, overlayOptions } from "./navigator/overlay-box.js";
 import { persistedToSnapshot } from "./navigator/persisted-snapshot.js";
 import { NavigatorTextRenderCache } from "./navigator/render-cache.js";
 import { renderNavigatorFrame } from "./navigator/render-frame.js";
@@ -161,8 +161,8 @@ export class NavigatorState {
     get savedName() {
         return this.top().savedName;
     }
-    get confirmationAction() {
-        return this.pending?.action;
+    get confirmation() {
+        return this.pending?.request;
     }
     /** Reconcile selection after any list/filter/manager change without drifting. */
     reconcile(snapshot) {
@@ -187,11 +187,6 @@ export class NavigatorState {
     currentItem(snapshot) {
         this.reconcile(snapshot);
         return snapshot.items.find((item) => sameIdentity(this.top().selected, item.identity));
-    }
-    itemKindAt(model, cursor) {
-        const snapshot = model.visible(this.filter);
-        this.reconcile(snapshot);
-        return snapshot.items[cursor]?.kind ?? "run";
     }
     clamp(count) {
         const top = this.top();
@@ -319,7 +314,8 @@ export class NavigatorState {
             this.stack.push({ kind: "agents", cursor: 0, runId: top.runId, phase: phase.title });
             return true;
         }
-        if (top.kind === "agents" && top.runId && top.phase) {
+        // phase("") is a legal phase, so test for presence rather than truthiness.
+        if (top.kind === "agents" && top.runId && top.phase !== undefined) {
             const agent = model.agents(top.runId, top.phase)[top.cursor];
             if (!agent)
                 return false;
@@ -395,9 +391,10 @@ export class NavigatorState {
         this.draft = workflow.name;
         this.renameTarget = savedIdentity(workflow);
     }
-    appendInput(data) {
+    /** `text` is already decoded from terminal input (see navigator/input-text.ts). */
+    appendInput(text) {
         if (this.mode === "filter" || this.mode === "rename")
-            this.draft += safeInputText(data);
+            this.draft += text;
     }
     backspaceInput() {
         if (this.mode === "filter" || this.mode === "rename")
@@ -453,12 +450,11 @@ export class NavigatorState {
             savedIdentity: frame.savedIdentity,
         };
     }
-    beginConfirmation(action, target, snapshot) {
+    beginConfirmation(request, snapshot) {
         if (this.mode !== "browse")
             return false;
         this.pending = {
-            action,
-            target,
+            request,
             cursor: this.cursor,
             filter: snapshot.filter,
             context: this.confirmationContext(),
@@ -471,20 +467,21 @@ export class NavigatorState {
         this.pending = undefined;
         this.mode = "browse";
         if (!pending ||
-            pending.action !== action ||
+            pending.request.action !== action ||
             pending.cursor !== this.cursor ||
             pending.filter !== snapshot.filter ||
             !sameConfirmationContext(this.confirmationContext(), pending.context))
             return undefined;
+        const { request } = pending;
         if (this.kind === "savedDetail") {
-            return sameIdentity(this.top().savedIdentity, pending.target) ? pending.target : undefined;
+            return sameIdentity(this.top().savedIdentity, request.target) ? request : undefined;
         }
         if (this.kind === "runs") {
             const current = this.currentItem(snapshot);
-            return sameIdentity(current?.identity, pending.target) ? pending.target : undefined;
+            return sameIdentity(current?.identity, request.target) ? request : undefined;
         }
         // Drilled views are bound to the immutable frame runId, not runs selection.
-        return pending.target.kind === "run" && pending.target.runId === this.runId ? pending.target : undefined;
+        return request.target.kind === "run" && request.target.runId === this.runId ? request : undefined;
     }
     cancelConfirmation() {
         if (this.mode === "confirm")
@@ -607,12 +604,13 @@ export function openWorkflowNavigator(pi, manager, ui, opts = {}) {
                 focused = v;
             },
             render: (width) => {
-                const rows = overlayContentRows(tui.terminal?.rows ?? 24);
-                const lines = model.withRenderFrame(() => renderNavigatorFrame(state, model, overlayInnerWidth(width), theme, rows, markdownTheme, renderCache));
-                return boxOverlayLines(lines, width, theme, focused);
+                const layout = overlayLayout(width, tui.terminal?.rows ?? 24);
+                const lines = model.withRenderFrame(() => renderNavigatorFrame(state, model, layout.contentWidth, theme, layout.contentRows, markdownTheme, renderCache));
+                return boxOverlayLines(lines, layout, theme, focused);
             },
             handleInput: (data) => act(data),
-            invalidate: () => { },
+            // The host invalidates on theme changes; cached rich text holds the old colors.
+            invalidate: () => renderCache.clear(),
             dispose: () => unsubscribe(),
         };
         return component;

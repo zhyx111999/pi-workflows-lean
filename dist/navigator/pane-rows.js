@@ -1,7 +1,7 @@
-/** Lays out single phase and agent rows, and the column widths they share, inside the run view's panes. */
+/** Lays out single phase, agent, and overflow-marker rows, and the column widths they share, inside the run view's panes. */
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { fmtCompact, fmtTokenSegment, tokenFigures } from "../display.js";
-import { ELLIPSIS, shortModel } from "./format.js";
+import { ELLIPSIS, phaseLabel, shortModel } from "./format.js";
 /** Narrowest usable Phases pane, in cells. */
 export const LW_MIN = 14;
 /** Narrowest usable agents pane, in cells. */
@@ -41,7 +41,7 @@ export function computeLeftWidth(phases, width) {
         const need = 2 /*marker*/ +
             visibleWidth(idx) +
             1 /*sp*/ +
-            visibleWidth(p.title) +
+            visibleWidth(phaseLabel(p.title)) +
             (hasAgents ? 1 + visibleWidth(`${p.done}/${p.total}`) : 0);
         if (need > contentMax)
             contentMax = need;
@@ -60,7 +60,7 @@ export function leftPhaseRow(p, i, selected, agents, innerW, theme) {
     // Fixed parts width: marker + idx + space + (space+progress if shown)
     const fixed = 2 + visibleWidth(idx) + 1 + (progress ? 1 + visibleWidth(progress) : 0);
     const nameRoom = Math.max(0, innerW - fixed);
-    const name = truncateToWidth(p.title, nameRoom, ELLIPSIS, false);
+    const name = truncateToWidth(phaseLabel(p.title), nameRoom, ELLIPSIS, false);
     const styleMain = (s) => (selected ? theme.fg("accent", theme.bold(s)) : hasAgents ? s : theme.fg("dim", s));
     const progStyle = (s) => selected ? theme.fg("accent", theme.bold(s)) : theme.fg(phaseStatusColor(p, agents), s);
     const caret = selected ? theme.fg("accent", theme.bold(marker)) : marker;
@@ -115,6 +115,10 @@ export function rightAgentRow(a, selected, modelColStart, innerW, theme) {
         out += " ".repeat(Math.max(0, statsStart - afterName)) + statsStyled;
     }
     return truncateToWidth(out, innerW, "", true);
+}
+/** The row marking more items below a pane's window (content field, exact width = innerW). */
+export function moreRow(innerW, theme) {
+    return truncateToWidth(theme.fg("dim", `  ${ELLIPSIS}`), innerW, "", true);
 }
 /** Model column start aligned across agent rows, clamped to the field. */
 export function computeModelColStart(agents, innerW) {

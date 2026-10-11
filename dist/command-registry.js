@@ -1,3 +1,4 @@
+import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 const commandOwnersKey = Symbol.for("pi-dynamic-workflows.command-owners");
 const fallbackRegistries = new WeakMap();
 function registryFor(pi) {
@@ -25,7 +26,13 @@ function registryFor(pi) {
         return registry;
     }
 }
-export function isCommandRegistered(pi, name) {
+/**
+ * Whether `/<name>` already reaches a handler: one of Pi's own commands, which
+ * the host never lists, or an extension, prompt, or skill command it does list.
+ */
+export function isCommandTaken(pi, name) {
+    if (PI_RESERVED_COMMANDS.has(name))
+        return true;
     try {
         return (pi.getCommands?.() ?? []).some((command) => command.name === name);
     }

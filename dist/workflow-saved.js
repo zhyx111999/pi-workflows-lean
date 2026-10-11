@@ -17,26 +17,95 @@ export function savedWorkflowRevision(workflow) {
     }))
         .digest("hex");
 }
+export const SAVED_WORKFLOW_NAME_RULE = 'Saved workflow name must be 1-128 characters usable as a slash command and as a file name on every platform: no whitespace, control or format characters, slashes, or any of < > : " | ? *, no trailing dot, and not a Windows device name such as CON, NUL, COM1, or LPT1.';
 /**
- * Saved workflow names are Pi slash-command names as well as filenames. Keep the
- * validation in one place so `/workflows save`, rename, and command registration
- * have the same reachability boundary. Whitespace, controls, Unicode format
- * characters (including bidi controls), and path separators never form a safe
- * command/file identity.
+ * Whitespace, control and format characters (including bidi controls) make a
+ * command name ambiguous or invisible; the rest cannot appear in a Windows file
+ * name. A ':' would even "succeed" there by writing an NTFS alternate data stream.
+ */
+const FORBIDDEN_NAME_CHARACTER = /[\s\p{Cc}\p{Cf}/\\<>:"|?*]/u;
+/** Windows maps these names to devices in any case and with any extension (`nul.tar.gz` is still NUL). */
+const WINDOWS_DEVICE_NAME = /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[0-9¹²³]|LPT[0-9¹²³])(?:\.|$)/i;
+/**
+ * Saved workflow names are Pi slash-command names as well as file names, and a
+ * workflow saved on one platform must stay usable on another, so the Windows
+ * file-name rules apply everywhere. Save, rename, and load all use this one
+ * rule. The input is `unknown` because loaded names come from untrusted JSON.
  */
 export function isSafeSavedWorkflowName(name) {
-    return (name.length > 0 &&
+    return (typeof name === "string" &&
+        name.length > 0 &&
         name.length <= 128 &&
-        name.trim() === name &&
-        !/[\s/\\\0]/u.test(name) &&
-        !/[\p{Cc}\p{Cf}]/u.test(name) &&
-        name !== "." &&
-        name !== "..");
+        !FORBIDDEN_NAME_CHARACTER.test(name) &&
+        // A trailing dot is silently stripped by Windows; this also rules out "." and "..".
+        !name.endsWith(".") &&
+        !WINDOWS_DEVICE_NAME.test(name));
 }
 export function assertSafeSavedWorkflowName(name) {
-    if (!isSafeSavedWorkflowName(name)) {
-        throw new Error("Saved workflow name must be a non-empty path-safe name usable as a slash command, without whitespace, controls, or paths.");
+    if (!isSafeSavedWorkflowName(name))
+        throw new Error(SAVED_WORKFLOW_NAME_RULE);
+}
+function isJsonObject(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function parametersProblem(parameters) {
+    for (const [key, spec] of Object.entries(parameters)) {
+        if (!isJsonObject(spec) || typeof spec.type !== "string")
+            return `parameter "${key}" needs a string "type"`;
+        if (spec.description !== undefined && typeof spec.description !== "string")
+            return `parameter "${key}" has a non-string "description"`;
+        if (spec.required !== undefined && typeof spec.required !== "boolean")
+            return `parameter "${key}" has a non-boolean "required"`;
     }
+    return undefined;
+}
+/**
+ * Check parsed saved-workflow JSON against the `SavedWorkflow` shape. These
+ * files are also written by hand, so every field the runtime reads is checked
+ * here instead of trusting a cast. Hand-written files often leave out
+ * `description` and `savedAt`; those default to "". Fields outside the shape
+ * (including stale `location` and `path`) are dropped.
+ */
+function checkSavedWorkflowFile(data) {
+    const problem = (text) => ({ ok: false, problem: text });
+    if (!isJsonObject(data))
+        return problem("the file does not hold a JSON object");
+    const { name, description = "", savedAt = "", parameters, script, scriptPath } = data;
+    if (!isSafeSavedWorkflowName(name))
+        return problem(`"name" is not valid. ${SAVED_WORKFLOW_NAME_RULE}`);
+    if (typeof description !== "string")
+        return problem('"description" must be a string');
+    if (typeof savedAt !== "string")
+        return problem('"savedAt" must be a string');
+    if (parameters != null) {
+        if (!isJsonObject(parameters))
+            return problem('"parameters" must be an object');
+        const parameterProblem = parametersProblem(parameters);
+        if (parameterProblem)
+            return problem(parameterProblem);
+    }
+    let source;
+    if (Object.hasOwn(data, "script")) {
+        if (typeof script !== "string")
+            return problem('"script" must be a string');
+        source = { script };
+    }
+    else if (typeof scriptPath === "string") {
+        source = { scriptPath };
+    }
+    else {
+        return problem('it needs a string "script" or "scriptPath"');
+    }
+    return {
+        ok: true,
+        file: {
+            name,
+            description,
+            savedAt,
+            ...(parameters != null && { parameters: parameters }),
+            source,
+        },
+    };
 }
 /**
  * Resolve a saved-workflow `scriptPath` against that workflow's own saved
@@ -76,37 +145,43 @@ export function createWorkflowStorage(cwd, fsOverride) {
         assertSafeSavedWorkflowName(name);
         return join(dirs[location], `${name}.json`);
     };
-    const loadFromFile = (path, location) => {
-        const data = readJsonWithBackupRecovery(fs, path);
-        if (!data || typeof data !== "object" || !isSafeSavedWorkflowName(data.name ?? ""))
-            return null;
-        const raw = data;
-        const { scriptPath: rawScriptPath, ...rest } = raw;
-        let script = rest.script;
-        if (!Object.hasOwn(raw, "script") && typeof rawScriptPath === "string") {
-            const resolved = resolveSavedScriptPath(dirname(path), rawScriptPath);
-            if (!resolved)
-                return null;
-            try {
-                script = fs.readFileSync(resolved, "utf-8");
-            }
-            catch {
-                return null;
-            }
-        }
-        return {
-            ...rest,
-            script: script,
-            location,
-            path,
-        };
-    };
     const hasRecord = (path) => {
         try {
             return fs.existsSync(path) || fs.existsSync(`${path}.bak`);
         }
         catch {
             return true; // unreadable means do not overwrite something we cannot verify
+        }
+    };
+    // list() runs on every navigator refresh; one warning per file and problem is enough.
+    const reported = new Set();
+    const skipInvalid = (path, problem) => {
+        const key = `${path}\n${problem}`;
+        if (!reported.has(key)) {
+            reported.add(key);
+            console.warn(`[workflow] Skipped saved workflow ${path}: ${problem}`);
+        }
+        return null;
+    };
+    /** Load one saved file. An invalid file is skipped with a warning, so it never hides or breaks other rows. */
+    const loadFromFile = (path, location) => {
+        const data = readJsonWithBackupRecovery(fs, path);
+        if (data === null)
+            return hasRecord(path) ? skipInvalid(path, "the file is unreadable or not valid JSON") : null;
+        const checked = checkSavedWorkflowFile(data);
+        if (!checked.ok)
+            return skipInvalid(path, checked.problem);
+        const { source, ...fields } = checked.file;
+        if ("script" in source)
+            return { ...fields, script: source.script, location, path };
+        const scriptFile = resolveSavedScriptPath(dirname(path), source.scriptPath);
+        if (!scriptFile)
+            return skipInvalid(path, '"scriptPath" must be a relative file path inside the saved directory');
+        try {
+            return { ...fields, script: fs.readFileSync(scriptFile, "utf-8"), location, path };
+        }
+        catch (error) {
+            return skipInvalid(path, `cannot read "scriptPath": ${error instanceof Error ? error.message : String(error)}`);
         }
     };
     const exactCurrent = (workflow) => {
@@ -256,13 +331,8 @@ export function createWorkflowStorage(cwd, fsOverride) {
             return removeSource(current.workflow.path);
         },
         rename(workflow, name) {
-            if (!isSafeSavedWorkflowName(name)) {
-                return {
-                    ok: false,
-                    code: "invalid",
-                    message: "Saved workflow name must be a non-empty slash-command-safe name without whitespace, controls, or paths.",
-                };
-            }
+            if (!isSafeSavedWorkflowName(name))
+                return { ok: false, code: "invalid", message: SAVED_WORKFLOW_NAME_RULE };
             const current = exactCurrent(workflow);
             if (!current.ok)
                 return current;

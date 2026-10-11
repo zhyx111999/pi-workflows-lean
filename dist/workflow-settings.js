@@ -63,13 +63,23 @@ export function saveWorkflowSettings(settings, settingsPathOrOptions) {
     const existing = readObject(path);
     writeFileSync(path, `${JSON.stringify({ ...existing, ...normalizeSettings(settings) }, null, 2)}\n`, "utf-8");
 }
-/** Save a global preference and update an existing project override if one is present. */
+/**
+ * Save preferences so they are what `loadWorkflowSettings({ cwd })` returns.
+ * Every key goes to the global file as the user's default. A key that the
+ * repo-local file or the project override already sets would shadow that
+ * write, so it also goes to the project override, the top layer, which is
+ * created when missing. Keys no project layer sets stay out of the override,
+ * so later global changes still reach this project. The repo-local file is
+ * never written: it belongs to the repository and may be shared.
+ */
 export function saveWorkflowSettingsForCwd(settings, cwd) {
-    saveWorkflowSettings(settings);
+    const next = normalizeSettings(settings);
+    saveWorkflowSettings(next);
     const projectPath = getWorkflowProjectSettingsPath(cwd);
-    if (existsSync(projectPath)) {
-        saveWorkflowSettings(settings, { projectSettingsPath: projectPath, scope: "project" });
-    }
+    const projectLayers = { ...readSettings(getProjectLocalWorkflowSettingsPath(cwd)), ...readSettings(projectPath) };
+    const shadowed = Object.fromEntries(Object.entries(next).filter(([key]) => key in projectLayers));
+    if (Object.keys(shadowed).length)
+        saveWorkflowSettings(shadowed, projectPath);
 }
 function normalizeOptions(settingsPathOrOptions) {
     return typeof settingsPathOrOptions === "string"
@@ -130,17 +140,24 @@ function normalizeSettings(value) {
     const deliveredResultMaxChars = normalizeInteger(raw.deliveredResultMaxChars, 1, 1_000_000);
     if (deliveredResultMaxChars !== undefined)
         settings.deliveredResultMaxChars = deliveredResultMaxChars;
-    if (Array.isArray(raw.excludeSubagentTools)) {
-        const names = raw.excludeSubagentTools.filter((t) => typeof t === "string" && t.trim().length > 0);
-        if (names.length)
-            settings.excludeSubagentTools = names;
-    }
-    if (Array.isArray(raw.providerMiddlewareExtensions)) {
-        settings.providerMiddlewareExtensions = raw.providerMiddlewareExtensions
-            .filter((name) => typeof name === "string" && name.trim().length > 0)
-            .map((name) => name.trim());
-    }
+    const excludeSubagentTools = normalizeNames(raw.excludeSubagentTools);
+    if (excludeSubagentTools)
+        settings.excludeSubagentTools = excludeSubagentTools;
+    const providerMiddlewareExtensions = normalizeNames(raw.providerMiddlewareExtensions);
+    if (providerMiddlewareExtensions)
+        settings.providerMiddlewareExtensions = providerMiddlewareExtensions;
     return settings;
+}
+/**
+ * Trimmed non-blank names. Any array is kept, even one that ends up empty: an
+ * explicit [] in a later layer must clear a list set by an earlier one.
+ */
+function normalizeNames(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    return value
+        .filter((name) => typeof name === "string" && name.trim().length > 0)
+        .map((name) => name.trim());
 }
 function normalizeInteger(value, min, max) {
     if (typeof value !== "number" || !Number.isFinite(value) || value < min)

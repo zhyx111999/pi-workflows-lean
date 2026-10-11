@@ -1,49 +1,11 @@
 /**
- * Captures each host session's sendCustomMessage and wraps it so a workflow
- * result counts as delivered only once that session has persisted it.
+ * Wraps a captured host session's sendCustomMessage so a workflow result
+ * counts as delivered only once that session has persisted it.
  */
 import { sessionFileContainsEntry } from "./session-file-scan.js";
-/**
- * Confirming sends keyed by host sessionId. Workflow children (in-memory,
- * noExtensions, or named `workflow:…`) never enter this map, so a result can
- * never be routed into a subagent's session.
- */
-export const boundSessionSends = new Map();
 const activeStreamingWaiters = new Set();
 const DEFAULT_STREAMING_ACK_TIMEOUT_MS = 60_000;
 let streamingAckTimeoutMs = DEFAULT_STREAMING_ACK_TIMEOUT_MS;
-function hostSessionIdToSteal(session, probe) {
-    const sm = session.sessionManager;
-    if (!sm)
-        return undefined;
-    if (session._resourceLoader?.noExtensions === true)
-        return undefined;
-    try {
-        const name = sm.getSessionName?.();
-        if (typeof name === "string" && name.startsWith("workflow:"))
-            return undefined;
-    }
-    catch {
-        // getSessionName unavailable — keep evaluating
-    }
-    if (typeof session.sendCustomMessage !== "function")
-        return undefined;
-    const sid = sm.getSessionId?.();
-    // A probe skips only the persistence gate below; the sessionManager,
-    // noExtensions, and workflow:-name gates above still apply. That is safe: a
-    // probe is only ever sent through the pi.sendMessage of the session running
-    // this extension, so it cannot reach a foreign or child session.
-    if (!probe) {
-        try {
-            if (!sm.isPersisted?.())
-                return undefined;
-        }
-        catch {
-            return undefined;
-        }
-    }
-    return sid;
-}
 function deliveryIdFromDetails(details) {
     if (!details || typeof details !== "object")
         return undefined;
@@ -72,17 +34,15 @@ function sessionHasDelivery(session, deliveryId) {
     }
 }
 /**
- * Register a confirming send for a host session. The wrapper waits until the
- * host is idle before sending, so a result never sits in the host's
- * unobservable follow-up queue, and resolves only once the result is persisted
- * in the session file.
+ * A confirming send for the host session `sid`. It waits until the host is idle
+ * before sending, so a result never sits in the host's unobservable follow-up
+ * queue, and resolves only once the result is persisted in the session file.
  */
-export function captureHostSessionSend(session, probe) {
-    const sid = hostSessionIdToSteal(session, probe);
+export function confirmedSessionSend(session, sid) {
     const send = session.sendCustomMessage;
-    if (!sid || typeof send !== "function")
-        return;
-    boundSessionSends.set(sid, (message, options) => {
+    if (typeof send !== "function")
+        return undefined;
+    return (message, options) => {
         const deliveryId = deliveryIdFromDetails(message.details);
         if (deliveryId && sessionHasDelivery(session, deliveryId) === true)
             return Promise.resolve();
@@ -199,7 +159,7 @@ export function captureHostSessionSend(session, probe) {
             }
             startWhenIdle();
         });
-    });
+    };
 }
 /**
  * Cancel a session's waits that have not sent yet. A started send can still
@@ -215,12 +175,11 @@ export function cancelUnsentWaiters(sessionId, reason) {
 export function _setStreamingAckTimeoutForTests(timeoutMs) {
     streamingAckTimeoutMs = timeoutMs;
 }
-/** @internal test helper — cancel every wait and forget captured sends. */
-export function _resetHostSendCaptureForTests() {
+/** @internal test helper — cancel every wait and restore the default timeout. */
+export function _resetConfirmedSendsForTests() {
     for (const waiter of activeStreamingWaiters) {
         waiter.cancel(new Error("test reset"));
     }
     activeStreamingWaiters.clear();
     streamingAckTimeoutMs = DEFAULT_STREAMING_ACK_TIMEOUT_MS;
-    boundSessionSends.clear();
 }

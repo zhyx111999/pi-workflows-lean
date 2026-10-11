@@ -112,7 +112,7 @@ export function clampMaxAgents(value) {
         return 8;
     return Math.min(1000, Math.floor(value));
 }
-/** Per-phase + per-agent body for one run in detailed mode (mirrors renderWorkflowLines). */
+/** Per-phase + per-agent body for one run in detailed mode (mirrors renderWorkflowText). */
 function renderRunBody(snap, agents, maxAgents, theme) {
     const dim = (t) => theme.fg("dim", t);
     const lines = [];

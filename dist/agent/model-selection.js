@@ -1,6 +1,7 @@
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import { canonicalModelSpec, formatModelSpecWithThinking, resolveModelSpecWithThinking, } from "../model-spec.js";
 import { formatTierFallbackNotice, loadModelTierConfig, resolveTierModel, } from "../model-tier-config.js";
+import { runtimeOf } from "./model-registry.js";
 /**
  * Resolve which concrete model spec a subagent should use. Precedence, most
  * specific first:
@@ -62,7 +63,7 @@ export class AgentModelSelector {
         if (!modelSpec)
             return { thinkingLevel: request.thinking };
         // Pi CLI-style parsing, including an optional :thinking suffix such as gpt-5.5:xhigh.
-        const resolved = resolveModelSpecWithThinking(modelSpec, registry, {
+        const resolved = resolveModelSpecWithThinking(modelSpec, runtimeOf(registry), {
             preferredProvider: mainModel?.split("/", 1)[0],
         });
         if (resolved.warning)

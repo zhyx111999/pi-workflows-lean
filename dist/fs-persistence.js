@@ -146,22 +146,26 @@ export function readJsonWithBackupRecovery(fs, path) {
     return null;
 }
 /**
- * List `.json` record files in `dir`. A missing directory (never created
- * yet) or an unreadable one (deleted between the existsSync check and
- * readdirSync, permission-denied, etc.) both degrade to an empty list
- * rather than throwing — callers (run listings, saved-workflow listings)
- * must never crash a navigator/listing because one storage location is
- * temporarily inaccessible.
+ * List the entry names in `dir`. A missing directory (never created yet) or
+ * an unreadable one (deleted between the existsSync check and readdirSync,
+ * permission-denied, etc.) both degrade to an empty list rather than
+ * throwing — callers (run listings, saved-workflow listings) must never
+ * crash a navigator/listing because one storage location is temporarily
+ * inaccessible.
  */
-export function listJsonFilesSafe(fs, dir) {
+export function listFilesSafe(fs, dir) {
     try {
         if (!fs.existsSync(dir))
             return [];
-        return fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+        return fs.readdirSync(dir);
     }
     catch {
         return [];
     }
+}
+/** List `.json` record files in `dir`, with listFilesSafe()'s degradation. */
+export function listJsonFilesSafe(fs, dir) {
+    return listFilesSafe(fs, dir).filter((f) => f.endsWith(".json"));
 }
 /** Best-effort unlink; ignores missing-file/permission errors, reports whether it deleted anything. */
 export function unlinkIfExistsSafe(fs, path) {

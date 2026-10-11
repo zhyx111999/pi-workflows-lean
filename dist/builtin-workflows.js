@@ -11,7 +11,7 @@
  * per-pattern generator scripts are written exactly once.
  */
 import { createCodingTools } from "@earendil-works/pi-coding-agent";
-import { generateDeepResearchWorkflow } from "./deep-research.js";
+import { DEEP_RESEARCH_MAX_ANGLES, generateDeepResearchWorkflow } from "./deep-research.js";
 import { createWebTools } from "./web-tools.js";
 function asRecord(args) {
     return args && typeof args === "object" ? args : {};
@@ -22,13 +22,28 @@ function requireNonEmptyString(value, argName, patternName) {
     }
     return value;
 }
+/**
+ * An optional integer arg must be omitted or an integer in [min, max]; a null
+ * counts as omitted because some providers fill every optional field. Strings,
+ * fractions, NaN and Infinity are rejected rather than coerced, so a bad value
+ * fails before the run starts instead of silently planning zero queries.
+ */
+function requireOptionalIntegerInRange(value, [min, max], argName, patternName) {
+    if (value === undefined || value === null)
+        return;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+        throw new Error(`Built-in workflow "${patternName}" requires args.${argName}, when given, to be an integer from ${min} to ${max}.`);
+    }
+}
 /** Built-in workflow patterns, keyed by their stable name. */
 export const BUILTIN_WORKFLOWS = [
     {
         name: "deep-research",
-        description: "Research a question across the web and return sourced claims. args: { question: string }.",
+        description: `Research a question across the web and return sourced claims per query. args: { question: string, angles?: integer 1-${DEEP_RESEARCH_MAX_ANGLES} }.`,
         resolve(cwd, args) {
-            requireNonEmptyString(asRecord(args).question, "question", "deep-research");
+            const { question, angles } = asRecord(args);
+            requireNonEmptyString(question, "question", "deep-research");
+            requireOptionalIntegerInRange(angles, [1, DEEP_RESEARCH_MAX_ANGLES], "angles", "deep-research");
             return {
                 script: generateDeepResearchWorkflow(),
                 // Research agents need real web access on top of the coding tools; the

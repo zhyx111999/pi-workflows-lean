@@ -2,7 +2,9 @@
  * `/workflows-models` command handler.
  *
  * Uses Pi's built-in `ctx.ui.select()`, `ctx.ui.confirm()`, and `ctx.ui.notify()`
- * to let users view and manage model tier configuration for workflows.
+ * to let users view and manage model tier configuration for workflows. Those
+ * dialogs work in the terminal UI and in RPC hosts; only the model picker adds a
+ * scrollable terminal list, with a `select()` fallback everywhere else.
  *
  * Model selection draws from the host session's shared model registry so users
  * see every provider Pi can reach, including extension-registered providers such
@@ -117,61 +119,17 @@ function fromThinkingChoice(choice) {
     return THINKING_LEVELS.find((level) => level === choice);
 }
 /**
- * Interactive editor for a single tier — scrollable model picker plus optional
- * thinking-level picker.
- *
- * Uses `ctx.ui.custom()` with Pi TUI's `SelectList` for proper scrollable list
- * with limited visible rows (like `/advisor`). The currently selected base
- * model is shown in the dialog title. After choosing the model, users can set
- * a Pi CLI-style thinking suffix or keep the session default.
+ * Interactive editor for a single tier: pick a base model, then a Pi CLI-style
+ * thinking suffix or the session default.
  *
  * Returns the updated tiers object, or null if nothing changed.
  */
 export async function editSingleTier(ctx, tiers, tierName) {
     const available = listAvailableModelSpecs(ctx.modelRegistry);
-    const knownSpecs = available.length > 0 ? available : undefined;
     const current = tiers[tierName];
-    const currentParts = splitModelSpecThinking(current, knownSpecs);
-    // Build SelectItems: all available models as scrollable list
-    const items = available.map((m) => ({ value: m, label: m }));
-    const selectedModel = await ctx.ui.custom((tui, theme, _keybindings, done) => {
-        const container = new Container();
-        // Title showing current model
-        const titleText = current
-            ? `Pick a model for "${tierName}" (current: ${current})`
-            : `Pick a model for "${tierName}"`;
-        container.addChild(new Text(theme.fg("accent", titleText), 1, 0));
-        container.addChild(new Spacer(1));
-        // SelectList theme
-        const selectTheme = {
-            selectedPrefix: (t) => theme.bg("selectedBg", theme.fg("accent", t)),
-            selectedText: (t) => theme.bg("selectedBg", theme.bold(t)),
-            description: (t) => theme.fg("muted", t),
-            scrollInfo: (t) => theme.fg("dim", t),
-            noMatch: (t) => theme.fg("warning", t),
-        };
-        const selectList = new SelectList(items, 12, selectTheme);
-        // Preselect the current base model even when the stored tier has :thinking.
-        if (currentParts.modelSpec) {
-            const idx = items.findIndex((i) => i.value === currentParts.modelSpec);
-            if (idx >= 0)
-                selectList.setSelectedIndex(idx);
-        }
-        // Wire up callbacks
-        selectList.onSelect = (item) => done(item.value);
-        selectList.onCancel = () => done(null);
-        container.addChild(selectList);
-        container.addChild(new Spacer(1));
-        container.addChild(new Text(theme.fg("dim", "↑↓ navigate  enter select  esc cancel  · thinking is chosen next"), 1, 0));
-        return {
-            render: (w) => container.render(w),
-            invalidate: () => container.invalidate(),
-            handleInput: (data) => {
-                selectList.handleInput(data);
-                tui.requestRender();
-            },
-        };
-    });
+    const currentParts = splitModelSpecThinking(current, available.length > 0 ? available : undefined);
+    const title = current ? `Pick a model for "${tierName}" (current: ${current})` : `Pick a model for "${tierName}"`;
+    const selectedModel = await pickModel(ctx, title, available, currentParts.modelSpec);
     if (!selectedModel)
         return null;
     const currentThinkingLabel = currentParts.thinkingLevel ?? DEFAULT_THINKING_CHOICE;
@@ -184,4 +142,47 @@ export async function editSingleTier(ctx, tiers, tierName) {
         return null;
     ctx.ui.notify(`"${tierName}" tier → ${result}`, "info");
     return { ...tiers, [tierName]: result };
+}
+/**
+ * Ask the user for one model spec; resolves undefined when they cancel.
+ *
+ * The terminal UI gets a scrollable `SelectList` with the current model
+ * preselected. That list is a `ui.custom()` component, which needs a real
+ * terminal: RPC hosts resolve `custom()` to undefined even though `ctx.hasUI`
+ * is true there, so every other mode asks through `ui.select()`, which RPC
+ * hosts implement over their extension-UI protocol.
+ */
+async function pickModel(ctx, title, models, preselected) {
+    if (ctx.mode !== "tui")
+        return ctx.ui.select(title, models);
+    return ctx.ui.custom((tui, theme, _keybindings, done) => {
+        const items = models.map((model) => ({ value: model, label: model }));
+        const selectTheme = {
+            selectedPrefix: (t) => theme.bg("selectedBg", theme.fg("accent", t)),
+            selectedText: (t) => theme.bg("selectedBg", theme.bold(t)),
+            description: (t) => theme.fg("muted", t),
+            scrollInfo: (t) => theme.fg("dim", t),
+            noMatch: (t) => theme.fg("warning", t),
+        };
+        const selectList = new SelectList(items, 12, selectTheme);
+        const preselectedIndex = items.findIndex((item) => item.value === preselected);
+        if (preselectedIndex >= 0)
+            selectList.setSelectedIndex(preselectedIndex);
+        selectList.onSelect = (item) => done(item.value);
+        selectList.onCancel = () => done(undefined);
+        const container = new Container();
+        container.addChild(new Text(theme.fg("accent", title), 1, 0));
+        container.addChild(new Spacer(1));
+        container.addChild(selectList);
+        container.addChild(new Spacer(1));
+        container.addChild(new Text(theme.fg("dim", "↑↓ navigate  enter select  esc cancel  · thinking is chosen next"), 1, 0));
+        return {
+            render: (w) => container.render(w),
+            invalidate: () => container.invalidate(),
+            handleInput: (data) => {
+                selectList.handleInput(data);
+                tui.requestRender();
+            },
+        };
+    });
 }
