@@ -1,6 +1,6 @@
 /**
- * Workflow manager: owns every run's lifecycle. A run starts in the background
- * (or inline via runSync), executes through runWorkflow, and can be paused,
+ * Workflow manager: owns every run's lifecycle. A run starts in the background,
+ * executes through runWorkflow, and can be paused,
  * stopped, resumed, re-homed to another session, or deleted. Each execution
  * holds a cross-process lease on its run and writes the run record as it goes.
  */
@@ -12,7 +12,7 @@ import type { WorkflowAgent } from "./agent.js";
 import { DEFAULT_MAX_AGENTS } from "./config.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "./display.js";
 import { WorkflowError, WorkflowErrorCode } from "./errors.js";
-import { abortForLifecycleControl, type ExternalAbort, type LifecycleControl } from "./manager/abort-control.js";
+import { abortForLifecycleControl, type LifecycleControl } from "./manager/abort-control.js";
 import { attachCheckpointResponse, checkpointAlreadyConsumed } from "./manager/checkpoint-response.js";
 import { waitForPausedExecutionSettlement } from "./manager/execution-settlement.js";
 import { LiveRuns } from "./manager/live-runs.js";
@@ -64,11 +64,6 @@ export interface ManagedRun {
   checkpoint?: WorkflowCheckpoint;
   /** Cross-process lease, held while an execution in this process owns the run. */
   lease?: RunLease;
-  /**
-   * True unless runSync started the run. Only background runs deliver their
-   * result into the conversation; runSync already returns it to its caller.
-   */
-  background: boolean;
   /** The session that receives this run's result. Only adoptLiveRunsToSession() changes it. */
   sessionId?: string;
   /** The session that started the run; never changes. */
@@ -77,8 +72,6 @@ export interface ManagedRun {
   parentSessionFile?: string;
   /** Background result still waiting for delivery; cleared only after a successful send. */
   pendingDelivery?: PendingDeliveryMarker;
-  /** Auto-resume eligibility (see ExecOptions.autoResume), kept across resumes. */
-  autoResume?: boolean;
   /**
    * The usage-limit scheduler's backoff counter. It lives here because every
    * manager write rewrites the whole record; the scheduler sets it through
@@ -90,8 +83,6 @@ export interface ManagedRun {
    * its own event, so the AbortError it causes is not reported as a failure.
    */
   lifecycleControl?: LifecycleControl;
-  /** The host signal that aborted this execution; later agent results cannot override it. */
-  externalAbort?: ExternalAbort;
   /** A provider limit that escaped before any pause()/stop(), so it still counts as a quota pause. */
   usageLimitEscapedBeforeLifecycleControl?: WorkflowError;
   /** The provider limit this run is paused on. */
@@ -353,7 +344,7 @@ export class WorkflowManager extends EventEmitter {
     args?: unknown,
     exec: ExecOptions = {},
   ): { runId: string; promise: Promise<WorkflowRunResult> } {
-    const managed = this.registerNewRun(script, args, exec, true);
+    const managed = this.registerNewRun(script, args, exec);
     try {
       this.persistence.save(initialRunRecord(managed));
     } catch (err) {
@@ -369,24 +360,11 @@ export class WorkflowManager extends EventEmitter {
     return { runId: managed.runId, promise };
   }
 
-  /**
-   * Run a workflow and wait for its result, tracked like a background run so
-   * the navigator and task panel show it. Only tests use this today.
-   */
-  async runSync(script: string, args?: unknown, exec: ExecOptions = {}): Promise<WorkflowRunResult> {
-    const managed = this.registerNewRun(script, args, exec, false);
-    // Write at once so listRuns() shows the run before its first agent finishes.
-    this.live.persistRun(managed);
-    return this.execute(managed, script, args, exec);
-  }
-
   /** Create a run, take its lease, and add it to `runs`. Throws when the lease is taken. */
-  private registerNewRun(script: string, args: unknown, exec: ExecOptions, background: boolean): ManagedRun {
+  private registerNewRun(script: string, args: unknown, exec: ExecOptions): ManagedRun {
     const managed = newManagedRun(script, args, {
-      background,
       sessionId: this.sessionId,
       sessionFile: this.sessionFile,
-      autoResume: exec.autoResume,
       toolset: exec.toolset,
     });
     const lease = this.persistence.acquireRunLease(managed.runId);

@@ -2,7 +2,6 @@
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentUsage } from "../agent-usage.js";
-import type { WorkflowSnapshot } from "../display.js";
 import { WorkflowCheckpointSuspensionError } from "../errors.js";
 import { INTERRUPTED_AGENT_CAUSE, TERMINAL_RUN_STATUSES } from "../run-persistence.js";
 import { isTaskListScript } from "../subagent-tasks.js";
@@ -14,27 +13,22 @@ import {
   type WorkflowRunResult,
 } from "../workflow.js";
 import type { ManagedRun } from "../workflow-manager.js";
-import { ExternalAbortLink } from "./abort-control.js";
 import type { LiveRuns } from "./live-runs.js";
 import { runEventHooks } from "./run-events.js";
 import { classifyFailure, emptyFleetWarning } from "./run-outcome.js";
 import { settleInterruptedAgents } from "./run-record.js";
 
-/** Per-execution options shared by sync, background, and resume runs. */
+/** Per-execution options shared by new and resumed runs. */
 export interface ExecOptions {
   /** Journaled results to replay by call index (resume). */
   resumeJournal?: Map<number, JournalEntry>;
   /** Durable checkpoint response being replayed by this execution. */
   resumeCheckpoint?: WorkflowCheckpoint;
-  /** Host signal (e.g. tool/Esc) that aborts this run when fired. */
-  externalSignal?: AbortSignal;
   /**
    * Grace (ms) for the final drain once this run is aborted (default 10_000;
    * Infinity = unbounded). A host setting, not persisted with the run.
    */
   drainAbortGraceMs?: number;
-  /** Called with the live snapshot on every progress event. */
-  onProgress?: (snapshot: WorkflowSnapshot) => void;
   /**
    * Tools for this run's subagents instead of the default coding tools, e.g.
    * /deep-research adds web tools. Pair with `toolset` so a resume finds them again.
@@ -45,11 +39,6 @@ export interface ExecOptions {
    * for resume(). With both set, `tools` serves this execution and `toolset` resumes.
    */
   toolset?: string;
-  /**
-   * Whether a usage-limit pause may resume automatically. Default on; false opts
-   * out. Persisted so the scheduler honors it after a restart.
-   */
-  autoResume?: boolean;
   /** Token usage already spent (resume), so reported totals stay cumulative. */
   initialTokenUsage?: AgentUsage;
 }
@@ -83,21 +72,15 @@ export async function executeRun(
   exec: ExecOptions,
   settings: ExecutionSettings,
 ): Promise<WorkflowRunResult> {
-  const { onProgress } = exec;
   // Explicit tools win; otherwise re-resolve the run's toolset name (how a
   // resumed /deep-research keeps its web tools); otherwise the default tools.
   const resolvedTools = exec.tools ?? (managed.toolset ? settings.toolsets?.[managed.toolset]?.() : undefined);
   const events = runEventHooks(managed, {
     emit: (event, payload) => live.emit(managed, event, payload),
-    progress: () => {
-      if (live.isCurrent(managed)) onProgress?.(managed.snapshot);
-    },
     persist: (required) => live.persistRun(managed, required),
     schedulePersist: () => live.schedulePersist(managed),
   });
-  const externalAbort = exec.externalSignal ? new ExternalAbortLink(exec.externalSignal, managed) : undefined;
   try {
-    externalAbort?.attach();
     const result = await runWorkflow(script, {
       ...settings.runtime,
       args,
@@ -117,7 +100,6 @@ export async function executeRun(
   } catch (error) {
     throw settleFailure(live, managed, error);
   } finally {
-    externalAbort?.detach();
     live.deleteLeftovers(managed);
   }
 }

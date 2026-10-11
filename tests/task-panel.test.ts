@@ -159,29 +159,6 @@ function lateUsageLimitAgent() {
   };
 }
 
-function lateErrorAgent() {
-  let rejectAgent: ((reason?: unknown) => void) | undefined;
-  return {
-    runner: {
-      async run() {
-        return new Promise<unknown>((_resolve, reject) => {
-          rejectAgent = reject;
-        });
-      },
-    },
-    async waitForStart() {
-      for (let attempt = 0; attempt < 100; attempt++) {
-        if (rejectAgent) return;
-        await new Promise((resolve) => setTimeout(resolve, 2));
-      }
-      assert.fail("late-error agent did not start");
-    },
-    rejectWith(error: Error) {
-      rejectAgent?.(error);
-    },
-  };
-}
-
 type TaskPanelModule = {
   installResultDelivery: (pi: ExtensionAPI, manager: unknown, opts?: unknown) => void;
   bindSessionDelivery: (
@@ -604,7 +581,6 @@ describe("installResultDelivery", () => {
   function makeRun(overrides: Record<string, unknown> = {}) {
     return {
       runId: "test-run-1",
-      background: true,
       sessionId: SESSION,
       snapshot: {
         name: "test-workflow",
@@ -1691,18 +1667,6 @@ describe("installResultDelivery", () => {
 
   // ── Only background runs are delivered ──
 
-  it("skips delivery for foreground runs (background=false)", () => {
-    const pi = createMockPi();
-    const run = makeRun({ background: false });
-    const manager = createMockManager(run);
-
-    setup(pi, manager);
-    manager.emit("complete", { runId: "test-run-1" });
-
-    const calls = piCalls(pi);
-    assert.equal(calls.length, 0);
-  });
-
   // ── Error event ──
 
   it("delivers error message on error event for background runs", () => {
@@ -1716,18 +1680,6 @@ describe("installResultDelivery", () => {
     assert.equal(calls.length, 1);
     assert.ok(calls[0].content.includes("failed"), "should contain failed");
     assert.ok(calls[0].content.includes("Something went wrong"), "should contain Something went wrong");
-  });
-
-  it("skips error delivery for foreground runs", () => {
-    const pi = createMockPi();
-    const run = makeRun({ background: false });
-    const manager = createMockManager(run);
-
-    setup(pi, manager);
-    manager.emit("error", { runId: "test-run-1", error: { message: "fail" } });
-
-    const calls = piCalls(pi);
-    assert.equal(calls.length, 0);
   });
 
   // ── Paused (usage-limit checkpoint) event ──
@@ -1866,87 +1818,6 @@ describe("installResultDelivery", () => {
     }
   });
 
-  it("still delivers an external abort when a later manual pause races its teardown", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "pi-dw-external-abort-delivery-"));
-    const agent = controlledAgent();
-    const manager = new WorkflowManager({ cwd, agent: agent.runner });
-    const pi = createMockPi();
-    const errors: unknown[] = [];
-    manager.on("error", (event) => errors.push(event));
-    const external = new AbortController();
-
-    try {
-      mod.installResultDelivery(pi, manager);
-      manager.setSessionId(SESSION);
-      mod.bindSessionDelivery(SESSION, pi, { manager, stableSend: recordingStableSend(pi) });
-
-      const { runId, promise } = manager.startInBackground(lifecycleScript, undefined, {
-        externalSignal: external.signal,
-      });
-      await agent.waitForCalls(1);
-
-      external.abort();
-      assert.equal(manager.pause(runId), true, "a late pause must not reclassify the external abort");
-      agent.resolve(0);
-      await promise.catch(() => {});
-      await Promise.resolve();
-
-      assert.equal(manager.getRun(runId)?.status, "aborted");
-      assert.equal(errors.length, 1, "an external abort remains observable as an error");
-      const calls = piCalls(pi);
-      assert.equal(calls.length, 1, "an external abort remains visible to the originating conversation");
-      assert.equal(calls[0].triggerTurn, true);
-      assert.match(calls[0].content, /failed: workflow aborted/i);
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  });
-
-  for (const lateError of [
-    new WorkflowError("late quota exhausted", WorkflowErrorCode.PROVIDER_USAGE_LIMIT, {
-      recoverable: false,
-      resetHint: "Resets in 1m",
-    }),
-    new WorkflowError("late fatal failure", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false }),
-    new WorkflowError("late timeout", WorkflowErrorCode.AGENT_TIMEOUT, { recoverable: true }),
-  ]) {
-    it(`keeps an external abort terminal when a non-cooperative agent later returns ${lateError.code}`, async () => {
-      const cwd = mkdtempSync(join(tmpdir(), `pi-dw-external-before-${lateError.code}-`));
-      const agent = lateErrorAgent();
-      const manager = new WorkflowManager({ cwd, agent: agent.runner });
-      const pi = createMockPi();
-      const external = new AbortController();
-      const errors: Array<{ error?: WorkflowError }> = [];
-      manager.on("error", (event) => errors.push(event));
-
-      try {
-        mod.installResultDelivery(pi, manager);
-        manager.setSessionId(SESSION);
-        mod.bindSessionDelivery(SESSION, pi, { manager, stableSend: recordingStableSend(pi) });
-
-        const { runId, promise } = manager.startInBackground(lifecycleScript, undefined, {
-          externalSignal: external.signal,
-        });
-        await agent.waitForStart();
-        external.abort();
-        agent.rejectWith(lateError);
-        await promise.catch(() => {});
-        await Promise.resolve();
-
-        assert.equal(manager.getRun(runId)?.status, "aborted");
-        assert.equal(manager.getPersistence().load(runId)?.pauseReason, undefined);
-        assert.equal(errors.length, 1);
-        assert.equal(errors[0]?.error?.code, WorkflowErrorCode.WORKFLOW_ABORTED);
-        const calls = piCalls(pi);
-        assert.equal(calls.length, 1);
-        assert.equal(calls[0].triggerTurn, true);
-        assert.match(calls[0].content, /failed: workflow aborted/i);
-      } finally {
-        rmSync(cwd, { recursive: true, force: true });
-      }
-    });
-  }
-
   for (const action of ["pause", "stop"] as const) {
     it(`does not let a late ${action} hide a run-fatal error while a sibling drains`, async () => {
       const cwd = mkdtempSync(join(tmpdir(), `pi-dw-fatal-${action}-`));
@@ -2068,17 +1939,6 @@ describe("installResultDelivery", () => {
       }
     });
   }
-
-  it("skips usage-limit pause delivery for foreground runs", () => {
-    const pi = createMockPi();
-    const manager = createMockManager(makeRun({ background: false }));
-
-    setup(pi, manager);
-    manager.emit("paused", { runId: "test-run-1", reason: "usage_limit", error: { message: "usage limit" } });
-
-    const calls = piCalls(pi);
-    assert.equal(calls.length, 0);
-  });
 
   // ── Session routing (#147) ──
 

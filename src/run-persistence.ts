@@ -133,12 +133,6 @@ export interface PersistedRunState {
    */
   journal?: PersistedJournalEntry[];
   /**
-   * Opt-out of auto-resume for this run (default true, i.e. eligible unless
-   * explicitly set to false via ExecOptions.autoResume). Set once at run start
-   * and carried through resumes; see UsageLimitScheduler.
-   */
-  autoResume?: boolean;
-  /**
    * Named toolset tag (WorkflowManagerOptions.toolsets). ToolDefinitions are
    * functions and can't be serialized, so this tag is how a resumed run (e.g.
    * /deep-research with web tools) re-resolves the tool set it started with.

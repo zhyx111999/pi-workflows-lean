@@ -80,14 +80,12 @@ export function resumedRun(input: ResumeInput): ResumedRun {
     args: input.args,
     journal,
     checkpoint: persisted.checkpoint,
-    background: true,
     // Resuming may move delivery to the current session for old records, but never the parent lineage.
     sessionId: persisted.sessionId ?? input.currentSessionId,
     parentSessionId: persisted.parentSessionId ?? persisted.sessionId ?? input.currentSessionId,
     parentSessionFile: persisted.parentSessionFile,
     pendingDelivery: persisted.pendingDelivery,
     lease: input.lease,
-    autoResume: persisted.autoResume,
     autoResumeAttempts: sanitizeAutoResumeAttempts(persisted.autoResumeAttempts),
     // Run limits are not restored: every execution uses the manager's current ones.
     toolset: persisted.toolset,

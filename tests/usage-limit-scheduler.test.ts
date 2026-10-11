@@ -109,8 +109,7 @@ class FakeManager extends EventEmitter implements SchedulableWorkflowManager {
 
 function makeRun(overrides: Partial<PersistedRunState> = {}): PersistedRunState {
   // Default status is "running", NOT "paused" — most tests seed a persisted
-  // record only so handlePaused()'s autoResume-opt-out lookup has something to
-  // read. A "paused" + pauseReason "usage_limit" run is picked up by cold-start
+  // record only so handlePaused() has an attempt counter to read. A "paused" + pauseReason "usage_limit" run is picked up by cold-start
   // re-arm in the UsageLimitScheduler constructor, so tests that exercise a
   // *live* "paused" event opt in to that separately (see the cold-start tests).
   return {
@@ -719,47 +718,6 @@ test("cold-start re-arm uses REMAINING time, not the full base delay", async () 
   scheduler.dispose();
 });
 
-test("cold-start re-arm skips runs with autoResume: false", async () => {
-  const manager = new FakeManager();
-  manager.persistence.seed(
-    makeRun({
-      runId: "opted-out",
-      status: "paused",
-      pauseReason: "usage_limit",
-      resetHint: "resets in 10m",
-      autoResume: false,
-    }),
-  );
-  const clock = createFakeClock();
-
-  const scheduler = new UsageLimitScheduler(manager, {
-    now: clock.now,
-    setTimer: clock.setTimer,
-    clearTimer: clock.clearTimer,
-    ...TUNABLES,
-  });
-
-  assert.equal(clock.pendingCount(), 0, "no timer armed for an opted-out run");
-  assert.equal(scheduler.getAttemptCount("opted-out"), undefined);
-  scheduler.dispose();
-});
-
-test("live pause skips arming when autoResume: false is already persisted", async () => {
-  const manager = new FakeManager();
-  manager.persistence.seed(makeRun({ autoResume: false }));
-  const clock = createFakeClock();
-  const scheduler = new UsageLimitScheduler(manager, {
-    now: clock.now,
-    setTimer: clock.setTimer,
-    clearTimer: clock.clearTimer,
-    ...TUNABLES,
-  });
-
-  manager.emit("paused", { runId: "run-1", reason: "usage_limit", resetHint: "resets in 10m" });
-  assert.equal(clock.pendingCount(), 0);
-  scheduler.dispose();
-});
-
 test("manual pause (no usage_limit reason) is ignored", async () => {
   const manager = new FakeManager();
   manager.persistence.seed(makeRun());
@@ -924,9 +882,9 @@ test("scheduler never throws out of a manager event even when a listener's work 
   scheduler.dispose();
 });
 
-test("attempts and opt-out are persisted (best-effort) for a future cold start", async () => {
+test("the attempt count is persisted (best-effort) for a future cold start", async () => {
   const manager = new FakeManager();
-  manager.persistence.seed(makeRun({ resetHint: "resets in 10m", autoResume: true }));
+  manager.persistence.seed(makeRun({ resetHint: "resets in 10m" }));
   const clock = createFakeClock();
   const scheduler = new UsageLimitScheduler(manager, {
     now: clock.now,

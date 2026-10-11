@@ -68,7 +68,7 @@ test(
       agent: runnerWithSessions(),
     });
 
-    const result = await manager.runSync(duplicateLabelScript);
+    const result = await manager.startInBackground(duplicateLabelScript).promise;
     const persisted = manager.getPersistence().load(result.runId as string);
     assert.equal(persisted?.sessionId, "parent-session-id");
     assert.equal(persisted?.parentSessionId, "parent-session-id");
@@ -98,7 +98,7 @@ test(
     manager.on("agentStart", (event: { id: string }) => starts.set(event.id, Date.now()));
 
     const runStartedAt = Date.now();
-    const result = await manager.runSync(duplicateLabelScript);
+    const result = await manager.startInBackground(duplicateLabelScript).promise;
     const persisted = manager.getPersistence().load(result.runId as string);
     const agents = persisted?.agents ?? [];
     assert.equal(new Set(agents.map((agent) => agent.callId)).size, 2);
@@ -189,9 +189,9 @@ test(
       persistAgentSessions: false,
       agent: runnerWithSessions(undefined, () => undefined),
     });
-    const result = await manager.runSync(`export const meta = { name: 'ephemeral', description: 'ephemeral' }
+    const result = await manager.startInBackground(`export const meta = { name: 'ephemeral', description: 'ephemeral' }
 const value = await agent('work', { label: 'ephemeral' })
-return value`);
+return value`).promise;
     const persisted = manager.getPersistence().load(result.runId as string);
     assert.equal(persisted?.status, "completed");
     assert.equal(persisted?.agents[0]?.sessionId, "child-session-work");

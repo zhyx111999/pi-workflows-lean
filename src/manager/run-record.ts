@@ -57,7 +57,6 @@ export function initialRunRecord(managed: ManagedRun): PersistedRunState {
     logs: [],
     startedAt: managed.startedAt.toISOString(),
     updatedAt: managed.startedAt.toISOString(),
-    autoResume: managed.autoResume,
     // No autoResumeAttempts yet: the scheduler counts only after a usage-limit pause.
     toolset: managed.toolset,
   };
@@ -93,7 +92,6 @@ export function runRecord(managed: ManagedRun, now: Date): PersistedRunState {
     checkpoint: managed.checkpoint,
     // Written on every save, so the usage-limit scheduler reads a correct value
     // even when it loads the record before the pause is written.
-    autoResume: managed.autoResume,
     // The scheduler's backoff counter; dropping it would reset its give-up cap.
     autoResumeAttempts: managed.autoResumeAttempts,
     toolset: managed.toolset,

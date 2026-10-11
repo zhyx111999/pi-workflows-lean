@@ -37,7 +37,7 @@ export interface FailedExecution {
 
 /**
  * Classify an error that escaped runWorkflow. Several causes can race: a
- * provider limit, the host's abort, a user pause()/stop(), a real failure.
+ * provider limit, a user pause()/stop(), a real failure.
  * Each abort carries the reason object of whoever caused it, so the first
  * cause decides; a later one never relabels it.
  */
@@ -50,23 +50,17 @@ export function classifyFailure(managed: ManagedRun, error: unknown): FailedExec
       (!signal.aborted && managed.lifecycleControl === undefined));
   const lifecycleControlOwnsExecution =
     managed.lifecycleControl !== undefined && signal.reason === managed.lifecycleControl.abortReason;
-  const externalAbortOwnsExecution =
-    managed.externalAbort !== undefined && signal.reason === managed.externalAbort.abortReason;
   // pause()/stop() already reported its own AbortError, and a provider result
   // that arrives after it must not revive a stop or arm quota auto-resume.
   const announced =
     lifecycleControlOwnsExecution &&
     (workflowError.code === WorkflowErrorCode.WORKFLOW_ABORTED ||
       (isProviderUsageLimit(workflowError) && !usageLimitPaused));
-  const terminalError = externalAbortOwnsExecution ? abortedError() : workflowError;
 
   let status: FailedExecution["status"];
   if (usageLimitPaused) {
     // A limit that escaped before a later pause()/stop() stays a quota pause.
     status = "paused";
-  } else if (externalAbortOwnsExecution) {
-    // The host abort came first; a late agent result cannot turn it into a failure.
-    status = "aborted";
   } else if (announced) {
     status = undefined;
   } else if (signal.aborted && workflowError.code === WorkflowErrorCode.WORKFLOW_ABORTED) {
@@ -75,7 +69,7 @@ export function classifyFailure(managed: ManagedRun, error: unknown): FailedExec
     // A real failure wins even when a pause()/stop() arrived after it escaped.
     status = "failed";
   }
-  return { error: workflowError, terminalError, status, usageLimitPaused, announced };
+  return { error: workflowError, terminalError: workflowError, status, usageLimitPaused, announced };
 }
 
 /**

@@ -458,9 +458,7 @@ export function installResultDelivery(
 
   manager.on("complete", ({ runId }: { runId: string }) => {
     const run = manager.getRun(runId);
-    // Only background runs are delivered: a foreground run already returned its
-    // result inline as the tool result.
-    if (!run?.background) return;
+    if (!run) return;
     const sessionId = resolveDeliverySessionId(run, manager);
     const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
     const content = deliverText(run, {
@@ -472,7 +470,7 @@ export function installResultDelivery(
 
   manager.on("error", ({ runId, error }: { runId: string; error?: { message?: string } }) => {
     const run = manager.getRun(runId);
-    if (!run?.background) return;
+    if (!run) return;
     const text = failedRunText(runId, error);
     routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
   });
@@ -483,7 +481,7 @@ export function installResultDelivery(
   // is the user's own action, so it delivers nothing.
   manager.on("paused", (event: PausedEvent) => {
     const run = manager.getRun(event.runId);
-    if (!run?.background) return;
+    if (!run) return;
     const text = pausedRunText(event);
     if (text) routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
   });

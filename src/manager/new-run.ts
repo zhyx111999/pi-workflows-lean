@@ -18,12 +18,9 @@ function newRunId(name: string | undefined): string {
 }
 
 export interface NewRunOwner {
-  /** Whether the result is delivered back into the conversation (see ManagedRun.background). */
-  background: boolean;
   /** The session that started the run; it owns delivery and becomes the parent lineage. */
   sessionId?: string;
   sessionFile?: string;
-  autoResume?: boolean;
   toolset?: string;
 }
 
@@ -39,11 +36,9 @@ export function newManagedRun(script: string, args: unknown, owner: NewRunOwner)
     script,
     args,
     journal: [],
-    background: owner.background,
     sessionId: owner.sessionId,
     parentSessionId: owner.sessionId,
     parentSessionFile: owner.sessionFile,
-    autoResume: owner.autoResume,
     toolset: owner.toolset,
     agentTimestamps: new Map(),
     agentsById: new Map(),

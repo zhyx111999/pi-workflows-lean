@@ -325,18 +325,11 @@ export class UsageLimitScheduler {
     if (this.disposed || !event?.runId || event.reason !== "usage_limit") return;
     const runId = event.runId;
 
-    // The "paused" event fires BEFORE the manager's own persistRun() write for
-    // this pause (see executeRun()'s catch block: emit then persist). A disk
-    // read here can therefore be stale for fields this exact pause is about to
-    // set (status/pauseReason/resetHint) — but NOT for `autoResume`, which is
-    // fixed at run-start and persisted on every persistRun() call since, so a
-    // stale read of it is still correct. resetHint comes off the event itself,
-    // not disk, to avoid that race.
+    // The "paused" event fires BEFORE the manager writes this pause (see the
+    // catch block of executeRun(): emit then persist), so the record may still
+    // lack this pause's status and resetHint. resetHint therefore comes off the
+    // event itself; the record only supplies the attempt counter.
     const persisted = this.safeLoad(runId);
-    if (persisted?.autoResume === false) {
-      this.diagnostic(`[usage-limit-scheduler] ${runId}: autoResume is disabled for this run, not arming`);
-      return;
-    }
 
     // Validate the persisted counter too (corrupt/foreign JSON): an invalid
     // value would defeat the give-up cap and produce NaN timer delays.
@@ -377,7 +370,6 @@ export class UsageLimitScheduler {
     const runs = this.manager.listAllRuns();
     for (const run of runs) {
       if (run.status !== "paused" || run.pauseReason !== "usage_limit") continue;
-      if (run.autoResume === false) continue;
       if (this.state.has(run.runId)) continue;
 
       // Validate the persisted counter: a corrupt/foreign value (NaN, string,

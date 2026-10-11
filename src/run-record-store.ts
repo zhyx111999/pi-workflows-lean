@@ -55,7 +55,6 @@ const INDEX_KEYS = new Set([
   "currentPhase",
   "pauseReason",
   "resetHint",
-  "autoResume",
   "autoResumeAttempts",
 ]);
 interface Head {

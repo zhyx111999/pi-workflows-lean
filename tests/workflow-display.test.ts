@@ -631,7 +631,6 @@ describe("deliverText", () => {
         agents: [],
         ...((overrides.snapshot as Record<string, unknown>) ?? {}),
       },
-      background: true,
       status: "completed",
       result: {
         result: { verdict: "All checks passed" },

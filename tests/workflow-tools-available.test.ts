@@ -283,7 +283,6 @@ describe("workflow extension - tool availability", () => {
 
           const fakeRun = {
             runId: "bg-1",
-            background: true,
             sessionId: `session-${reason}`,
             snapshot: { name: "t", agentCount: 0 },
             result: { agentCount: 0, result: { verdict: `ok-${reason}` } },
@@ -682,7 +681,6 @@ describe("workflow extension - tool availability", () => {
 
         const fakeRun = {
           runId: "bg-prebind",
-          background: true,
           snapshot: { name: "t", agentCount: 0 },
           result: { agentCount: 0, result: { verdict: "prebind-ok" } },
         };
