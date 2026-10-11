@@ -3,6 +3,7 @@
 import type { AgentUsage } from "../agent-usage.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "../display.js";
 import { aggregateAgentUsage, tokenFigures } from "../display.js";
+import { groupAgentsByPhase } from "../phase-groups.js";
 import type { PersistedRunState } from "../run-persistence.js";
 import { runSummary } from "../run-record-store.js";
 import { asText } from "./as-text.js";
@@ -50,12 +51,6 @@ export interface AgentRow {
   model?: string;
 }
 
-/** The phase an agent is grouped under; "(no phase)" when unset. Grouping and
- *  the drilled-in agent filter share it so they always agree. */
-function agentPhaseKey(a: WorkflowAgentSnapshot): string {
-  return a.phase != null ? asText(a.phase) : "(no phase)";
-}
-
 function toAgentRow(a: WorkflowAgentSnapshot): AgentRow {
   return {
     id: a.id,
@@ -97,29 +92,13 @@ export function runRow(record: PersistedRunState, live: RunSnapshot | undefined)
   };
 }
 
-/** Phase rows in declared order, followed by any phase only an agent mentions. */
+/** One row per phase, in the shared phase order (see groupAgentsByPhase). */
 export function phaseRows(snap: WorkflowSnapshot): PhaseRow[] {
-  // Phase titles may be non-strings (a corrupt record, or a script that passed
-  // one to phase()), so coerce them before they become grouping keys.
-  const order = Array.isArray(snap.phases) ? snap.phases.map(asText) : [];
-  const byPhase = new Map<string, WorkflowAgentSnapshot[]>();
-  const agents = Array.isArray(snap.agents) ? snap.agents : [];
-  const seenPhases = new Set<string>(order);
-  for (const a of agents) {
-    const key = agentPhaseKey(a);
-    if (!byPhase.has(key)) byPhase.set(key, []);
-    byPhase.get(key)?.push(a);
-    if (!seenPhases.has(key)) {
-      seenPhases.add(key);
-      order.push(key);
-    }
-  }
-  return order.map((title) => {
-    const agents = byPhase.get(title) ?? [];
+  return groupAgentsByPhase(snap).map(({ title, agents, counts }) => {
     const usage = aggregateAgentUsage(agents);
     return {
       title,
-      done: agents.filter((a) => a.status === "done").length,
+      done: counts.done,
       total: agents.length,
       fresh: usage.fresh,
       cacheRead: usage.cacheRead,
@@ -129,22 +108,10 @@ export function phaseRows(snap: WorkflowSnapshot): PhaseRow[] {
 }
 
 export function agentRowsInPhase(snap: WorkflowSnapshot, phase: string): AgentRow[] {
-  if (!Array.isArray(snap.agents)) return [];
-  return snap.agents.filter((a) => agentPhaseKey(a) === phase).map((a) => toAgentRow(a));
+  return agentRowsByPhase(snap).get(phase) ?? [];
 }
 
-/** Every agent row grouped by phase in one pass, for views that show all phases at once. */
+/** Every agent row keyed by phase title, for views that show all phases at once. */
 export function agentRowsByPhase(snap: WorkflowSnapshot): Map<string, AgentRow[]> {
-  const out = new Map<string, AgentRow[]>();
-  if (!Array.isArray(snap.agents)) return out;
-  for (const a of snap.agents) {
-    const key = agentPhaseKey(a);
-    let arr = out.get(key);
-    if (!arr) {
-      arr = [];
-      out.set(key, arr);
-    }
-    arr.push(toAgentRow(a));
-  }
-  return out;
+  return new Map(groupAgentsByPhase(snap).map((group) => [group.title, group.agents.map(toAgentRow)]));
 }

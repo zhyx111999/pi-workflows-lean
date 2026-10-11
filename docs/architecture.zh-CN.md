@@ -156,6 +156,7 @@ WorkflowAgent.run()                          agent.ts
 | `workflow-commands.ts` / `saved-commands.ts` / `builtin-commands.ts` | 人工使用的斜杠命令；处理函数通过 `CommandDeps`（`command-registry.ts`）的 getter 读取当前的管理器、存储和目录 |
 | `pi-reserved-commands.ts` | Pi 编辑器自己处理的斜杠命令名单（`/new`、`/reload` 等）：SDK 不导出、`getCommands()` 不列出、注册也不报冲突，所以保存、重命名和注册前都按它拒绝；测试会比对已安装的 SDK |
 | `display.ts` / `agent-history.ts` | 快照与子代理历史的展示格式；数字格式（`fmtFull`、`fmtCompact`）和运行状态图标都只有这一份 |
+| `phase-groups.ts` | 按阶段给子代理分组并统计各状态数：先列声明的阶段，再按首次出现补上只有子代理提到的阶段（含“无阶段”组）；`/workflows status` 文本和导航器都用它，只各自排版 |
 
 ### 配置层
 
