@@ -2,20 +2,25 @@
 
 import type { NavAction, NavigatorModel, NavigatorState } from "../workflow-ui.js";
 import { CONFIRM_KEYS } from "./confirmation.js";
+import { typedText } from "./input-text.js";
 import { savedIdentity } from "./items.js";
 import { executeRunConfirmation, restartRun } from "./run-actions.js";
 import { commitRename, deleteSavedWorkflow, saveRunAsWorkflow, writeRunSave } from "./saved-actions.js";
 import { currentSnapshot, type NavigatorSession } from "./session.js";
 
-/** Filter and rename fields own every keystroke, so pasted text never reaches browse bindings. */
+/**
+ * Filter and rename fields own every keystroke, so pasted text never reaches
+ * browse bindings; any other key only appends the text it types, if any.
+ */
 export function handleTextInput(session: NavigatorSession, key: string | undefined, data: string): void {
   const { state, model } = session;
-  if (key === "escape" || key === "esc") state.cancelInput();
-  else if (key === "backspace" || data === String.fromCharCode(127) || data === "\b") state.backspaceInput();
-  else if (key === "enter" || key === "return") {
+  if (key === "escape") state.cancelInput();
+  // Windows Terminal names a raw BS ctrl+backspace; here it erases one character too.
+  else if (key === "backspace" || data === "\b") state.backspaceInput();
+  else if (key === "enter") {
     if (state.mode === "filter") state.applyFilter(model);
     else commitRename(session);
-  } else state.appendInput(data);
+  } else state.appendInput(typedText(data, key));
 }
 
 /** Only the key that asked confirms (see CONFIRM_KEYS); any other key cancels. */

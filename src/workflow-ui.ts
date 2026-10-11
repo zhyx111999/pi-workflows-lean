@@ -37,7 +37,7 @@ import {
   sameConfirmationContext,
 } from "./navigator/confirmation.js";
 import { FrameMemo } from "./navigator/frame-memo.js";
-import { dropLastGrapheme, safeInputText } from "./navigator/input-text.js";
+import { dropLastGrapheme } from "./navigator/input-text.js";
 import {
   type ItemIdentity,
   type ItemKind,
@@ -434,8 +434,9 @@ export class NavigatorState {
     this.draft = workflow.name;
     this.renameTarget = savedIdentity(workflow);
   }
-  appendInput(data: string): void {
-    if (this.mode === "filter" || this.mode === "rename") this.draft += safeInputText(data);
+  /** `text` is already decoded from terminal input (see navigator/input-text.ts). */
+  appendInput(text: string): void {
+    if (this.mode === "filter" || this.mode === "rename") this.draft += text;
   }
   backspaceInput(): void {
     if (this.mode === "filter" || this.mode === "rename") this.draft = dropLastGrapheme(this.draft);
