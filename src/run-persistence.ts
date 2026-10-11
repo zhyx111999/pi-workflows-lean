@@ -54,7 +54,7 @@ export interface PersistedAgentState {
   priorExecutions?: PriorAgentExecution[];
 }
 
-/** Serialized journal entry, keyed by the call's lexical index. */
+/** Serialized journal entry, keyed by the call's index (see JournalEntry). */
 export interface PersistedJournalEntry {
   index: number;
   hash: string;

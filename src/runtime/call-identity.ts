@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import type { AgentOptions, WorkflowCheckpointInput } from "../workflow.js";
 
 /** Everything that, when edited, must make a journaled agent() result stale. */
-export interface AgentCallIdentity {
+interface AgentCallIdentity {
   prompt: string;
   /** Spec-level model (explicit, definition or phase); the resolved model is not part of the key. */
   model: string | undefined;

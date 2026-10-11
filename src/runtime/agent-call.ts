@@ -7,7 +7,7 @@ import type { AgentOptions, JournalEntry } from "../workflow.js";
 import { type AgentCall, isEmptyTextAgentResult, runLiveAgent } from "./agent-execution.js";
 import { parseAgentCall, resolveIsolation } from "./agent-options.js";
 import { agentCallId, hashAgentCall } from "./call-identity.js";
-import { currentFanoutBatch } from "./fanout.js";
+import { currentCallSequence, currentFanoutBatch } from "./fanout.js";
 import type { RunContext } from "./run-context.js";
 
 /** Build the script's agent() global for this run. */
@@ -71,9 +71,9 @@ export function createAgent(ctx: RunContext) {
     const explicitModel = agentOptions.model ?? definition?.model;
     const modelSpec = explicitModel ?? (agentOptions.tier ? undefined : resolveModelForPhase(phase, ctx.routingConfig));
 
-    // The resume key is assigned at lexical call time, before the limiter, so a
-    // fixed script's fan-out numbers its calls the same way on every run.
-    const index = state.callSeq++;
+    // The resume key comes from the call's position in the script, taken before
+    // the first await, so it is the same on every run however calls are timed.
+    const index = currentCallSequence(ctx).takeIndex();
     const hash = hashAgentCall({
       prompt,
       model: modelSpec,
@@ -114,13 +114,13 @@ export function createAgent(ctx: RunContext) {
     const cached = agentOptions.thread ? undefined : ctx.options.resumeJournal?.get(index);
     const hashMatches = cached != null && cached.hash === hash;
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
-    const withinReplay = ctx.options.independentCalls || index < state.firstMiss;
+    const withinReplay = ctx.options.independentCalls || !state.journalMissed;
     if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && withinReplay) {
       return replayFromJournal(ctx, call, cached);
     }
     // A genuine miss marks where the unchanged prefix ends.
     if (!hashMatches || cachedEmptyOutput) {
-      state.firstMiss = Math.min(state.firstMiss, index);
+      state.journalMissed = true;
     }
     return runLiveAgent(ctx, call);
   };

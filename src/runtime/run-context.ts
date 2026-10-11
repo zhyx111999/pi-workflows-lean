@@ -12,20 +12,22 @@ import type { WorkflowLogger } from "../logger.js";
 import type { ModelRoutingConfig } from "../model-routing.js";
 import type { SharedStore } from "../shared-store.js";
 import type { WorkflowAgentRunner, WorkflowCheckpoint, WorkflowMeta, WorkflowRunOptions } from "../workflow.js";
+import { CallSequence } from "./call-position.js";
 import { createLimiter } from "./run-limits.js";
 
 export interface RuntimeState {
   currentPhase?: string;
   logs: string[];
   phases: string[];
-  /** Assigned in lexical call order, so it is the stable resume key of each agent()/checkpoint() call. */
-  callSeq: number;
+  /** Numbers the script body's agent()/checkpoint() calls by position; fan-out branches fork from it. */
+  scriptCalls: CallSequence;
   /**
-   * Index of the first call that missed the resume journal (changed or new).
-   * A cached result replays only while callIndex < firstMiss: once an upstream
-   * call changed, every later call runs live instead of serving stale results.
+   * Whether a call has missed the resume journal (changed, new or unusable).
+   * A cached result replays only while none has: every call made after a miss
+   * runs live, since it may depend on the missed one, instead of serving a
+   * stale result.
    */
-  firstMiss: number;
+  journalMissed: boolean;
   limiter: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Logical agent()/checkpoint() slots reserved so far; capped by maxAgents. */
   agentCount: number;
@@ -100,8 +102,8 @@ export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptio
     logs: [],
     phases: firstPhase ? [firstPhase] : [],
     currentPhase: firstPhase,
-    callSeq: 0,
-    firstMiss: Number.POSITIVE_INFINITY,
+    scriptCalls: CallSequence.forScript(),
+    journalMissed: false,
     limiter: createLimiter(concurrency),
     // Not seeded on resume: the script replays from call 0 and every replayed
     // call counts again, so maxAgents stays a cumulative cap on its own.

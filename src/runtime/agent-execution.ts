@@ -23,7 +23,7 @@ export interface AgentCall {
   readonly label: string;
   /** Explicit, definition or phase model; undefined lets the agent layer pick (tier or default). */
   readonly modelSpec: string | undefined;
-  /** Lexical call index, the journal key. */
+  /** The journal key, from the call's position in the script (call-position.ts). */
   readonly index: number;
   readonly hash: string;
   /** Per-call id carried by every onAgent* event and used as the store delta key. */

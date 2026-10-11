@@ -8,11 +8,11 @@
  *
  * Journal integration: callers capture `store.commitDelta(deltaKey)` alongside
  * each agent result in the journal. On resume, `store.applyDelta(delta)` rebuilds
- * the store state additively in callSeq order, so parallel-agent writes are
+ * the store state additively in replay order, so parallel-agent writes are
  * replayed correctly without the last-complete-wins ordering bug that a
  * whole-Map restore() would cause. Known limitation: when two PARALLEL agents
  * write the SAME key, live resolution follows last-WRITE order while replay
- * follows callSeq order, so the final value can differ between live and resume
+ * follows the order calls replay in, so the final value can differ between live and resume
  * (the deltas themselves are journaled and replayed faithfully; only the
  * same-key ordering is not reconstructible).
  *
@@ -223,7 +223,7 @@ export class SharedStore {
 
   /**
    * Apply a write delta additively — sets each key without clearing others.
-   * Used during resume replay so parallel-agent deltas applied in callSeq
+   * Used during resume replay so parallel-agent deltas applied in replay
    * order accumulate correctly regardless of original completion order.
    * Replay writes are untagged log entries: they belong to no live window and
    * no window's discard may remove them.

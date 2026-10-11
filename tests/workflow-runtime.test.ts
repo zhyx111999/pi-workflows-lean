@@ -18,6 +18,7 @@ import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
 import type { AgentUsage } from "../src/agent-usage.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { CallSequence } from "../src/runtime/call-position.js";
 import { createParallel, createPipeline } from "../src/runtime/fanout.js";
 import type { RunContext } from "../src/runtime/run-context.js";
 import { type JournalEntry, runWorkflow } from "../src/workflow.js";
@@ -1378,7 +1379,7 @@ test("resume in parallel(): editing one thunk re-runs that index and every later
   assert.equal(second.state.calls, 2, "changed thunk (index 1) + later index (2) re-run; index 0 cached");
 });
 
-test("callSeq is deterministic under parallel()", async () => {
+test("call indexes are deterministic under parallel()", async () => {
   const journal: JournalEntry[] = [];
   const script = `export const meta = { name: 'par', description: 'parallel order' }
   const xs = await parallel(['p0','p1','p2'].map((p) => () => agent(p, { label: p })))
@@ -1942,7 +1943,12 @@ return await ${fanout.replace("BUG", bug)}`;
 
 test("parallel() and pipeline() turn only a recoverable WorkflowError into null", async () => {
   const logs: string[] = [];
-  const ctx = { throwIfAborted: () => {}, isAborted: () => false, log: (line: string) => logs.push(line) };
+  const ctx = {
+    state: { scriptCalls: CallSequence.forScript() },
+    throwIfAborted: () => {},
+    isAborted: () => false,
+    log: (line: string) => logs.push(line),
+  };
   const recoverable = () => {
     throw new WorkflowError("transient", WorkflowErrorCode.AGENT_TIMEOUT, { recoverable: true });
   };
