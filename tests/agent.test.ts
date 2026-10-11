@@ -19,6 +19,7 @@ import { resolveAgentModelSpec } from "../src/agent/model-selection.js";
 import { isProviderMiddlewareExtensionPath } from "../src/agent/provider-middleware.js";
 import { DEFAULT_EXCLUDED_SUBAGENT_TOOLS, subagentExcludedTools } from "../src/agent/session-tools.js";
 import { usageFromStats } from "../src/agent/session-usage.js";
+import { lastAssistantText } from "../src/agent/turn-result.js";
 import type { AgentRunOptions } from "../src/agent.js";
 import { DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS, WorkflowAgent } from "../src/agent.js";
 import type { AgentUsage } from "../src/agent-usage.js";
@@ -37,7 +38,6 @@ import { readProviderSystemPrompt } from "./helpers/pi-context.js";
 // Private methods used for testing - cast to this type to access them without `any`
 type WorkflowAgentPrivates = {
   buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string;
-  lastAssistantText(messages: unknown[]): string;
   finalAssistantText(messages: unknown[]): string;
   createSessionManager(thread?: string, cwd?: string): SessionManager;
   restoreThreadLeaf(manager: SessionManager, leafId: string | null): void;
@@ -2359,8 +2359,7 @@ test("lastAssistantText stays lenient for schema prose extraction (unchanged by 
   // The schema path's JSON recovery may read the payload from any assistant
   // message, so lastAssistantText must NOT adopt finalAssistantText's stricter
   // "after the last tool result" rule.
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const text = (agent as unknown as WorkflowAgentPrivates).lastAssistantText(progressThenToolResult);
+  const text = lastAssistantText(progressThenToolResult);
   assert.equal(text, "I'll inspect the repository now.", "lastAssistantText still finds earlier assistant text");
 });
 
@@ -2513,17 +2512,15 @@ test("buildPrompt includes both instructions when both base and per-call are set
 // ═══════════════════════════════════════════════════════════════════════════
 
 test("lastAssistantText extracts last assistant text content", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
   const messages = [
     { role: "user", content: [{ type: "text", text: "hello" }] },
     { role: "assistant", content: [{ type: "text", text: "hi there" }] },
   ];
-  const text: string = (agent as unknown as WorkflowAgentPrivates).lastAssistantText(messages);
+  const text: string = lastAssistantText(messages);
   assert.equal(text, "hi there");
 });
 
 test("lastAssistantText joins multiple text parts", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
   const messages = [
     {
       role: "assistant",
@@ -2533,12 +2530,11 @@ test("lastAssistantText joins multiple text parts", () => {
       ],
     },
   ];
-  const text: string = (agent as unknown as WorkflowAgentPrivates).lastAssistantText(messages);
+  const text: string = lastAssistantText(messages);
   assert.equal(text, "part1part2");
 });
 
 test("lastAssistantText skips non-text content parts", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
   const messages = [
     {
       role: "assistant",
@@ -2548,31 +2544,28 @@ test("lastAssistantText skips non-text content parts", () => {
       ],
     },
   ];
-  const text: string = (agent as unknown as WorkflowAgentPrivates).lastAssistantText(messages);
+  const text: string = lastAssistantText(messages);
   assert.equal(text, "result");
 });
 
 test("lastAssistantText returns empty string when no assistant text", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const text: string = (agent as unknown as WorkflowAgentPrivates).lastAssistantText([]);
+  const text: string = lastAssistantText([]);
   assert.equal(text, "");
 });
 
 test("lastAssistantText returns empty for non-assistant messages", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
   const messages = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
-  const text: string = (agent as unknown as WorkflowAgentPrivates).lastAssistantText(messages);
+  const text: string = lastAssistantText(messages);
   assert.equal(text, "");
 });
 
 test("lastAssistantText picks the last assistant message, not first", () => {
-  const agent = new WorkflowAgent({ cwd: "/tmp" });
   const messages = [
     { role: "assistant", content: [{ type: "text", text: "first" }] },
     { role: "user", content: [{ type: "text", text: "more" }] },
     { role: "assistant", content: [{ type: "text", text: "final" }] },
   ];
-  const text: string = (agent as unknown as WorkflowAgentPrivates).lastAssistantText(messages);
+  const text: string = lastAssistantText(messages);
   assert.equal(text, "final");
 });
 
