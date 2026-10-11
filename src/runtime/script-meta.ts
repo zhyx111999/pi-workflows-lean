@@ -1,114 +1,132 @@
-/** Reads and validates the literal `export const meta = {...}` statement that opens every workflow script. */
+/**
+ * Parses a workflow script once and runs every static check on that tree: the
+ * literal `export const meta = {...}` statement that opens the script, and the
+ * determinism check.
+ */
 
-import type { Node } from "acorn";
-import { parse } from "acorn";
+import { type Expression, type PrivateIdentifier, type Program, parse } from "acorn";
 import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 import type { WorkflowMeta, WorkflowMetaPhase } from "../workflow.js";
-
-type AnyNode = Node & { [key: string]: any; start: number; end: number };
+import { assertDeterministicProgram } from "./determinism.js";
 
 /** The validated meta object and the source range of the statement that declares it. */
-export interface MetaExport {
+interface MetaExport {
   meta: WorkflowMeta;
   start: number;
   end: number;
 }
 
-const invalidMeta = (message: string) =>
+/** The author has to edit the script to fix any of these, so none is retryable. */
+const invalidScript = (message: string) =>
   new WorkflowError(message, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR, { recoverable: false });
 
 /**
- * Locate the meta export and evaluate it without running the script: only
- * literals are accepted, so reading meta can never execute author code.
+ * Locate the meta export and evaluate it without running the script (only
+ * literals are accepted, so reading meta can never execute author code), then
+ * run the determinism check on the same tree.
  */
 export function readMetaExport(script: string): MetaExport {
-  const ast = parse(script, {
-    ecmaVersion: "latest",
-    sourceType: "module",
-    allowAwaitOutsideFunction: true,
-    allowReturnOutsideFunction: true,
-    ranges: false,
-  }) as AnyNode;
+  const program = parseScript(script);
 
-  const first = ast.body?.[0] as AnyNode | undefined;
+  const first = program.body[0];
   if (first?.type !== "ExportNamedDeclaration") {
-    throw invalidMeta("`export const meta = { name, description, phases }` must be the first statement in the script");
+    throw invalidScript(
+      "`export const meta = { name, description, phases }` must be the first statement in the script",
+    );
   }
 
-  const declaration = first.declaration as AnyNode | null;
+  const declaration = first.declaration;
   if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") {
-    throw invalidMeta("meta export must be `export const meta = ...`");
+    throw invalidScript("meta export must be `export const meta = ...`");
   }
-  if (declaration.declarations.length !== 1) throw invalidMeta("meta export must declare only `meta`");
+  if (declaration.declarations.length !== 1) throw invalidScript("meta export must declare only `meta`");
 
-  const declarator = declaration.declarations[0] as AnyNode;
-  if (declarator.id?.type !== "Identifier" || declarator.id.name !== "meta") {
-    throw invalidMeta("meta export must declare `meta`");
+  const declarator = declaration.declarations[0];
+  if (declarator.id.type !== "Identifier" || declarator.id.name !== "meta") {
+    throw invalidScript("meta export must declare `meta`");
   }
-  if (!declarator.init) throw invalidMeta("meta must have a literal value");
+  if (!declarator.init) throw invalidScript("meta must have a literal value");
 
   const meta = evaluateLiteral(declarator.init, "meta");
   validateMeta(meta);
+  assertDeterministicProgram(program);
   return { meta, start: first.start, end: first.end };
 }
 
-function evaluateLiteral(node: AnyNode, path: string): unknown {
+function parseScript(script: string): Program {
+  try {
+    return parse(script, {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      allowAwaitOutsideFunction: true,
+      allowReturnOutsideFunction: true,
+      locations: true,
+    });
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    // acorn's message ends with the "(line:column)" of the problem.
+    throw invalidScript(`Workflow script is not valid JavaScript: ${error.message}`);
+  }
+}
+
+function evaluateLiteral(node: Expression, path: string): unknown {
   switch (node.type) {
     case "ObjectExpression": {
       const out: Record<string, unknown> = {};
-      for (const prop of node.properties as AnyNode[]) {
-        if (prop.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
-        if (prop.type !== "Property") throw new Error(`only plain properties allowed in ${path}`);
-        if (prop.computed) throw new Error(`computed keys not allowed in ${path}`);
-        if (prop.kind !== "init" || prop.method) throw new Error(`methods/accessors not allowed in ${path}`);
-        const key = propertyKey(prop.key as AnyNode, path);
+      for (const prop of node.properties) {
+        if (prop.type === "SpreadElement") throw invalidScript(`spread not allowed in ${path}`);
+        if (prop.computed) throw invalidScript(`computed keys not allowed in ${path}`);
+        if (prop.kind !== "init" || prop.method) throw invalidScript(`methods/accessors not allowed in ${path}`);
+        const key = propertyKey(prop.key, path);
         if (key === "__proto__" || key === "constructor" || key === "prototype") {
-          throw new Error(`reserved key name not allowed in ${path}: ${key}`);
+          throw invalidScript(`reserved key name not allowed in ${path}: ${key}`);
         }
-        out[key] = evaluateLiteral(prop.value as AnyNode, `${path}.${key}`);
+        out[key] = evaluateLiteral(prop.value, `${path}.${key}`);
       }
       return out;
     }
     case "ArrayExpression":
-      return (node.elements as Array<AnyNode | null>).map((element, index) => {
-        if (!element) throw new Error(`sparse arrays not allowed in ${path}`);
-        if (element.type === "SpreadElement") throw new Error(`spread not allowed in ${path}`);
+      return node.elements.map((element, index) => {
+        if (!element) throw invalidScript(`sparse arrays not allowed in ${path}`);
+        if (element.type === "SpreadElement") throw invalidScript(`spread not allowed in ${path}`);
         return evaluateLiteral(element, `${path}[${index}]`);
       });
     case "Literal":
       return node.value;
     case "TemplateLiteral":
-      if (node.expressions.length > 0) throw new Error(`template interpolation not allowed in ${path}`);
-      return node.quasis.map((quasi: AnyNode) => quasi.value.cooked ?? quasi.value.raw).join("");
+      if (node.expressions.length > 0) throw invalidScript(`template interpolation not allowed in ${path}`);
+      return node.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw).join("");
     case "UnaryExpression":
-      if (node.operator === "-" && node.argument?.type === "Literal" && typeof node.argument.value === "number") {
+      if (node.operator === "-" && node.argument.type === "Literal" && typeof node.argument.value === "number") {
         return -node.argument.value;
       }
-      throw new Error(`only negative-number unary allowed in ${path}`);
+      throw invalidScript(`only negative-number unary allowed in ${path}`);
     default:
-      throw new Error(`non-literal node type in ${path}: ${node.type}`);
+      throw invalidScript(`non-literal node type in ${path}: ${node.type}`);
   }
 }
 
-function propertyKey(node: AnyNode, path: string): string {
+function propertyKey(node: Expression | PrivateIdentifier, path: string): string {
   if (node.type === "Identifier") return node.name;
-  if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number"))
+  if (node.type === "Literal" && (typeof node.value === "string" || typeof node.value === "number")) {
     return String(node.value);
-  throw new Error(`unsupported key type in ${path}: ${node.type}`);
+  }
+  throw invalidScript(`unsupported key type in ${path}: ${node.type}`);
 }
 
 function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
-  if (!meta || typeof meta !== "object") throw new Error("meta must be an object");
+  if (!meta || typeof meta !== "object") throw invalidScript("meta must be an object");
   const value = meta as WorkflowMeta;
-  if (typeof value.name !== "string" || !value.name.trim()) throw new Error("meta.name must be a non-empty string");
-  if (typeof value.description !== "string" || !value.description.trim())
-    throw new Error("meta.description must be a non-empty string");
-  if (value.model !== undefined && typeof value.model !== "string") throw new Error("meta.model must be a string");
+  if (typeof value.name !== "string" || !value.name.trim()) throw invalidScript("meta.name must be a non-empty string");
+  if (typeof value.description !== "string" || !value.description.trim()) {
+    throw invalidScript("meta.description must be a non-empty string");
+  }
+  if (value.model !== undefined && typeof value.model !== "string") throw invalidScript("meta.model must be a string");
   if (value.phases !== undefined) {
-    if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
+    if (!Array.isArray(value.phases)) throw invalidScript("meta.phases must be an array");
     for (const phase of value.phases) {
       if (!phase || typeof phase !== "object" || typeof (phase as WorkflowMetaPhase).title !== "string") {
-        throw new Error("each meta phase must have a title string");
+        throw invalidScript("each meta phase must have a title string");
       }
     }
   }
