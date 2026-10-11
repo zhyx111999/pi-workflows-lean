@@ -21,7 +21,20 @@ workflow) through the tool's top-level `name` input.
 
 | `name` | When to reach for it | `args` |
 | --- | --- | --- |
-| `deep-research` | Research a question across the web and return sourced claims | `{ question: string, angles?: number }` — `angles` (default 4) is the number of distinct search queries. Results are raw sources; the parent checks them |
+| `deep-research` | Research a question across the web and return sourced claims | `{ question: string, angles?: number }` — `angles` is the number of distinct search queries: an integer from 1 to 16, default 4. Any other value is rejected before the run starts |
+
+## Result
+
+`deep-research` returns `{ question, results }`, one `results` entry per
+planned query, in order:
+
+- `{ query, status: "ok", sources: [{ url, claims }] }` — the query was
+  researched. Empty `sources` means nothing usable was found.
+- `{ query, status: "failed" }` — its research subagent did not finish, so the
+  query is not covered either way. Check the run's subagents for the cause.
+
+If the planner fails, the question itself is the single query. Sources are raw;
+check the claims before relying on them.
 
 ## Example
 
