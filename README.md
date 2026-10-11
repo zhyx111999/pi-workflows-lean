@@ -21,7 +21,7 @@ Requires Pi 0.84.0 or newer. `dist/` is committed, so Pi installs and runs it st
 pi install git:github.com/zhyx111999/pi-workflows-lean
 ```
 
-A local clone works too: `pi install /absolute/path/to/pi-workflows-lean`.
+A local clone works too: `pi install /absolute/path/to/pi-workflows-lean`. Pi loads a local package as it is, so keep its dev dependencies out of it: a clone that ran `npm install` holds its own copies of Pi's packages, and the extension then runs on those copies instead of the Pi you are using. Develop in a separate checkout, or run `npm install --omit=dev` in the clone Pi loads.
 
 Run `/reload` (or restart Pi), then ask naturally:
 
