@@ -5,6 +5,7 @@
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { errorMessage } from "./errors.js";
 import type { PersistedRunState, RunStatus } from "./run-persistence.js";
 import {
   AGENT_TAIL_CHARS,
@@ -103,7 +104,7 @@ export function createSubagentsControlTool(
       } catch (error) {
         // A manager or persistence failure is reported in the tool's own
         // result shape rather than as a raw stack trace.
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         return controlError(input.action, run.runId, message, allowedActions(run.status));
       }
     },

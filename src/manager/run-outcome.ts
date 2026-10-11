@@ -2,6 +2,7 @@
 
 import { emptyFleetSummary } from "../display.js";
 import {
+  errorMessage,
   isProviderUsageLimit,
   WorkflowCheckpointSuspensionError,
   WorkflowError,
@@ -19,7 +20,7 @@ import type { ManagedRun } from "../workflow-manager.js";
 function asWorkflowError(error: unknown, aborted: boolean): WorkflowError {
   if (error instanceof WorkflowCheckpointSuspensionError && aborted) return workflowAbortedError();
   if (error instanceof WorkflowError) return error;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   const code = aborted ? WorkflowErrorCode.WORKFLOW_ABORTED : WorkflowErrorCode.UNKNOWN;
   return new WorkflowError(message, code, { recoverable: true });
 }

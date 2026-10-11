@@ -5,6 +5,7 @@
  * warning channel reports it, and a bounded retry follows.
  */
 
+import { errorMessage } from "../errors.js";
 import { claimRunSession } from "../manager/session-owner.js";
 import type { PendingDeliveryMarker, PersistedRunState } from "../run-persistence.js";
 import type { ManagedRun, WorkflowManager } from "../workflow-manager.js";
@@ -52,14 +53,6 @@ const inFlightDeliveries = new Map<string, number>();
 let inFlightSeq = 0;
 
 /** Text for any thrown value. Never throws, so reporting a failure cannot become a failure itself. */
-function reasonText(error: unknown): string {
-  try {
-    return error instanceof Error ? error.message : String(error);
-  } catch {
-    return "unprintable error";
-  }
-}
-
 /**
  * Resolve true only after the endpoint's thenable send settles while the
  * session is still live. Void sends and durable appends are not an ACK: an
@@ -90,7 +83,7 @@ async function tryDeliverEndpoint(
     }
     await ack;
   } catch (error) {
-    warnDelivery(sessionId, `Workflow result remains pending: ${reasonText(error)}`);
+    warnDelivery(sessionId, `Workflow result remains pending: ${errorMessage(error)}`);
     return false;
   }
   // Succeeded under this or a newer live endpoint for the same session.
@@ -186,7 +179,7 @@ async function sendAndSettle(
  * which may be a rebind whose own flush skipped the locked run. Never throws.
  */
 function keepPending(manager: WorkflowManager, runId: string, sessionId: string, error: unknown): void {
-  warnDelivery(sessionId, `Workflow ${runId}: result remains pending: ${reasonText(error)}`);
+  warnDelivery(sessionId, `Workflow ${runId}: result remains pending: ${errorMessage(error)}`);
   const endpoint = sessionEndpoints.get(sessionId);
   if (endpoint && !endpoint.suspended) retryLater(manager, runId, sessionId, endpoint.generation);
 }

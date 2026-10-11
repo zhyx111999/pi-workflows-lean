@@ -1,6 +1,7 @@
 /** Ends a run: drains every promise the script was handed, settles the run's verdict once, and closes the callbacks of abandoned agents. */
 
 import {
+  errorMessage,
   isWorkflowError,
   WorkflowCheckpointSuspensionError,
   WorkflowError,
@@ -112,7 +113,7 @@ function settleUnobservedFailures(ctx: RunContext): WorkflowError | undefined {
 
 function scriptRejection(error: unknown): WorkflowError {
   if (isWorkflowError(error)) return error;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   return new WorkflowError(message, WorkflowErrorCode.UNKNOWN, { recoverable: false });
 }
 

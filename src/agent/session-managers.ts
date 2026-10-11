@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { WorkflowError, WorkflowErrorCode } from "../errors.js";
+import { errorMessage, WorkflowError, WorkflowErrorCode } from "../errors.js";
 
 interface ThreadSession {
   manager: SessionManager;
@@ -83,9 +83,9 @@ export class SessionManagers {
       return manager;
     } catch (error) {
       console.warn(
-        `[workflow] persistAgentSessions: could not persist this agent's session (${
-          error instanceof Error ? error.message : String(error)
-        }); continuing with an in-memory session`,
+        `[workflow] persistAgentSessions: could not persist this agent's session (${errorMessage(
+          error,
+        )}); continuing with an in-memory session`,
       );
       return SessionManager.inMemory();
     }

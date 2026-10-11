@@ -3,8 +3,9 @@ import fsModule, { chmodSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import test, { describe, it } from "node:test";
 import type { WorkflowAgentSnapshot } from "../src/display.js";
+import { errorMessage } from "../src/errors.js";
 import type { WorkflowMeta } from "../src/workflow.js";
 
 async function loadErrors() {
@@ -516,3 +517,17 @@ describe("display", () => {
 async function load() {
   return import("../src/display.js");
 }
+
+test("errorMessage turns any thrown value into text without throwing", () => {
+  assert.equal(errorMessage(new Error("boom")), "boom");
+  assert.equal(errorMessage("plain"), "plain");
+  assert.equal(errorMessage(Object.create(null)), "unprintable error");
+  assert.equal(
+    errorMessage({
+      toString() {
+        throw new Error("no text");
+      },
+    }),
+    "unprintable error",
+  );
+});

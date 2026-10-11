@@ -5,6 +5,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, InputEvent } from "@earendil-works/pi-coding-agent";
+import { errorMessage } from "./errors.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "./parent-prompt.js";
 import type { WorkflowSettings, WorkflowSettingsStore } from "./workflow-settings.js";
 
@@ -121,7 +122,7 @@ function saveProgressSettings(settingsStore: WorkflowSettingsStore, settings: Wo
     settingsStore.save(settings);
     return undefined;
   } catch (error) {
-    return error instanceof Error ? error.message : String(error);
+    return errorMessage(error);
   }
 }
 

@@ -6,6 +6,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { claimCommand, commandOwner, isCommandTaken } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
+import { errorMessage } from "./errors.js";
 import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { SavedWorkflow, WorkflowStorage } from "./workflow-saved.js";
@@ -87,7 +88,7 @@ export function registerSavedWorkflow(
     claimCommand(pi, wf.name, "saved");
     return { ok: true };
   } catch (error) {
-    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    return { ok: false, message: errorMessage(error) };
   }
 }
 

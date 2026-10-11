@@ -14,6 +14,7 @@ import type { BuiltinWorkflowInvocation } from "./builtin-workflows.js";
 import { findBuiltinWorkflow } from "./builtin-workflows.js";
 import { type CommandDeps, claimCommand, isCommandTaken } from "./command-registry.js";
 import { backgroundStartNotice } from "./display.js";
+import { errorMessage } from "./errors.js";
 import { parseCommandArgs } from "./saved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 
@@ -70,7 +71,7 @@ function resolveBuiltinOrNotify(
   try {
     return requireBuiltin(name).resolve(cwd, args);
   } catch (error) {
-    ctx.ui.notify(`/${name}: ${error instanceof Error ? error.message : String(error)}`, "warning");
+    ctx.ui.notify(`/${name}: ${errorMessage(error)}`, "warning");
     return undefined;
   }
 }

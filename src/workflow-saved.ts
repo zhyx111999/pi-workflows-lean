@@ -4,6 +4,7 @@
 
 import { createHash } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { errorMessage } from "./errors.js";
 import { newLockToken, pidIsAlive, releaseFileLock, tryClaimFileLock } from "./file-lock.js";
 import {
   ensureDir as ensureDirFs,
@@ -282,7 +283,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
     try {
       return { ...fields, script: fs.readFileSync(scriptFile, "utf-8"), location, path };
     } catch (error) {
-      return skipInvalid(path, `cannot read "scriptPath": ${error instanceof Error ? error.message : String(error)}`);
+      return skipInvalid(path, `cannot read "scriptPath": ${errorMessage(error)}`);
     }
   };
   type ExactCurrentResult = Exclude<SavedWorkflowMutationResult, { ok: true }> | { ok: true; workflow: SavedWorkflow };
@@ -292,7 +293,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
     try {
       expected = locationPath(workflow.name, location);
     } catch (error) {
-      return { ok: false, code: "invalid", message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, code: "invalid", message: errorMessage(error) };
     }
     if (workflow.path !== expected) {
       return {
@@ -347,7 +348,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
       primary = snapshotFile(path);
       backup = snapshotFile(`${path}.bak`);
     } catch (error) {
-      return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, code: "io-error", message: errorMessage(error) };
     }
     if (!primary.existed && !backup.existed)
       return { ok: false, code: "missing", message: "Saved workflow no longer exists." };
@@ -365,7 +366,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
         // Preserve the original I/O error; the source is restored when the
         // injected failure is transient, and retry remains safe either way.
       }
-      return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, code: "io-error", message: errorMessage(error) };
     }
   };
 
@@ -391,7 +392,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
       }
       return change();
     } catch (error) {
-      return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, code: "io-error", message: errorMessage(error) };
     } finally {
       for (const lock of held.reverse()) releaseFileLock(fs, lock, token);
     }
@@ -509,7 +510,7 @@ export function createWorkflowStorage(cwd: string, fsOverride?: Partial<Persiste
       writeJsonAtomicWithBackupStrict(fs, targetPath, renamed);
     } catch (error) {
       cleanupTarget(targetPath);
-      return { ok: false, code: "io-error", message: error instanceof Error ? error.message : String(error) };
+      return { ok: false, code: "io-error", message: errorMessage(error) };
     }
     const removed = removeSource(current.workflow.path);
     if (!removed.ok) {

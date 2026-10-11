@@ -118,14 +118,26 @@ export class WorkflowCapabilityContractError extends Error {
   }
 }
 
-/** Narrow an unknown failure to WorkflowError. */
 /** The error of a workflow stopped by an abort. Recoverable: its journal can resume. */
 export function workflowAbortedError(): WorkflowError {
   return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
 }
 
+/** Narrow an unknown failure to WorkflowError. */
 export function isWorkflowError(error: unknown): error is WorkflowError {
   return error instanceof WorkflowError;
+}
+
+/**
+ * The text of an unknown failure, for messages and logs. Never throws: a thrown
+ * value can be anything, including an object whose conversion to text throws.
+ */
+export function errorMessage(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return "unprintable error";
+  }
 }
 
 /** Report whether an unknown failure is a provider usage-limit checkpoint condition. */
@@ -208,9 +220,9 @@ export function wrapError(error: unknown, context?: { agentLabel?: string }): Wo
     }
   }
 
-  return new WorkflowError(
-    error instanceof Error ? error.message : String(error),
-    WorkflowErrorCode.AGENT_EXECUTION_ERROR,
-    { recoverable: true, agentLabel: context?.agentLabel, details: error },
-  );
+  return new WorkflowError(errorMessage(error), WorkflowErrorCode.AGENT_EXECUTION_ERROR, {
+    recoverable: true,
+    agentLabel: context?.agentLabel,
+    details: error,
+  });
 }
