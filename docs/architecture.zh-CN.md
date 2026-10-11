@@ -83,7 +83,7 @@ WorkflowAgent.run()                          agent.ts
 | `run-events.ts` | 把运行时进度事件写进实时快照 |
 | `run-outcome.ts` | 判断结束状态：完成、失败、暂停，以及“全部子代理都没产出”的警告 |
 | `run-record.ts` | 把内存状态转成要写盘的记录 |
-| `persist-throttle.ts` | 合并高频的进度写入 |
+| `persist-throttle.ts` | 合并高频写入：成批结束的子代理 400ms 内合成一次写盘；运行中子代理的实时用量和历史每 10 秒写一次，进程中途退出也留得下最近的花费和进度 |
 | `live-runs.ts` | 让内存中的运行与磁盘记录保持一致，忽略已被替代的旧执行 |
 | `record-ops.ts` | 对本进程不拥有的记录，在租约保护下修改 |
 | `session-owner.ts` | 会话归属：结果投递给哪个会话；会话切换时接管、恢复时认领、投递前以记录为准 |
@@ -105,6 +105,7 @@ WorkflowAgent.run()                          agent.ts
 | `run-context.ts` | 一次运行的可变状态，以及各全局函数共享的服务 |
 | `run-limits.ts` | 把设置变成运行限制：并发闸门、最大子代理数、超时、重试 |
 | `script-vm.ts` | 建立 vm 上下文，只暴露声明过的全局 |
+| `deep-freeze.ts` | 冻结脚本拿到的 `args` 副本，原地修改会报错，恢复运行看到的仍是原参数 |
 | `agent-options.ts` | 按能力契约 `AGENT_OPTIONS` 声明的取值规则校验 `agent()` 的 prompt 与每个选项（名称和值），并解析 isolation |
 | `agent-call.ts` | `agent()`：占用槽位，先尝试从日志复用，否则交给执行 |
 | `agent-execution.ts` / `agent-attempt.ts` | 真正运行：worktree 隔离、用量统计、重试、写日志、超时 |
@@ -124,12 +125,12 @@ WorkflowAgent.run()                          agent.ts
 | 模块 | 职责 |
 |---|---|
 | `session-tools.ts` | 子代理的工具集；始终禁用 `subagents` 和 `subagents_control`，防止递归开子代理 |
-| `model-selection.ts` | 选模型和思考等级：显式 model > 角色定义的 model > tier > 阶段路由 > 继承主模型（需开启 `inheritMainModel`）> 默认 medium 档 > Pi 默认模型 |
+| `model-selection.ts` | 选模型和思考等级：显式 model > 角色定义的 model > tier > 阶段路由 > 继承主模型（需开启 `inheritMainModel`）> 默认 medium 档 > Pi 默认模型。`model-tiers.json` 里没有的 tier 直接报错；路由提示（隐式路由降级、未配置档位）写进运行日志 |
 | `available-models.ts` / `model-registry.ts` | 可用模型列表；宿主没有提供注册表时，构建后备注册表 |
 | `child-session.ts` | 打开子会话；不加载主会话扩展，所以隐藏提示词不会传给子代理；本次调用的工具集同时作为会话白名单，Pi 自带的同名或其他内置工具不会绕过角色的工具限制 |
 | `session-managers.ts` | 会话放在内存还是磁盘；同名 `thread` 复用同一个会话 |
 | `resource-loaders.ts` / `provider-middleware.ts` | 资源加载器按目录共享；只放行白名单里的 provider 中间件 |
-| `turn-result.ts` | 取结果：每次 `prompt()` 后先确认回合正常结束（未取消、无 provider 错误），再取结构化输出，或最后一个工具结果之后的回答文字 |
+| `turn-result.ts` | 取结果：每次 `prompt()` 后先确认回合正常结束（未取消、无 provider 错误、未因长度截断），再取结构化输出，或最后一个工具结果之后的回答文字 |
 | `turn-progress.ts` / `session-usage.ts` | 向宿主汇报历史快照和 token 用量 |
 | `provider-limit.ts` | 识别额度或限流错误，让运行暂停而不是失败 |
 | `windows-cwd.ts` | 拒绝 Windows 启动进程时会被悄悄换掉的目录 |
@@ -140,7 +141,7 @@ WorkflowAgent.run()                          agent.ts
 
 | 文件 | 职责 |
 |---|---|
-| `run-persistence.ts` | 运行记录的读写、列表、删除、租约；本实例见过、但已被别的进程删除的记录，不会重建 |
+| `run-persistence.ts` | 运行记录的读写、列表、删除、租约；本实例见过、但已被别的进程删除的记录，不会重建。日志缺失或比提交短的记录不列出，提示一次并可用 `/workflows rm` 删除；进程中途退出留下的运行在下次启动时暂停，并记下原因 `interrupted` |
 | `run-record-store.ts` | 存储格式：变更日志（历史超过运行本身数倍时改写成一个快照）加一个原子提交的小索引头，详见 `docs/run-storage.md` |
 | `fs-persistence.ts` | 原子写入、备份等文件系统基础操作 |
 | `file-lock.ts` | 跨进程锁文件：完整内容一次发布（硬链接），死进程的锁只由一个进程回收；运行租约与写锁共用 |
@@ -162,8 +163,10 @@ WorkflowAgent.run()                          agent.ts
 | `task-panel/panel-*.ts` | 输入框下方的实时进度面板 |
 | `workflow-ui.ts` + `navigator/` | `/workflows` 导航器：运行列表 → 阶段 → 子代理 → 详情 → 全文分页 |
 | `workflow-commands.ts` / `saved-commands.ts` / `builtin-commands.ts` | 人工使用的斜杠命令；处理函数通过 `CommandDeps`（`command-registry.ts`）的 getter 读取当前的管理器、存储和目录。保存前先检查命令名能否注册，不能就不写盘 |
+| `command-run.ts` | 斜杠命令在后台启动运行并提示去哪里看进度；内置命令和已保存工作流的命令共用这一条路径 |
+| `host-diagnostics.ts` | 不属于某次运行的问题（记录写盘失败、会话归属、自动恢复放弃、跳过损坏的记录或已保存工作流）：会话绑定期间通过界面提示，不往终端直接输出以免打乱 TUI；没有界面时写 stderr |
 | `run-watchers.ts` | `/workflows watch` 的状态栏监视：每个运行只有一个，绝不把异常抛进运行，会话结束时全部清掉 |
-| `pi-reserved-commands.ts` | Pi 编辑器自己处理的斜杠命令名单（`/new`、`/reload` 等）：SDK 不导出、`getCommands()` 不列出、注册也不报冲突，所以保存、重命名和注册前都按它拒绝；测试会比对已安装的 SDK |
+| `pi-reserved-commands.ts` | Pi 编辑器自己处理的斜杠命令名单（`/new`、`/reload` 等）：SDK 不导出、`getCommands()` 不列出、注册也不报冲突，所以保存、重命名和注册前都按它拒绝。名单取 Pi 0.84.0 到 1.1.0 各版本的并集；测试检查已安装的 SDK 保留的名字都在名单里 |
 | `display.ts` / `agent-history.ts` | 快照与子代理历史的展示格式；数字格式（`fmtFull`、`fmtCompact`）和运行状态图标都只有这一份 |
 | `phase-groups.ts` | 按阶段给子代理分组并统计各状态数：先列声明的阶段，再按首次出现补上只有子代理提到的阶段（含“无阶段”组）；`/workflows status` 文本和导航器都用它，只各自排版 |
 
@@ -242,10 +245,11 @@ WorkflowAgent.run()                          agent.ts
 ## 检查与测试
 
 ```bash
-npm test             # Biome、类型检查、构建、docs:check、context:check、全部单元测试
+npm test             # Biome、类型检查（scripts、src、tests）、docs:check、context:check、构建、全部单元测试
 npm run check:dist   # 提交前：dist/ 必须与源码一致
 ```
 
 - 单元测试会给每个测试进程一个临时 home（`tests/helpers/isolated-home.ts`），不会写入真实的 `~/.pi`。
-- 单独跑一个测试文件时也要带上：`npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`。
+- 单独跑一个测试文件时也要带上：`npx tsx --test --import ./tests/helpers/isolated-home.ts tests/<name>.test.ts`。`tests/extension-host-modules.test.ts` 加载构建好的扩展，单独跑之前先 `npm run build`。
+- 开发依赖固定在 Pi 1.1.0（当前在用的宿主），测试按它的行为运行。
 - 全仓统一使用 LF 换行。
