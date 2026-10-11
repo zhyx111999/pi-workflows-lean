@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { type ExtensionAPI, type ExtensionUIContext, initTheme } from "@earendil-works/pi-coding-agent";
-import type { Component } from "@earendil-works/pi-tui";
+import { type Component, parseKey } from "@earendil-works/pi-tui";
 import type { WorkflowSnapshot } from "../src/display.js";
 import { WorkflowErrorCode } from "../src/errors.js";
-import { safeInputText } from "../src/navigator/input-text.js";
+import { safeInputText, typedText } from "../src/navigator/input-text.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import type { ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
@@ -1422,18 +1422,111 @@ test("component filter renders the draft live, commits on Enter, and Esc preserv
   assert.match(text, /❯ .*run-beta/);
 });
 
+/** Open the navigator over completed runs (runId → workflow name) and return its component. */
+async function navigatorOverRuns(names: Record<string, string>): Promise<Component> {
+  const { ui, getComponent } = fakeUiCapturingComponent();
+  const runs = Object.entries(names).map(([runId, workflowName]) => ({
+    runId,
+    workflowName,
+    status: "completed",
+    phases: [],
+    agents: [],
+    logs: [],
+  })) as unknown as PersistedRunState[];
+  const manager = {
+    on: () => {},
+    off: () => {},
+    listRuns: () => runs,
+    getRun: () => undefined,
+  } as unknown as WorkflowManager;
+  openWorkflowNavigator({} as ExtensionAPI, manager, ui).catch(() => {});
+  await Promise.resolve();
+  await Promise.resolve();
+  const component = getComponent();
+  assert.ok(component);
+  return component;
+}
+
+test("component filter ignores SS3 arrows, function keys, and chords instead of typing their tail", async () => {
+  const esc = String.fromCharCode(0x1b);
+  const component = await navigatorOverRuns({ "run-alpha": "alpha", "run-beta": "beta" });
+
+  component.handleInput("/");
+  for (const key of [`${esc}OA`, `${esc}OB`, `${esc}OP`, `${esc}a`, `${esc}[1;5A`, "\t"]) component.handleInput(key);
+  component.handleInput("b");
+  component.handleInput(`${esc}[101u`); // Kitty CSI-u for a plain "e"
+  const text = (component.render?.(80) ?? []).join("\n");
+  assert.match(text, /Workflows {2}\/ be /);
+  assert.match(text, /run-beta/);
+  assert.doesNotMatch(text, /run-alpha/);
+});
+
+test("component filter keeps ZWJ so an emoji sequence matches its exact name", async () => {
+  const component = await navigatorOverRuns({
+    "run-pair": "pair 👩\u200d💻",
+    "run-apart": "apart 👩💻",
+  });
+
+  component.handleInput("/");
+  component.handleInput("👩\u200d💻");
+  const text = (component.render?.(80) ?? []).join("\n");
+  assert.ok(text.includes("/ 👩\u200d💻"), "the draft keeps the joiner");
+  assert.match(text, /run-pair/);
+  assert.doesNotMatch(text, /run-apart/, "without the joiner the filter would match the wrong name");
+});
+
 test("safeInputText removes complete OSC/CSI sequences without leaking payload", () => {
   const esc = String.fromCharCode(0x1b);
   const bel = String.fromCharCode(0x07);
   assert.equal(safeInputText(`left${esc}]0;BEL payload${bel}mid${esc}]1;ST payload${esc}\\right`), "leftmidright");
   assert.equal(safeInputText(`a${esc}]first${bel}b${esc}[31mc${esc}]second${esc}\\d`), "abcd");
+  assert.equal(safeInputText(`a${esc}Pdcs payload${esc}\\b`), "ab");
+  assert.equal(safeInputText(`kept${esc}]unterminated title`), "kept");
   assert.equal(safeInputText("普通文本é paste"), "普通文本é paste");
-  assert.equal(safeInputText("left\u{E0001}right"), "leftright");
   assert.equal(safeInputText("left🙂right"), "left🙂right");
   assert.equal(safeInputText(`a${esc}[2Kb`), "ab");
 });
 
-test("component rename strips astral format characters and keeps the same safe name", async () => {
+test("safeInputText drops whole SS3, Alt, and other escapes instead of leaving their tail", () => {
+  const esc = String.fromCharCode(0x1b);
+  assert.equal(safeInputText(`a${esc}OAb`), "ab");
+  assert.equal(safeInputText(`a${esc}OXb`), "ab", "an unknown SS3 key is dropped whole");
+  assert.equal(safeInputText(`a${esc}xb`), "ab", "an Alt chord is not text");
+  assert.equal(safeInputText(`a${esc}(Bb`), "ab");
+  assert.equal(safeInputText(`a${esc}${esc}[Ab`), "ab", "ESC ESC [ A (Alt+Up) leaves nothing");
+  assert.equal(safeInputText(`a${esc}`), "a");
+  assert.equal(safeInputText("a\u0000b\u007fc\u0085d\ne\tf"), "abcdef");
+});
+
+test("safeInputText keeps format characters and marks that compose emoji", () => {
+  for (const text of [
+    "👩\u200d💻", // ZWJ sequence
+    "❤\ufe0f", // VS16
+    "🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}", // emoji tag sequence
+    "e\u0301", // combining mark
+    "a\u200cb", // ZWNJ
+  ]) {
+    assert.equal(safeInputText(text), text);
+  }
+});
+
+test("typedText types nothing for a recognized key and decodes the text a key event carries", () => {
+  const esc = String.fromCharCode(0x1b);
+  const typed = (data: string) => typedText(data, parseKey(data));
+  for (const key of [`${esc}OA`, `${esc}OB`, `${esc}OP`, `${esc}[A`, `${esc}[1;5A`, `${esc}a`, `${esc}[[A`, "\t"]) {
+    assert.equal(typed(key), "", `${JSON.stringify(key)} is the key ${parseKey(key)}, not text`);
+  }
+  assert.equal(typed(`${esc}[97;5u`), "", "Kitty Ctrl+a is a chord");
+  assert.equal(typed(`${esc}[127;2u`), "", "Kitty Shift+Backspace decodes to DEL, which is not text");
+  assert.equal(typed(`${esc}[97u`), "a", "Kitty CSI-u plain character");
+  assert.equal(typed(`${esc}[57400u`), "1", "Kitty keypad digit");
+  assert.equal(typed(" "), " ");
+  assert.equal(typed("A"), "A");
+  assert.equal(typed("中文"), "中文");
+  assert.equal(typed(`${esc}[200~paste 👩\u200d💻${esc}[201~`), "paste 👩\u200d💻");
+});
+
+test("component rename keeps typed format characters and leaves rejecting them to name validation", async () => {
   const { ui, notifications, getComponent } = fakeUiCapturingComponent();
   const workflow = {
     name: "safe",
@@ -1469,11 +1562,22 @@ test("component rename strips astral format characters and keeps the same safe n
   assert.ok(component);
 
   component.handleInput("r");
-  component.handleInput(String.fromCodePoint(0xe0001));
+  component.handleInput("\u200d");
+  component.handleInput("\r");
+  assert.equal(renameCalls, 0, "an unsafe name must not reach storage");
+  assert.deepEqual(
+    notifications.map((notice) => notice.type),
+    ["warning"],
+  );
+  assert.match(notifications[0]?.message ?? "", /slash-command-safe/);
+  assert.ok((component.render?.(80) ?? []).join("\n").includes("Rename: safe\u200d"), "the draft stays open");
+
+  // Backspace removes the joiner with the letter it extends, one grapheme.
+  component.handleInput(String.fromCharCode(0x7f));
+  component.handleInput("e");
   component.handleInput("\r");
   assert.equal(renameCalls, 0, "same-name rename should not reach storage");
-  assert.ok(notifications.some((notice) => notice.message === "Kept /safe"));
-  assert.ok(notifications.every((notice) => !notice.message.includes("invalid")));
+  assert.equal(notifications.at(-1)?.message, "Kept /safe");
 });
 
 test("component manager refresh invalidates a stale confirmation instead of acting on the new row", async () => {
