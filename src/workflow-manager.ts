@@ -514,7 +514,7 @@ export class WorkflowManager extends EventEmitter {
     // No execution will settle the cached copy, so it may be evicted now.
     if (cached && this.live.isCurrent(cached)) {
       this.markStopped(cached);
-      this.live.recordTerminalRun(runId);
+      this.live.recordTerminalRun(cached);
     }
     this.emit("stopped", { runId });
     return true;

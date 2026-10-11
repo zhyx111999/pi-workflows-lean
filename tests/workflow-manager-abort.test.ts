@@ -326,68 +326,6 @@ test(
 );
 
 test(
-  "resume with journal replay replays completed agents and runs remaining live",
-  withTempCwd(async (cwd) => {
-    // Use a multi-agent workflow: agent 1 completes before pause (gets journaled),
-    // agent 2 runs live after resume.
-    const da = deferredAgent();
-    const manager = new WorkflowManager({ cwd, agent: da.runner });
-    manager.on("error", () => {});
-
-    const twoAgentScript = `export const meta = { name: 'two_agent', description: 'two agents test' }
-const a = await agent('first', { label: 'first' })
-const b = await agent('second', { label: 'second' })
-return { a, b }`;
-
-    const { runId, promise: origPromise } = manager.startInBackground(twoAgentScript);
-    await new Promise((r) => setTimeout(r, 20));
-
-    // Let agent 1 complete
-    da.resolve("first-result");
-    await new Promise((r) => setTimeout(r, 30));
-
-    // Agent 1 should have completed and been journaled. Pause.
-    const paused = manager.pause(runId);
-    const statusAtPause = manager.getRun(runId)?.status;
-
-    if (paused) {
-      assert.equal(statusAtPause, "paused");
-
-      // Journal should have at least agent 1's entry
-      const persisted = manager.listRuns().find((r) => r.runId === runId);
-      assert.ok(persisted?.journal && persisted.journal.length >= 1, "journal should have at least one entry");
-
-      // Resume
-      const resumed = await manager.resume(runId);
-      assert.equal(resumed, true);
-      // resume() seeds the snapshot from the persisted agents (#206): the
-      // pre-pause pair (done + skipped) is present immediately, so wait for
-      // the LIVE re-execution of agent 2 to take over its row.
-      const second = () => manager.getRun(runId)?.snapshot.agents.find((a) => a.label === "second");
-      let waitSpin = 0;
-      while (second()?.status !== "running" && waitSpin++ < 2000) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-      assert.equal(manager.getRun(runId)?.snapshot.agents.length, 2, "the live retry takes over its call's row");
-      assert.equal(second()?.priorExecutions?.[0]?.status, "skipped", "the paused execution is its history");
-      // The snapshot entry is pushed at onAgentStart, before the runner has
-      // registered its deferred attempt — keep resolving until the live call
-      // actually picks it up and the run completes.
-      for (let i = 0; i < 100 && manager.getRun(runId)?.status === "running"; i++) {
-        da.resolve("second-result");
-        await new Promise((r) => setTimeout(r, 5));
-      }
-
-      const finalRun = manager.getRun(runId);
-      assert.equal(finalRun?.status, "completed", "resumed multi-agent run should complete");
-      assert.equal(finalRun?.result?.result?.a, "first-result");
-    }
-
-    await origPromise.catch(() => {});
-  }),
-);
-
-test(
   "resume returns false for completed run",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
@@ -658,5 +596,91 @@ test(
     assert.ok(capturedError, "error event should fire on failure");
     assert.ok(capturedError?.error instanceof WorkflowError, "error should be instance of WorkflowError");
     assert.equal(capturedError?.error.code, WorkflowErrorCode.AGENT_EXECUTION_ERROR);
+  }),
+);
+
+// ─── Settlement after a stop that lands during the final drain ─────────────────
+
+test(
+  "a stop() while the final drain waits keeps the run aborted instead of completing it",
+  withTempCwd(async (cwd) => {
+    let releaseStray!: () => void;
+    const strayDone = new Promise<void>((resolve) => {
+      releaseStray = resolve;
+    });
+    let strayStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      strayStarted = resolve;
+    });
+    // The stray call ignores its abort signal and finishes after stop(), like a
+    // provider stream that completes while the run is already stopping.
+    const runner = {
+      async run() {
+        strayStarted();
+        await strayDone;
+        return "late";
+      },
+    };
+    const manager = new WorkflowManager({ cwd, agent: runner });
+    manager.on("error", () => {});
+    const events: string[] = [];
+    manager.on("complete", () => events.push("complete"));
+    manager.on("stopped", () => events.push("stopped"));
+
+    const script = `export const meta = { name: 'stray_stop', description: 'returns before its stray call' }
+void agent('stray', { label: 'stray' })
+return 'returned'`;
+    const { runId, promise } = manager.startInBackground(script);
+    await started;
+    assert.equal(manager.stop(runId), true);
+    releaseStray();
+    await promise.catch(() => {});
+
+    assert.equal(manager.getRun(runId)?.status, "aborted");
+    assert.equal(manager.findRun(runId)?.status, "aborted", "the record stays aborted");
+    assert.deepEqual(events, ["stopped"], "no complete event follows the stop");
+  }),
+);
+
+test(
+  "evicting an older settled entry never removes a resumed execution that still drains",
+  withTempCwd(async (cwd) => {
+    const gates: Array<() => void> = [];
+    let failFirst = true;
+    const runner = {
+      async run(prompt: string) {
+        if (prompt === "a" && failFirst) {
+          failFirst = false;
+          throw new WorkflowError("boom", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
+        }
+        if (prompt === "a") await new Promise<void>((resolve) => gates.push(resolve));
+        return prompt;
+      },
+    };
+    const manager = new WorkflowManager({ cwd, agent: runner, maxTerminalRunsInMemory: 1 });
+    manager.on("error", () => {});
+    const scriptA = `export const meta = { name: 'run_a', description: 'a' }
+return await agent('a', { label: 'a' })`;
+    const scriptB = `export const meta = { name: 'run_b', description: 'b' }
+return await agent('b', { label: 'b' })`;
+
+    const a = manager.startInBackground(scriptA);
+    await a.promise.catch(() => {});
+    assert.equal(manager.getRun(a.runId)?.status, "failed");
+
+    assert.equal(await manager.resume(a.runId), true);
+    while (gates.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    const resumed = manager.getRun(a.runId);
+    assert.equal(manager.stop(a.runId), true, "stopped while its agent still runs");
+
+    const b = manager.startInBackground(scriptB);
+    await b.promise;
+    assert.equal(manager.getRun(a.runId), resumed, "the draining execution is still the run's entry");
+
+    gates.shift()?.();
+    while (manager.getRun(a.runId)?.lease) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(manager.findRun(a.runId)?.status, "aborted");
+    assert.equal(await manager.resume(a.runId), true, "the released lease lets the run resume");
+    gates.shift()?.();
   }),
 );

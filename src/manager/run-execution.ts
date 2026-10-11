@@ -16,7 +16,7 @@ import {
 import type { ManagedRun } from "../workflow-manager.js";
 import type { LiveRuns } from "./live-runs.js";
 import { runEventHooks } from "./run-events.js";
-import { classifyFailure, emptyFleetWarning } from "./run-outcome.js";
+import { classifyFailure, controllingLifecycleAction, emptyFleetWarning } from "./run-outcome.js";
 import { settleInterruptedAgents } from "./run-record.js";
 
 /** Per-execution options shared by new and resumed runs. */
@@ -120,7 +120,11 @@ function runOptions(
   };
 }
 
-/** Record a returned script. A pause() that arrived during the final drain keeps the run paused. */
+/**
+ * Record a returned script. A pause() or stop() that aborted this execution
+ * keeps the status it set: the script may still return after the abort, while
+ * the final drain winds down, and that is not a completion.
+ */
 function settleCompleted(live: LiveRuns, managed: ManagedRun, result: WorkflowRunResult): WorkflowRunResult {
   const warning = emptyFleetWarning(managed);
   if (warning) {
@@ -129,21 +133,11 @@ function settleCompleted(live: LiveRuns, managed: ManagedRun, result: WorkflowRu
     console.warn(`[workflow] ${warning.replace(/\n\s*/g, " ")}`);
   }
   managed.result = result;
-  if (managed.status === "paused") {
-    // The journal holds the work, so a resume replays it and completes at once.
-    // Agents abandoned by the drain never report an end; settle their rows.
-    settleInterruptedAgents(managed, INTERRUPTED_AGENT_CAUSE, new Date());
-    live.persistRun(managed);
-    if (live.isCurrent(managed)) live.releaseLease(managed);
-    return result;
+  if (controllingLifecycleAction(managed) === undefined) {
+    managed.status = "completed";
+    live.emit(managed, "complete", { runId: managed.runId, result });
   }
-  managed.status = "completed";
-  live.emit(managed, "complete", { runId: managed.runId, result });
-  live.persistRun(managed);
-  if (live.isCurrent(managed)) {
-    live.releaseLease(managed);
-    live.recordTerminalRun(managed.runId);
-  }
+  settleRecord(live, managed);
   return result;
 }
 
@@ -180,15 +174,19 @@ function settleFailure(live: LiveRuns, managed: ManagedRun, error: unknown): unk
     // write, the lease release, and the rethrow.
     live.emit(managed, "error", { runId: managed.runId, error: outcome.error });
   }
+  settleRecord(live, managed);
+  return outcome.error;
+}
+
+/** Write the settled execution's final state and hand back its lease. */
+function settleRecord(live: LiveRuns, managed: ManagedRun): void {
   // The drain has finished, so agents still marked active no longer run.
-  if (managed.status === "paused") {
-    settleInterruptedAgents(managed, INTERRUPTED_AGENT_CAUSE, new Date());
-  }
+  // A paused run keeps them as interrupted; a terminal write settles them by status.
+  if (managed.status === "paused") settleInterruptedAgents(managed, INTERRUPTED_AGENT_CAUSE, new Date());
   live.persistRun(managed);
   if (live.isCurrent(managed)) {
     live.releaseLease(managed);
     // A paused run stays resumable, so it is never evicted.
-    if (TERMINAL_RUN_STATUSES.has(managed.status)) live.recordTerminalRun(managed.runId);
+    if (TERMINAL_RUN_STATUSES.has(managed.status)) live.recordTerminalRun(managed);
   }
-  return outcome.error;
 }

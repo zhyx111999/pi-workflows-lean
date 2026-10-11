@@ -19,7 +19,7 @@ export class LiveRuns {
   private readonly runs: Map<string, ManagedRun>;
   private readonly events: EventEmitter;
   private readonly throttle = new PersistThrottle();
-  private readonly retention: TerminalRunRetention;
+  private readonly retention: TerminalRunRetention<ManagedRun>;
   /** Runs deleted here or by another process; an execution still winding down finishes their deletion. */
   private readonly deleted = new WeakSet<ManagedRun>();
 
@@ -103,8 +103,8 @@ export class LiveRuns {
   }
 
   /** A run whose execution settled to a terminal status may now be evicted from memory. */
-  recordTerminalRun(runId: string): void {
-    this.retention.record(runId);
+  recordTerminalRun(managed: ManagedRun): void {
+    this.retention.record(managed.runId, managed);
   }
 
   /** Remove a run being deleted: its entry and any pending write go; its execution, if any, finishes the deletion. */

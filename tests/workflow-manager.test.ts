@@ -6238,9 +6238,15 @@ test(
     }
     const persisted = manager.getPersistence().load(runId);
     assert.equal(persisted?.status, "completed");
-    const latestRow = (prompt: string) => persisted?.agents.filter((a) => a.prompt === prompt).at(-1);
-    assert.equal(latestRow("first")?.status, "done");
-    assert.equal(latestRow("second")?.status, "error", "the live call came back empty");
+    const rows = persisted?.agents ?? [];
+    assert.deepEqual(
+      rows.map((a) => [a.prompt, a.status]),
+      [
+        ["first", "done"],
+        ["second", "error"],
+      ],
+      "one row per call: the replayed result and the live call that came back empty",
+    );
     assert.ok(
       !persisted?.logs.some((l) => l.includes("no usable results")),
       "a replayed usable result counts toward this execution",

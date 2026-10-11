@@ -10,12 +10,27 @@ import {
 } from "../errors.js";
 import type { ManagedRun } from "../workflow-manager.js";
 
-/** The escaped error as a WorkflowError. A checkpoint suspension during an abort is just the abort. */
+/**
+ * The escaped error as a WorkflowError. A checkpoint suspension during an abort
+ * is just the abort. Any other foreign error is an abort only when the run was
+ * aborted; otherwise it is a failure of unknown cause (a throwing toolset
+ * factory, a script bug), which a resume may still get past.
+ */
 function asWorkflowError(error: unknown, aborted: boolean): WorkflowError {
   if (error instanceof WorkflowCheckpointSuspensionError && aborted) return workflowAbortedError();
   if (error instanceof WorkflowError) return error;
   const message = error instanceof Error ? error.message : String(error);
-  return new WorkflowError(message, WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+  const code = aborted ? WorkflowErrorCode.WORKFLOW_ABORTED : WorkflowErrorCode.UNKNOWN;
+  return new WorkflowError(message, code, { recoverable: true });
+}
+
+/**
+ * The user pause()/stop() that aborted this execution, if one did. Its action
+ * decides how the execution settles, whatever the script did afterwards.
+ */
+export function controllingLifecycleAction(managed: ManagedRun): "pause" | "stop" | undefined {
+  const control = managed.lifecycleControl;
+  return control && managed.controller.signal.reason === control.abortReason ? control.action : undefined;
 }
 
 /** How a failed execution settles its run. */
@@ -43,8 +58,7 @@ export function classifyFailure(managed: ManagedRun, error: unknown): FailedExec
     isProviderUsageLimit(workflowError) &&
     (managed.usageLimitEscapedBeforeLifecycleControl === workflowError ||
       (!signal.aborted && managed.lifecycleControl === undefined));
-  const lifecycleControlOwnsExecution =
-    managed.lifecycleControl !== undefined && signal.reason === managed.lifecycleControl.abortReason;
+  const lifecycleControlOwnsExecution = controllingLifecycleAction(managed) !== undefined;
   // pause()/stop() already reported its own AbortError, and a provider result
   // that arrives after it must not revive a stop or arm quota auto-resume.
   const announced =
