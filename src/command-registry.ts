@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 
@@ -44,7 +45,12 @@ function registryFor(pi: ExtensionAPI): CommandOwners {
   }
 }
 
-export function isCommandRegistered(pi: ExtensionAPI, name: string): boolean {
+/**
+ * Whether `/<name>` already reaches a handler: one of Pi's own commands, which
+ * the host never lists, or an extension, prompt, or skill command it does list.
+ */
+export function isCommandTaken(pi: ExtensionAPI, name: string): boolean {
+  if (PI_RESERVED_COMMANDS.has(name)) return true;
   try {
     return (pi.getCommands?.() ?? []).some((command: { name: string }) => command.name === name);
   } catch {
