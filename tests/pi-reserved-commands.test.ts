@@ -82,7 +82,7 @@ function navigatorSession(
   return { session, state, notified };
 }
 
-test("the reserved list matches the commands the installed Pi editor runs itself", async () => {
+test("the reserved list covers every command the installed Pi editor runs itself", async () => {
   // The SDK keeps both sources internal, so read them from the installed build.
   const sdkEntry = import.meta.resolve("@earendil-works/pi-coding-agent");
   const { BUILTIN_SLASH_COMMANDS } = (await import(new URL("core/slash-commands.js", sdkEntry).href)) as {
@@ -92,8 +92,13 @@ test("the reserved list matches the commands the installed Pi editor runs itself
   const matched = [...editor.matchAll(/text === "\/([^"\s]+)"/g)].map((match) => match[1]);
   assert.ok(matched.length > 0, "the editor's command matching was not found; re-read the SDK source");
 
-  const expected = new Set([...BUILTIN_SLASH_COMMANDS.map((command) => command.name), ...matched]);
-  assert.deepEqual([...PI_RESERVED_COMMANDS].sort(), [...expected].sort());
+  // The list spans every supported Pi release, so it may hold names this one lacks.
+  const installed = new Set([...BUILTIN_SLASH_COMMANDS.map((command) => command.name), ...matched]);
+  assert.deepEqual(
+    [...installed].filter((name) => !PI_RESERVED_COMMANDS.has(name)),
+    [],
+    "names the installed Pi reserves but the list misses",
+  );
 });
 
 test("a reserved name counts as taken even though getCommands does not list it", () => {

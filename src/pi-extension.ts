@@ -250,7 +250,7 @@ export default function extension(pi: ExtensionAPI) {
 
     if (loadedBuildIsStale()) {
       ctx.ui.notify(
-        "pi-workflows-lean changed on disk since Pi started. Restart Pi to load it; /reload keeps running the loaded build.",
+        "pi-workflows-lean changed on disk since it was loaded. Run /reload to load the new build.",
         "warning",
       );
     }

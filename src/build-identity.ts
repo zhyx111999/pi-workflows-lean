@@ -34,10 +34,9 @@ export function buildIdentityOnDisk(root: string = CODE_ROOT): string | undefine
 }
 
 /**
- * The build this module graph was loaded from. Pi's /reload re-runs the
- * extension factory, but Node keeps an ES module graph cached for the life of
- * the process, so the loaded code never changes in place: a rebuilt package
- * takes effect only after Pi restarts.
+ * The build these modules were evaluated from. Pi imports extensions with its
+ * module cache off, so /reload evaluates the package afresh; a session started
+ * before a rebuild keeps running the code it loaded until then.
  */
 export const LOADED_BUILD = buildIdentityOnDisk() ?? "unknown";
 

@@ -56,8 +56,8 @@ WorkflowAgent.run()                          agent.ts
 
 | 文件 | 职责 |
 |---|---|
-| `extensions/workflow.ts` | Pi 加载的入口：导入编译后的 `dist/pi-extension.js`。Node 在进程存活期间缓存整个模块图，`/reload` 不会加载新构建，更新插件后需要重启 Pi |
-| `build-identity.ts` | 已加载代码的构建标识（模块内容哈希）：会话交接只在同一构建之间进行；磁盘上的包变了就提示重启 Pi |
+| `extensions/workflow.ts` | Pi 加载的入口：导入编译后的 `dist/pi-extension.js`。Pi 加载扩展时关闭模块缓存，`/reload` 会重新求值整个包，更新后的构建随之生效 |
+| `build-identity.ts` | 已加载代码的构建标识（模块内容哈希）：会话交接只在同一构建之间进行；磁盘上的包与正在运行的代码不同时，新会话提示 `/reload` |
 | `pi-extension.ts` | 装配一切：注册两个工具和斜杠命令，安装隐藏提示钩子、结果投递、额度暂停后的自动恢复；`session_start` 时绑定会话、处理跨项目切换 |
 | `extension-reload.ts` | `/reload`、`/new`、resume、fork 时，把正在运行的管理器交给同一构建的下一代扩展，后台运行不中断；没人接管（例如扩展已停用）或构建不同时暂停运行，并释放上一代占用的会话 |
 | `workflow-editor.ts` / `parent-prompt.ts` | 隐藏的主模型提示词、`/workflows run` 的指令文字、`/workflows-progress` 命令 |
