@@ -5,7 +5,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { claimCommand, commandOwner, isCommandTaken } from "./command-registry.js";
-import { backgroundStartNotice } from "./display.js";
+import { startCommandRun } from "./command-run.js";
 import { errorMessage } from "./errors.js";
 import { PI_RESERVED_COMMANDS } from "./pi-reserved-commands.js";
 import type { WorkflowManager } from "./workflow-manager.js";
@@ -75,14 +75,13 @@ export function registerSavedWorkflow(
           );
           return;
         }
-        try {
-          const { runId } = getManager().startInBackground(live.script, parseCommandArgs(args, live.parameters), {
-            toolset: live.toolset,
-          });
-          ctx.ui.notify(backgroundStartNotice(live.name, runId, ctx.mode, "result"), "info");
-        } catch (error) {
-          ctx.ui.notify(`/${live.name} failed: ${error instanceof Error ? error.message : error}`, "error");
-        }
+        startCommandRun(getManager(), ctx, {
+          name: live.name,
+          script: live.script,
+          args: parseCommandArgs(args, live.parameters),
+          exec: { toolset: live.toolset },
+          deliverable: "result",
+        });
       },
     });
     claimCommand(pi, wf.name, "saved");

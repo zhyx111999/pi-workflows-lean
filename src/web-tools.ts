@@ -9,6 +9,7 @@
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { errorMessage } from "./errors.js";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36";
@@ -111,7 +112,7 @@ export function createWebSearchTool(): ToolDefinition {
         return { content: [{ type: "text", text }], details: { results } };
       } catch (error) {
         return {
-          content: [{ type: "text", text: `web_search failed: ${error instanceof Error ? error.message : error}` }],
+          content: [{ type: "text", text: `web_search failed: ${errorMessage(error)}` }],
           details: { results: [] as Array<{ url: string; title: string }> },
         };
       }
@@ -142,7 +143,7 @@ export function createWebFetchTool(maxChars = 6000): ToolDefinition {
           content: [
             {
               type: "text",
-              text: `web_fetch failed for ${params.url}: ${error instanceof Error ? error.message : error}`,
+              text: `web_fetch failed for ${params.url}: ${errorMessage(error)}`,
             },
           ],
           details: { status: 0, url: params.url },

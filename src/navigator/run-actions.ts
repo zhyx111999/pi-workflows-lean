@@ -1,5 +1,6 @@
 /** Run actions started from the navigator: confirmed pause and stop, and restart from the recorded run. */
 
+import { errorMessage } from "../errors.js";
 import { restartRequest } from "../manager/run-restart.js";
 import type { NavigatorSession } from "./session.js";
 
@@ -37,9 +38,6 @@ export function restartRun(session: NavigatorSession, runId: string | undefined)
     const { runId: newId } = manager.startInBackground(restart.script, restart.args, restart.exec);
     ui.notify(`Restarted ${run.workflowName || "workflow"} as ${newId}`, "info");
   } catch (error) {
-    ui.notify(
-      `Failed to restart ${run.workflowName || "workflow"}: ${error instanceof Error ? error.message : error}`,
-      "error",
-    );
+    ui.notify(`Failed to restart ${run.workflowName || "workflow"}: ${errorMessage(error)}`, "error");
   }
 }

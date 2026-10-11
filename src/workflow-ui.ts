@@ -28,6 +28,7 @@ import {
 import type { Component, Focusable, MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import { parseKey } from "@earendil-works/pi-tui";
 import type { ThemeLike, WorkflowAgentSnapshot } from "./display.js";
+import { errorMessage } from "./errors.js";
 import { asText } from "./navigator/as-text.js";
 import {
   type ConfirmationContext,
@@ -696,7 +697,7 @@ export function openWorkflowNavigator(
               return;
           }
         } catch (error) {
-          ui.notify(`Workflow action failed: ${error instanceof Error ? error.message : error}`, "error");
+          ui.notify(`Workflow action failed: ${errorMessage(error)}`, "error");
         }
         rerender();
       };

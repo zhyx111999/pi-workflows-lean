@@ -13,6 +13,7 @@ import {
   runStatusIcon,
   tokenFigures,
 } from "./display.js";
+import { errorMessage } from "./errors.js";
 import type { PersistedRunState } from "./run-persistence.js";
 import { runSummary } from "./run-record-store.js";
 import { commitRunSave, planRunSave, type RunSaveReplace, replacedWorkflowLabel, runSaveDraft } from "./run-save.js";
@@ -245,7 +246,7 @@ export function registerWorkflowCommands(pi: ExtensionAPI, deps: CommandDeps): v
           try {
             removed = manager.deleteRun(id);
           } catch (error) {
-            ctx.ui.notify(`Could not fully remove ${id}: ${error instanceof Error ? error.message : error}`, "error");
+            ctx.ui.notify(`Could not fully remove ${id}: ${errorMessage(error)}`, "error");
             return;
           }
           if (removed) {
