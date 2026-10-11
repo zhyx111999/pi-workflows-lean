@@ -111,7 +111,8 @@ WorkflowAgent.run()                          agent.ts
 | `call-position.ts` | 调用在脚本里的位置：脚本主体和每个扇出分支各自按先后编号，得到与完成先后无关的日志序号 |
 | `fanout.ts` | `parallel()` 与 `pipeline()`：可恢复的分支失败返回 `null` |
 | `checkpoint.ts` / `durable-json.ts` | 暂停点；暂停点数据必须能无损地存进 JSON |
-| `run-teardown.ts` | 收尾：失败时封存运行，等待尚未结束的 `agent()` 调用 |
+| `script-calls.ts` | 跟踪 `agent()`、`parallel()`、`pipeline()`、`checkpoint()` 交给脚本的每个 promise：脚本没 await 的调用也不会让 Pi 进程因未处理的 rejection 退出，并记下脚本从未处理的失败 |
+| `run-teardown.ts` | 收尾：脚本抛错时先封存运行，等待所有尚未结束的调用，再一次性判定结果——脚本没 await 的暂停点照样暂停，没 await 的不可恢复失败让运行失败，可恢复失败只记日志 |
 
 ### 子代理层：一个子代理会话（`agent.ts` + `agent/`）
 

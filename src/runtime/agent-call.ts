@@ -135,19 +135,8 @@ export function createAgent(ctx: RunContext) {
     return runLiveAgent(ctx, call);
   };
 
-  return (prompt: string, agentOptions: unknown = {}): Promise<unknown> => {
-    let call: Promise<unknown>;
-    try {
-      call = startAgentCall(prompt, agentOptions);
-    } catch (error) {
-      call = Promise.reject(error);
-    }
-    // Tracked whether or not the script awaits it, so the run can drain it before teardown.
-    state.inFlight.add(call);
-    // This handler also keeps an un-awaited call's rejection from crashing the process.
-    call.catch(() => {}).finally(() => state.inFlight.delete(call));
-    return call;
-  };
+  // runWorkflow exposes this through trackScriptCalls, which also turns a synchronous validation throw into a rejection.
+  return (prompt: string, agentOptions: unknown = {}): Promise<unknown> => startAgentCall(prompt, agentOptions);
 }
 
 /** Report a journaled call as if it ran, keeping its recorded model and store writes. */

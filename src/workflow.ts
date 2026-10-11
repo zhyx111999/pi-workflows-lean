@@ -3,16 +3,17 @@
  *
  * runWorkflow() parses the script's literal `meta`, prepares the run (limits,
  * agent registry, logger, shared store), exposes the workflow globals in a vm
- * context, runs the script, and finally drains every outstanding agent() call.
- * The parts live in src/runtime/:
+ * context, runs the script, and finally drains every outstanding call and
+ * settles the run. The parts live in src/runtime/:
  *   - script-meta.ts, determinism.ts        parse-time checks and the in-realm guard
  *   - run-limits.ts                         host settings turned into enforced limits
  *   - run-context.ts                        per-run state and the helpers shared by the globals
  *   - agent-call.ts                         agent(): validation, slot, journal replay
  *   - agent-execution.ts, agent-attempt.ts  live runs: worktree, retries, timeout, usage
  *   - fanout.ts, checkpoint.ts              parallel()/pipeline() and checkpoint()
+ *   - script-calls.ts                       tracking of every promise the globals return
  *   - script-vm.ts                          the vm context and script execution
- *   - run-teardown.ts                       fatal seal, drain, final accounting
+ *   - run-teardown.ts                       fatal seal, drain, verdict, final accounting
  */
 
 import type { TSchema } from "typebox";
@@ -32,7 +33,8 @@ import { cloneDurableJsonValue } from "./runtime/durable-json.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
 import { createRunContext, createRuntimeState, type RunContext } from "./runtime/run-context.js";
 import { resolveAgentTimeoutMs, resolveConcurrency } from "./runtime/run-limits.js";
-import { finishRun, sealRunFatal } from "./runtime/run-teardown.js";
+import { finishRun, type ScriptOutcome } from "./runtime/run-teardown.js";
+import { trackScriptCalls } from "./runtime/script-calls.js";
 import { readMetaExport } from "./runtime/script-meta.js";
 import { createScriptContext, runScript } from "./runtime/script-vm.js";
 import { SharedStore } from "./shared-store.js";
@@ -232,12 +234,14 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   onAgentModel?: (event: { id: string; label: string; phase?: string; model: string }) => void;
   onTokenUsage?: (usage: AgentUsage) => void;
   /**
-   * Top-level workflow error observed before runWorkflow drains in-flight agents.
-   * This preserves error provenance for hosts whose own lifecycle control can race
-   * with that cooperative drain. Observational only: callback failures (sync or
-   * async) are ignored. A durable checkpoint suspension does NOT invoke this —
-   * an intentional human-in-the-loop pause is not a fatal error (in-flight
-   * siblings are waited out, not aborted).
+   * The run's fatal error. One that escaped the script is reported before
+   * runWorkflow drains in-flight agents, which preserves error provenance for
+   * hosts whose own lifecycle control can race with that cooperative drain; a
+   * failure the script never observed is only known after the drain.
+   * Observational only: callback failures (sync or async) are ignored. A
+   * durable checkpoint suspension does NOT invoke this — an intentional
+   * human-in-the-loop pause is not a fatal error (in-flight siblings are
+   * waited out, not aborted).
    */
   onRunFatal?: (error: unknown) => void | PromiseLike<void>;
 }
@@ -334,41 +338,31 @@ export async function runWorkflow<T = unknown>(
   });
   const { state, log } = ctx;
 
-  // 2. Expose the workflow globals and run the script, then always drain its
-  // outstanding agent() calls. The globals are built inside the try, so args
-  // that cannot be persisted losslessly fail the run like any script error.
-  let successResult: WorkflowRunResult<T> | undefined;
+  // 2. Expose the workflow globals and run the script. The globals are built
+  // inside the try, so args that cannot be persisted losslessly fail the run
+  // like any script error; the teardown then drains every call the script
+  // started and settles the run.
+  let outcome: ScriptOutcome;
   try {
     const context = createScriptContext(createScriptGlobals(ctx), logger);
-    const result = await runScript(context, body, `${meta.name || "workflow"}.js`);
-    // A script that caught its checkpoint suspension still pauses instead of
-    // completing; an external abort keeps priority over the suspension.
-    if (state.checkpointSuspension) ctx.throwIfAborted();
-
-    const logFile = logger.persist();
-    if (logFile) log(`Logs persisted to ${logFile}`);
-
-    successResult = {
-      meta,
-      result: result as T,
-      logs: state.logs,
-      phases: state.phases,
-      agentCount: state.agentCount,
-      durationMs: Date.now() - started,
-      runId,
-      tokenUsage: state.tokenUsage,
-    };
-    return successResult;
+    outcome = { ok: true, value: await runScript(context, body, `${meta.name || "workflow"}.js`) };
   } catch (error) {
-    // A checkpoint suspension is an intentional pause, not a failure: in-flight
-    // siblings are waited out so their paid results journal instead of being
-    // aborted and paid for again on resume.
-    const isCheckpointSuspension = state.checkpointSuspension !== undefined && error === state.checkpointSuspension;
-    if (!isCheckpointSuspension) sealRunFatal(ctx, error);
-    throw error;
-  } finally {
-    await finishRun(ctx, successResult);
+    outcome = { ok: false, error };
   }
+  const result = (await finishRun(ctx, outcome)) as T;
+
+  const logFile = logger.persist();
+  if (logFile) log(`Logs persisted to ${logFile}`);
+  return {
+    meta,
+    result,
+    logs: state.logs,
+    phases: state.phases,
+    agentCount: state.agentCount,
+    durationMs: Date.now() - started,
+    runId,
+    tokenUsage: { ...state.tokenUsage },
+  };
 }
 
 /** The workflow globals declared by the capability contract, bound to this run. */
@@ -380,10 +374,11 @@ function createScriptGlobals(ctx: RunContext) {
     options.onPhase?.(title);
   };
   return {
-    agent: createAgent(ctx),
-    parallel: createParallel(ctx),
-    pipeline: createPipeline(ctx),
-    checkpoint: createCheckpoint(ctx),
+    // Every global that returns a promise goes through trackScriptCalls.
+    agent: trackScriptCalls(state.calls, "agent", createAgent(ctx)),
+    parallel: trackScriptCalls(state.calls, "parallel", createParallel(ctx)),
+    pipeline: trackScriptCalls(state.calls, "pipeline", createPipeline(ctx)),
+    checkpoint: trackScriptCalls(state.calls, "checkpoint", createCheckpoint(ctx)),
     log,
     phase,
     // The caller's args are persisted for resume. The script gets a frozen

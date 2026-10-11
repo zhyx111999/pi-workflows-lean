@@ -5066,11 +5066,11 @@ return 'script returned'`;
     // grace-bound abandonment. Pause specifically while that drain is active.
     for (let i = 0; i < 2_000; i++) {
       const logs = manager.getRun(runId)?.snapshot.logs ?? [];
-      if (logs.some((line) => line.includes("outstanding agent()"))) break;
+      if (logs.some((line) => line.includes("outstanding workflow promise"))) break;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     assert.ok(
-      manager.getRun(runId)?.snapshot.logs.some((line) => line.includes("outstanding agent()")),
+      manager.getRun(runId)?.snapshot.logs.some((line) => line.includes("outstanding workflow promise")),
       "the script must have returned and entered its terminal drain",
     );
     assert.equal(manager.getRun(runId)?.snapshot.agents[0]?.tokens, 100, "the drain must begin with provisional usage");
@@ -5155,11 +5155,11 @@ return 'script-done'`;
 
     for (let i = 0; i < 2_000; i++) {
       const logs = manager.getRun(runId)?.snapshot.logs ?? [];
-      if (logs.some((line) => line.includes("outstanding agent()"))) break;
+      if (logs.some((line) => line.includes("outstanding workflow promise"))) break;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     assert.ok(
-      manager.getRun(runId)?.snapshot.logs.some((line) => line.includes("outstanding agent()")),
+      manager.getRun(runId)?.snapshot.logs.some((line) => line.includes("outstanding workflow promise")),
       "the second call must be queued while the hung first call occupies the only limiter slot",
     );
 
@@ -5218,7 +5218,7 @@ return 'script-done'`;
     // Wait for the drain to start, then pause mid-drain.
     for (let i = 0; i < 2000; i++) {
       const logs = manager.getRun(runId)?.snapshot.logs ?? [];
-      if (logs.some((l) => l.includes("outstanding agent()"))) break;
+      if (logs.some((l) => l.includes("outstanding workflow promise"))) break;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     assert.equal(manager.pause(runId), true);
@@ -5303,7 +5303,7 @@ return await sibling`;
     // so this ordering makes the seal's effect deterministic.
     for (let i = 0; i < 2000; i++) {
       const logs = manager.getRun(runId)?.snapshot.logs ?? [];
-      if (logs.some((l) => l.includes("outstanding agent()"))) break;
+      if (logs.some((l) => l.includes("outstanding workflow promise"))) break;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     // The documented host flow (attach response, then resume on the "paused"
@@ -5391,7 +5391,7 @@ await checkpoint({ kind: 'hold', checkpointId: 'hold-1', payload: {} })`;
     await slowRunning;
     for (let i = 0; i < 2000; i++) {
       const logs = manager.getRun(runId)?.snapshot.logs ?? [];
-      if (logs.some((line) => line.includes("outstanding agent()"))) break;
+      if (logs.some((line) => line.includes("outstanding workflow promise"))) break;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
 
