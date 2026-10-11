@@ -12,7 +12,6 @@ import {
   _resetDeliveryRegistriesForTests,
   bindSessionDelivery,
   installResultDelivery,
-  resumeSessionDelivery,
   suspendSessionDelivery,
 } from "../src/task-panel.js";
 import { registerWorkflowCommands } from "../src/workflow-commands.js";
@@ -326,13 +325,16 @@ test(
     const pi = deliveryPi();
     installResultDelivery(pi, manager);
     const sent: string[] = [];
-    bindSessionDelivery(SESSION, pi, {
-      manager,
-      stableSend: (message) => {
-        sent.push(message.content);
-        return Promise.resolve();
-      },
-    });
+    // Binding a session again (as session_start does) resumes its suspended delivery.
+    const bind = () =>
+      bindSessionDelivery(SESSION, pi, {
+        manager,
+        stableSend: (message) => {
+          sent.push(message.content);
+          return Promise.resolve();
+        },
+      });
+    bind();
     suspendSessionDelivery(SESSION);
 
     const { runId, promise } = manager.startInBackground(oneAgentScript);
@@ -340,7 +342,7 @@ test(
     assert.ok(manager.getPersistence().load(runId)?.pendingDelivery, "the result waits for its session");
 
     await deleteFromAnotherManager(cwd, runId);
-    resumeSessionDelivery(SESSION, manager);
+    bind();
     await pause(700);
 
     assert.equal(sent.length, 0, "a deleted run is not delivered");
@@ -356,13 +358,16 @@ test(
     const pi = deliveryPi();
     installResultDelivery(pi, manager);
     const sent: string[] = [];
-    bindSessionDelivery(SESSION, pi, {
-      manager,
-      stableSend: (message) => {
-        sent.push(message.content);
-        return Promise.resolve();
-      },
-    });
+    // Binding a session again (as session_start does) resumes its suspended delivery.
+    const bind = () =>
+      bindSessionDelivery(SESSION, pi, {
+        manager,
+        stableSend: (message) => {
+          sent.push(message.content);
+          return Promise.resolve();
+        },
+      });
+    bind();
     suspendSessionDelivery(SESSION);
     const survivor = manager.startInBackground(oneAgentScript);
     await survivor.promise;
@@ -380,7 +385,7 @@ test(
     );
 
     await deleteFromAnotherManager(cwd, deleted.runId);
-    resumeSessionDelivery(SESSION, manager);
+    bind();
     await pause(100);
 
     assert.equal(sent.length, 1, "the surviving result is delivered by the same flush");

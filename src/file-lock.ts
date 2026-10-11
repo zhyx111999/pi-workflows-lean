@@ -25,7 +25,7 @@ export function pidIsAlive(pid: number): boolean {
 }
 
 /** The owner a lock file names, or null when it is missing or not an owner record. */
-export function readFileLock(fs: PersistenceFsLayer, path: string): LockOwner | null {
+function readFileLock(fs: PersistenceFsLayer, path: string): LockOwner | null {
   try {
     const owner = JSON.parse(fs.readFileSync(path, "utf-8")) as Partial<LockOwner>;
     if (typeof owner?.token !== "string" || !Number.isInteger(owner.pid) || (owner.pid as number) <= 0) return null;

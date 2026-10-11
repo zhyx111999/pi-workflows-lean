@@ -139,7 +139,7 @@ export function isSafeSavedWorkflowName(name: unknown): name is string {
   );
 }
 
-export function assertSafeSavedWorkflowName(name: unknown): asserts name is string {
+function assertSafeSavedWorkflowName(name: unknown): asserts name is string {
   if (!isSafeSavedWorkflowName(name)) throw new Error(SAVED_WORKFLOW_NAME_RULE);
 }
 

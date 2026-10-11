@@ -51,7 +51,7 @@ type AttemptOutcome =
     };
 
 /** A string result that is blank means the subagent produced no answer at all. */
-export function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): boolean {
+function isEmptyTextAgentResult(result: unknown, schema: TSchema | undefined): boolean {
   return schema === undefined && typeof result === "string" && result.trim().length === 0;
 }
 

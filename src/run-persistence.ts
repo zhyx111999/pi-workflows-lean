@@ -227,7 +227,7 @@ export type FsLayer = PersistenceFsLayer;
  * generous enough to cover weeks of typical usage while keeping list()'s
  * per-call directory scan bounded.
  */
-export const DEFAULT_MAX_TERMINAL_RUNS_ON_DISK = 300;
+const DEFAULT_MAX_TERMINAL_RUNS_ON_DISK = 300;
 
 export const TERMINAL_RUN_STATUSES: ReadonlySet<RunStatus> = new Set(["completed", "failed", "aborted"]);
 
@@ -242,7 +242,7 @@ const PERSISTED_AGENT_STATUSES = [
 // Exhaustiveness: adding a member to PersistedAgentState["status"] without
 // listing it above fails to compile HERE (Exclude yields a non-never).
 type AssertNever<T extends never> = T;
-export type _PersistedAgentStatusExhaustiveCheck = AssertNever<
+type _PersistedAgentStatusExhaustiveCheck = AssertNever<
   Exclude<PersistedAgentState["status"], (typeof PERSISTED_AGENT_STATUSES)[number]>
 >;
 

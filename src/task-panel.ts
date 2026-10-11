@@ -191,7 +191,7 @@ export function bindSessionDelivery(
 
 /**
  * Suspend delivery for a session. Completions only mark disk pending until
- * {@link bindSessionDelivery} / {@link resumeSessionDelivery} runs again.
+ * {@link bindSessionDelivery} runs again.
  */
 export function suspendSessionDelivery(sessionId: string | undefined): void {
   if (!sessionId) return;
@@ -212,19 +212,6 @@ export function dropSessionDelivery(sessionId: string | undefined): void {
   suspendSessionDelivery(sessionId);
   forgetAwaitingClear(sessionId);
   sessionEndpoints.delete(sessionId);
-}
-
-/**
- * Unsuspend and flush one session's pending deliveries (disk). Prefer
- * {@link bindSessionDelivery} on session_start (also refreshes send).
- */
-export function resumeSessionDelivery(sessionId: string | undefined, manager?: WorkflowManager): void {
-  if (!sessionId) return;
-  const endpoint = sessionEndpoints.get(sessionId);
-  if (!endpoint) return;
-  endpoint.suspended = false;
-  if (manager) endpoint.manager = manager;
-  if (endpoint.manager) flushSessionDiskPending(endpoint.manager, sessionId, endpoint);
 }
 
 /**

@@ -21,7 +21,7 @@ import { WorkflowError, WorkflowErrorCode } from "../errors.js";
 export const LOOP_GUARD_NAME = "__workflowLoopGuard";
 
 /** How long the script may keep the thread without yielding before it is ended. */
-export const SYNCHRONOUS_BUDGET_MS = 5_000;
+const SYNCHRONOUS_BUDGET_MS = 5_000;
 
 /** How often the event loop records that it turned while a run is active. */
 const HEARTBEAT_MS = 100;

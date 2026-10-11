@@ -134,7 +134,7 @@ export function aggregateAgentUsage(
  * "fresh". `fmt` adapts the number style per surface (compact in panels, full in
  * the print view).
  */
-export function fmtTokenCount(fresh: number, cacheRead: number, fmt: (n: number) => string): string {
+function fmtTokenCount(fresh: number, cacheRead: number, fmt: (n: number) => string): string {
   const f = fmt(fresh) || "0";
   return cacheRead > 0 ? `${f} tok · ${fmt(cacheRead)} cached` : `${f} tok`;
 }

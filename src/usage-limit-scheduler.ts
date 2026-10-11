@@ -26,7 +26,7 @@ import type { PersistedRunState, RunPersistence } from "./run-persistence.js";
 import { sanitizeAutoResumeAttempts } from "./run-persistence.js";
 
 /** A run this scheduler may resume: still paused on a provider usage limit. */
-export function isUsageLimitPaused(run: Pick<PersistedRunState, "status" | "pauseReason">): boolean {
+function isUsageLimitPaused(run: Pick<PersistedRunState, "status" | "pauseReason">): boolean {
   return run.status === "paused" && run.pauseReason === "usage_limit";
 }
 

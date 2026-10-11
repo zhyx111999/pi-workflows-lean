@@ -26,7 +26,7 @@ export function phaseTitle(phase: PhaseKey): string {
 }
 
 /** An agent's group: its phase as text, or null when it ran outside any phase. */
-export function phaseOf(agent: Pick<WorkflowAgentSnapshot, "phase">): PhaseKey {
+function phaseOf(agent: Pick<WorkflowAgentSnapshot, "phase">): PhaseKey {
   return agent.phase == null ? null : asText(agent.phase);
 }
 

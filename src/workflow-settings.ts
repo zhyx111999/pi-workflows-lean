@@ -35,9 +35,9 @@ export interface WorkflowSettings {
   /**
    * Route UNTAGGED agent() calls (no `model`, no `tier`) to the orchestrating
    * session's main model instead of the implicit medium tier (when
-   * configured) or the settings default. Default false (legacy routing).
+   * configured) or the settings default. Default false.
    * Explicit `model`/`tier` tags are unaffected. Applies when the session has
-   * a main model; with none set, legacy routing applies. The inherited model
+   * a main model; with none set, the medium tier or settings default applies. The inherited model
    * is the main model in effect when the RUN starts; a mid-run /model switch
    * applies to subsequent runs. An unavailable inherited model degrades to
    * the settings default with a run-visible warning instead of throwing.

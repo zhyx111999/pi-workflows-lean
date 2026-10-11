@@ -34,7 +34,7 @@ export function startCommandRun(
  * though `ctx.hasUI` is true there, so other modes are pointed at
  * `/workflows status <id>`, which prints plain text any host can display.
  */
-export function backgroundStartNotice(
+function backgroundStartNotice(
   name: string,
   runId: string,
   mode: ExtensionCommandContext["mode"] | undefined,
