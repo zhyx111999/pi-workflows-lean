@@ -53,7 +53,7 @@ export interface WorkflowMeta {
 
 /** One cached agent/checkpoint result, keyed by its deterministic call index. */
 export interface JournalEntry {
-  /** Lexical call index of the agent()/checkpoint() call within the run. */
+  /** Where the agent()/checkpoint() call sits in the script, as numbered by runtime/call-position.ts. */
   index: number;
   /** sha256 of the call's identity (prompt + model + phase + agentType + schema). */
   hash: string;
@@ -128,7 +128,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   persistLogs?: boolean;
   /** Run ID for persistence. Auto-generated if not provided. */
   runId?: string;
-  /** Resume: cached agent/checkpoint results keyed by lexical call index. */
+  /** Resume: cached agent/checkpoint results keyed by call index. */
   resumeJournal?: Map<number, JournalEntry>;
   /**
    * No agent() call depends on another's result (a task-list run), so each

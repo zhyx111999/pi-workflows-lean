@@ -1376,7 +1376,7 @@ test("resume in parallel(): editing one thunk re-runs that index and every later
   assert.equal(second.state.calls, 2, "changed thunk (index 1) + later index (2) re-run; index 0 cached");
 });
 
-test("callSeq is deterministic under parallel()", async () => {
+test("call indexes are deterministic under parallel()", async () => {
   const journal: JournalEntry[] = [];
   const script = `export const meta = { name: 'par', description: 'parallel order' }
   const xs = await parallel(['p0','p1','p2'].map((p) => () => agent(p, { label: p })))

@@ -5,6 +5,7 @@ import { WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode } f
 import type { WorkflowCheckpoint, WorkflowCheckpointInput } from "../workflow.js";
 import { hashCheckpointCall } from "./call-identity.js";
 import { cloneDurableJsonValue } from "./durable-json.js";
+import { currentCallSequence } from "./fanout.js";
 import type { RunContext } from "./run-context.js";
 
 const CHECKPOINT_IDENTIFIER = /^[A-Za-z0-9._:-]{1,200}$/u;
@@ -22,7 +23,7 @@ export function createCheckpoint(ctx: RunContext) {
     }
     ctx.ensureAgentCapacity();
 
-    const callIndex = state.callSeq++;
+    const callIndex = currentCallSequence(ctx).takeIndex();
     const durableInput: WorkflowCheckpointInput = {
       ...input,
       payload: cloneDurableJsonValue(input.payload, "checkpoint payload"),
@@ -42,14 +43,14 @@ export function createCheckpoint(ctx: RunContext) {
       !state.resumeBarrierReached &&
       cached != null &&
       cached.hash === callHash &&
-      callIndex < state.firstMiss &&
+      !state.journalMissed &&
       activeResponse?.checkpointId !== checkpointId
     ) {
       state.agentCount++;
       return cached.result;
     }
     if (cached == null || cached.hash !== callHash) {
-      state.firstMiss = Math.min(state.firstMiss, callIndex);
+      state.journalMissed = true;
     }
     state.agentCount++;
 

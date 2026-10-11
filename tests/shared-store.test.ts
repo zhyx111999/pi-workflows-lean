@@ -48,10 +48,10 @@ test("SharedStore.applyDelta adds keys without clearing", () => {
   assert.equal(store.get("newKey"), "added");
 });
 
-test("SharedStore.applyDelta: replaying parallel-agent deltas in callSeq order is correct", () => {
+test("SharedStore.applyDelta: replaying parallel-agent deltas in call order is correct", () => {
   // Scenario: agents 2 and 3 run in parallel.
   // Agent 3 finishes first and writes {y: 2}; agent 2 writes {x: 1}.
-  // With full-map restore (old code), replaying in callSeq order (2 then 3)
+  // With full-map restore (old code), replaying in call order (2 then 3)
   // would overwrite x with only {y: 2}. With deltas it accumulates correctly.
   const store = new SharedStore();
 
@@ -59,7 +59,7 @@ test("SharedStore.applyDelta: replaying parallel-agent deltas in callSeq order i
   const delta2 = { x: 1 };
   const delta3 = { y: 2 };
 
-  // Replay in callSeq order (2, then 3).
+  // Replay in call order (2, then 3).
   store.applyDelta(delta2);
   store.applyDelta(delta3);
 

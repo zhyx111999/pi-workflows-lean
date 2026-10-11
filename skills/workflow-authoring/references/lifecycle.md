@@ -20,11 +20,11 @@ Always retain `{ id, status, result }` or an equivalent ledger for each intended
 
 ## Resume
 
-Resume replays only the longest unchanged prefix of journaled calls. Once one call is new, changed, or unusable, that call and all later calls execute live. Stable lexical call ordering, prompts, labels, routing options, and inputs therefore matter. Semantic retry loops can cascade after an upstream miss.
+Resume replays only the longest unchanged prefix of journaled calls. A call is matched by its position: the script body and each `parallel()` or `pipeline()` branch number their own calls in the order they make them, so which concurrent call finishes first never moves a call. Once one call is new, changed, or unusable, that call and every call made after it execute live; a branch that makes fewer calls than before also re-runs everything after its fan-out. Stable call order within each branch, prompts, labels, routing options, and inputs therefore matter, and no branch should depend on another branch of the same fan-out. Run concurrent chains of calls through `parallel()` or `pipeline()`, not `Promise.all` over async functions, whose calls after an await are numbered in whatever order they start. Semantic retry loops can cascade after an upstream miss.
 
 To revise a paused or failed run, call `subagents_control` with `action: "resume"`, its `runId`, and the edited `script`; the run keeps its ID and its result is delivered when it finishes. Completed and stopped runs do not resume.
 
-Only a call that finishes with a real result is journaled. A call whose every attempt was recoverable (including one that only ever produced `AGENT_EMPTY_OUTPUT`) contributes no journal entry, so resuming that run reruns exactly that call and everything lexically after it live; the earlier, already-succeeded prefix still replays from cache.
+Only a call that finishes with a real result is journaled. A call whose every attempt was recoverable (including one that only ever produced `AGENT_EMPTY_OUTPUT`) contributes no journal entry, so resuming that run reruns exactly that call and every call made after it live; the earlier, already-succeeded prefix still replays from cache.
 
 The runtime blocks common accidental nondeterminism, but this is not a security boundary. Pass timestamps, randomness, and external decisions through `args`.
 
