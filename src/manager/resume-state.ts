@@ -55,6 +55,9 @@ export function resumedRun(input: ResumeInput): ResumedRun {
   const priorTokenUsage = normalizedTokenUsage(persisted.tokenUsage);
   const journal = replayableJournal(persisted, runId, taskMoves);
   const seeded = seedAgents(persistedAgents, persisted.updatedAt);
+  // A record without a session of its own (an old one) moves to the current
+  // session; one with a session keeps it, and with it its parent lineage.
+  const sessionId = persisted.sessionId ?? input.currentSessionId;
   const managed: ManagedRun = {
     runId,
     status: "running",
@@ -79,9 +82,8 @@ export function resumedRun(input: ResumeInput): ResumedRun {
     args: input.args,
     journal,
     checkpoint: persisted.checkpoint,
-    // Resuming may move delivery to the current session for old records, but never the parent lineage.
-    sessionId: persisted.sessionId ?? input.currentSessionId,
-    parentSessionId: persisted.parentSessionId ?? persisted.sessionId ?? input.currentSessionId,
+    sessionId,
+    parentSessionId: persisted.parentSessionId ?? sessionId,
     parentSessionFile: persisted.parentSessionFile,
     pendingDelivery: persisted.pendingDelivery,
     lease: input.lease,
