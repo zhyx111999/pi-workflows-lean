@@ -1197,6 +1197,26 @@ return await agent('same prompt', { label: 'same', isolation: 'worktree', keepWo
   }
 });
 
+test("a kept worktree's branch is named for the agent's label, even for a call nested in a fan-out", async () => {
+  const repo = createGitRepo("pi-worktree-branch-label-");
+  const script = `export const meta = { name: 'branch_label', description: 'branch names' }
+return await parallel([() => parallel([() => agent('edit', { label: 'fix auth', isolation: 'worktree' })])])`;
+  try {
+    const logs: string[] = [];
+    await runWorkflow(script, {
+      cwd: repo,
+      runId: "subagents-mv3y3xd9-0mkxs1",
+      persistLogs: false,
+      onLog: (message) => logs.push(message),
+      agent: { run: async () => "ok" },
+    });
+    const kept = logs.find((message) => message.startsWith("worktree kept: ")) ?? "";
+    assert.match(kept, /\(pi\/wf\/fix-auth-[0-9a-f]+\)$/);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("repeated live executions with the same run id and long slug retain independent worktrees", async () => {
   const repo = createGitRepo("pi-worktree-repeat-");
   const seen: string[] = [];

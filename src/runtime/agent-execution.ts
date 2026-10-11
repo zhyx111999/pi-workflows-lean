@@ -90,7 +90,7 @@ function throwIfCallCancelled(ctx: RunContext, call: AgentCall): void {
 
 /** Requested isolation is mandatory. A kept tree belongs to this execution, not to a later retry or resume. */
 async function createIsolatedWorktree(ctx: RunContext, call: AgentCall): Promise<Worktree> {
-  const worktree = await createWorktree(ctx.baseCwd, `${ctx.runId}-${call.index}-${call.label}`);
+  const worktree = await createWorktree(ctx.baseCwd, call.label);
   if (!worktree.isolated) {
     throw new WorkflowError(
       `worktree isolation failed for "${call.label}": ${worktree.reason}`,

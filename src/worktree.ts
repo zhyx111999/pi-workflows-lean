@@ -204,13 +204,15 @@ function slug(name: string): string {
 
 /**
  * Create an isolated worktree at `<repoRoot>/.pi/worktrees/<id>` on branch
- * `pi/wf/<name slug>-<id>`. Each live execution owns a fresh id, so retained
- * results from earlier executions are never reused or overwritten. Journal
- * identity is independent of this path. Returns a failed Worktree on error.
+ * `pi/wf/<label slug>-<id>`. The fresh random id makes every live execution's
+ * tree and branch unique, so retained results are never reused or overwritten,
+ * and leaves the slug free for the agent's label; the run's log names the tree
+ * and branch it kept. Journal identity is independent of this path. Returns a
+ * failed Worktree on error.
  */
 export async function createWorktree(
   baseCwd: string,
-  name: string,
+  label: string,
   execOptions?: WorktreeExecOptions,
 ): Promise<Worktree> {
   const exec = gitExec(execOptions);
@@ -224,7 +226,7 @@ export async function createWorktree(
   let path: string;
   let branch: string;
   try {
-    ({ path, branch } = await reserveWorktree(repoRoot, name, exec));
+    ({ path, branch } = await reserveWorktree(repoRoot, label, exec));
   } catch (error) {
     return { isolated: false, cwd: baseCwd, reason: describeGitFailure(error, String(error)) };
   }
@@ -255,7 +257,7 @@ const WORKTREE_ID_ATTEMPTS = 8;
  */
 async function reserveWorktree(
   repoRoot: string,
-  name: string,
+  label: string,
   exec: GitExec,
 ): Promise<{ path: string; branch: string }> {
   const parent = join(repoRoot, ".pi", "worktrees");
@@ -269,7 +271,7 @@ async function reserveWorktree(
       if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
       throw error;
     }
-    const branch = `pi/wf/${slug(name)}-${id}`;
+    const branch = `pi/wf/${slug(label)}-${id}`;
     let free = false;
     try {
       free = !(await git(["-C", repoRoot, "for-each-ref", "--format=%(refname)", `refs/heads/${branch}`], exec)).trim();
