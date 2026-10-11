@@ -12,7 +12,7 @@ import {
   renderWorkflowCapabilityDetails,
   renderWorkflowCapabilityReference,
 } from "../src/workflow-authoring-reference.js";
-import { WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
+import { CAPABILITY_DETAIL_PATH, WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
 import { measuredTools, permanentToolPromptLines } from "../src/workflow-context-measurement.js";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -225,6 +225,16 @@ test("generated capability index and exhaustive details are fresh and absent fro
     assert.doesNotMatch(surface, /Workflow capability reference|Supported capability index/i);
     assert.doesNotMatch(surface, /skills\/workflow-authoring|references\/capabilities\.md/i);
   }
+});
+
+test("fact references link into the same details file the generator writes and checks", () => {
+  assert.equal(CAPABILITY_DETAIL_PATH, `${SKILL_ROOT}/references/capability-details.md`);
+  for (const fact of WORKFLOW_CAPABILITY_CONTRACT.projectStaticReferenceFacts()) {
+    assert.equal(fact.reference.split("#")[0], CAPABILITY_DETAIL_PATH);
+  }
+  assert.deepEqual(checkWorkflowCapabilityPublications(ROOT, { [CAPABILITY_DETAIL_PATH]: "stale details" }), [
+    CAPABILITY_DETAIL_PATH,
+  ]);
 });
 
 test("generated facts cover the lifecycle constraints taught by the skill", () => {

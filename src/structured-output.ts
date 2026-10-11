@@ -6,7 +6,7 @@ export interface StructuredOutputCapture<T = unknown> {
   called: boolean;
 }
 
-export interface StructuredOutputToolOptions<TSchemaDef extends TSchema> {
+interface StructuredOutputToolOptions<TSchemaDef extends TSchema> {
   schema: TSchemaDef;
   capture: StructuredOutputCapture<Static<TSchemaDef>>;
   name?: string;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -19,6 +19,7 @@ import {
   permanentToolPromptLines,
   renderWorkflowContextMeasurement,
   WORKFLOW_CONTEXT_MEASUREMENT_PATH,
+  writeWorkflowContextMeasurement,
 } from "../src/workflow-context-measurement.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -115,6 +116,27 @@ test("workflow context measurement generation is deterministic and committed art
   assert.equal(checkWorkflowContextMeasurement(ROOT, `${first}stale`), false);
   assert.equal(packageJson.scripts["context:check"], `tsx ${CONTEXT_SCRIPT} --check`);
   assert.match(packageJson.scripts.test, /npm run context:check/);
+});
+
+test("render, write, and freshness check all measure the package at the given root", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workflow-context-root-"));
+  try {
+    await cp(join(ROOT, "package.json"), join(root, "package.json"));
+    await cp(join(ROOT, "skills"), join(root, "skills"), { recursive: true });
+    await mkdir(join(root, "docs"));
+    await appendFile(join(root, "skills/workflow-authoring/references/runtime.md"), "\nBytes only this copy has.\n");
+
+    const rendered = renderWorkflowContextMeasurement(root);
+    assert.deepEqual(JSON.parse(rendered), measureWorkflowContextSurfaces(root));
+    assert.notEqual(rendered, renderWorkflowContextMeasurement(ROOT));
+
+    assert.deepEqual(writeWorkflowContextMeasurement(root), JSON.parse(rendered));
+    assert.equal(readFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8"), rendered);
+    assert.equal(checkWorkflowContextMeasurement(root), true);
+    assert.equal(checkWorkflowContextMeasurement(ROOT, rendered), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("context freshness command prints every current byte count", () => {

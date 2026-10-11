@@ -1,8 +1,11 @@
+/**
+ * Workflow capability contract: the single declaration of every workflow runtime
+ * global and `subagents` tool input. runWorkflow assembles script globals from it
+ * and the docs generator publishes it, so runtime and documentation cannot drift.
+ */
 import packageJson from "../package.json" with { type: "json" };
 import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 import { WorkflowCapabilityContractError } from "./errors.js";
-
-/** Re-exported so contract consumers need only this module. */
 
 /** Version marker: the contract was confirmed against this release, not that it was introduced there. */
 export interface PresentAtVersion {
@@ -126,7 +129,8 @@ export interface WorkflowCapabilityContract {
   diagnoseAlignment(evidence: AlignmentEvidence): readonly CapabilityDiagnostic[];
 }
 
-const DETAILS_PATH = "skills/workflow-authoring/references/capability-details.md";
+/** Package-relative exhaustive generated capability reference; every fact's `reference` links into it. */
+export const CAPABILITY_DETAIL_PATH = "skills/workflow-authoring/references/capability-details.md";
 const NONE = [] as const;
 
 const option = (
@@ -503,7 +507,7 @@ export function defineWorkflowCapabilityContract(definition: WorkflowCapabilityD
         signature: capability.signature,
         options: capability.optionShape ? (optionShapes.get(capability.optionShape) ?? null) : null,
         constraints: capability.constraints,
-        reference: `${DETAILS_PATH}#${capability.detailsAnchor}`,
+        reference: `${CAPABILITY_DETAIL_PATH}#${capability.detailsAnchor}`,
         dynamicReference: capability.dynamicReference
           ? (dynamicReferences.get(capability.dynamicReference) ?? null)
           : null,

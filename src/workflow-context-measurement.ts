@@ -10,7 +10,7 @@ const SKILL_ROOT = "skills/workflow-authoring";
 const SKILL_PATH = `${SKILL_ROOT}/SKILL.md`;
 
 /** Canonical task profiles used for stable byte-based on-demand context measurements. */
-export const WORKFLOW_AUTHORING_PROFILES = [
+const WORKFLOW_AUTHORING_PROFILES = [
   {
     name: "write",
     files: [
@@ -283,20 +283,25 @@ export function measureWorkflowContextSurfaces(root: string = ROOT): WorkflowCon
   };
 }
 
-/** Render the current measurement as deterministic formatted JSON. */
-export function renderWorkflowContextMeasurement(): string {
-  return `${JSON.stringify(measureWorkflowContextSurfaces(), null, 2)}\n`;
+/** The artifact's only serialization, so writing and freshness checks compare identical bytes. */
+function serializeMeasurement(measurement: WorkflowContextMeasurement): string {
+  return `${JSON.stringify(measurement, null, 2)}\n`;
+}
+
+/** Render the measurement of the package at root as deterministic formatted JSON. */
+export function renderWorkflowContextMeasurement(root: string = ROOT): string {
+  return serializeMeasurement(measureWorkflowContextSurfaces(root));
 }
 
 /** Write the generated measurement under root and return the measured values. */
 export function writeWorkflowContextMeasurement(root: string): WorkflowContextMeasurement {
   const measurement = measureWorkflowContextSurfaces(root);
-  writeFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), `${JSON.stringify(measurement, null, 2)}\n`);
+  writeFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), serializeMeasurement(measurement));
   return measurement;
 }
 
-/** Report whether committed or supplied measurement JSON matches current package bytes. */
+/** Report whether committed or supplied measurement JSON matches the current bytes of the package at root. */
 export function checkWorkflowContextMeasurement(root: string, actual?: string): boolean {
   const committed = actual ?? readFileSync(join(root, WORKFLOW_CONTEXT_MEASUREMENT_PATH), "utf8");
-  return committed === `${JSON.stringify(measureWorkflowContextSurfaces(root), null, 2)}\n`;
+  return committed === renderWorkflowContextMeasurement(root);
 }
