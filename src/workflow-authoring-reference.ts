@@ -39,7 +39,7 @@ function optionText(option: OptionDescriptor): string {
   const defaultValue = option.default === null ? "" : `; default: ${option.default}`;
   const constraints = option.constraints.length === 0 ? "" : `; ${option.constraints.join("; ")}`;
   const dynamic = option.dynamicReference === null ? "" : `; dynamic reference: ${option.dynamicReference}`;
-  return `- \`${option.name}\`: ${option.type} (${required}${defaultValue}${constraints}${dynamic})`;
+  return `\`${option.name}\`: ${option.type} (${required}${defaultValue}${constraints}${dynamic})`;
 }
 
 function compactOptions(fact: StaticCapabilityFact): string {
@@ -129,7 +129,11 @@ function detail(fact: StaticCapabilityFact): string {
     `- Signature: ${display(fact.signature)}`,
   ];
   if (fact.options) {
-    lines.push(`- Option shape: \`${fact.options.id}\``, ...fact.options.options.map(optionText));
+    lines.push(
+      ...fact.options.positional.map((argument) => `- Argument ${optionText(argument)}`),
+      `- Option shape: \`${fact.options.id}\``,
+      ...fact.options.options.map((option) => `- ${optionText(option)}`),
+    );
   }
   if (fact.constraints.length > 0) lines.push(...fact.constraints.map((constraint) => `- Constraint: ${constraint}`));
   if (fact.dynamicReference) {
