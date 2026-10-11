@@ -5,8 +5,9 @@
  * inside Pi, these tests focus on the pure logic: command creation,
  * the editSingleTier single-select helper, and integration with model-tier-config.
  *
- * editSingleTier now uses ctx.ui.custom() with SelectList.
- * In tests, we mock ctx.ui.custom to directly return the expected value.
+ * In the TUI (`mode: "tui"`) editSingleTier picks the model through
+ * ctx.ui.custom() with a SelectList; those tests mock ctx.ui.custom to return
+ * the chosen model directly. Other modes pick it through ctx.ui.select().
  */
 
 import assert from "node:assert/strict";
@@ -65,6 +66,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return null (simulating user cancelling)
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => null),
           notify: mock.fn(),
@@ -80,6 +82,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return the same model that's already selected
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => "gpt-4.1-mini"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -96,6 +99,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       // Mock ctx.ui.custom to return a different model
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => "gpt-5"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -114,6 +118,7 @@ describe("workflows-models-command", () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       let thinkingOptions: string[] = [];
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.5"),
           select: mock.fn(async (_title: string, options: string[]) => {
@@ -129,12 +134,15 @@ describe("workflows-models-command", () => {
       assert.ok(result, "should return updated tiers");
       assert.equal(result.big, "openai-codex/gpt-5.5:xhigh");
       assert.ok(thinkingOptions.includes("xhigh"), "TUI should offer xhigh thinking");
+      assert.equal(ctx.ui.custom.mock.callCount(), 1, "TUI picks the model in the custom SelectList");
+      assert.equal(ctx.ui.select.mock.callCount(), 1, "TUI uses select only for thinking");
     });
 
     it("offers max thinking for the selected model", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       let thinkingOptions: string[] = [];
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.6-sol"),
           select: mock.fn(async (_title: string, options: string[]) => {
@@ -155,6 +163,7 @@ describe("workflows-models-command", () => {
     it("preselects the base model when the current tier has a thinking suffix", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => "openai-codex/gpt-5.5"),
           select: mock.fn(async () => "xhigh"),
@@ -170,6 +179,7 @@ describe("workflows-models-command", () => {
     it("selects a model when no current model exists", async () => {
       const { editSingleTier } = await import("../src/workflows-models-command.js");
       const ctx = {
+        mode: "tui",
         ui: {
           custom: mock.fn(async () => "openai/gpt-4.1-mini"),
           select: mock.fn(async () => "Default thinking (session setting)"),
@@ -181,6 +191,92 @@ describe("workflows-models-command", () => {
       const result = await editSingleTier(ctx as never, tiers, "small");
       assert.ok(result, "should return updated tiers");
       assert.equal(result.small, "openai/gpt-4.1-mini");
+    });
+  });
+
+  describe("editSingleTier outside the TUI", () => {
+    // RPC hosts implement select/confirm/notify over the extension-UI protocol,
+    // but ui.custom() resolves undefined there because it needs a real terminal.
+    function rpcCtx(answers: (string | undefined)[]) {
+      const models = [
+        { provider: "openai", id: "gpt-4.1-mini" },
+        { provider: "openai-codex", id: "gpt-5.5" },
+      ];
+      const selectCalls: { title: string; options: string[] }[] = [];
+      const ctx = {
+        mode: "rpc",
+        hasUI: true,
+        modelRegistry: { getAvailable: () => models },
+        ui: {
+          custom: mock.fn(async () => undefined),
+          select: mock.fn(async (title: string, options: string[]) => {
+            selectCalls.push({ title, options });
+            return answers.shift();
+          }),
+          notify: mock.fn(),
+        },
+      };
+      return { ctx, selectCalls };
+    }
+
+    it("picks the model with ui.select in RPC mode, where ui.custom resolves undefined", async () => {
+      const { editSingleTier } = await loadCommand();
+      const { ctx, selectCalls } = rpcCtx(["openai-codex/gpt-5.5", "xhigh"]);
+
+      const result = await editSingleTier(ctx as never, { big: "openai/gpt-4.1-mini" }, "big");
+
+      assert.deepEqual(result, { big: "openai-codex/gpt-5.5:xhigh" });
+      assert.equal(ctx.ui.custom.mock.callCount(), 0, "RPC mode must not open a custom TUI component");
+      assert.deepEqual(selectCalls[0]?.options, ["openai/gpt-4.1-mini", "openai-codex/gpt-5.5"]);
+      assert.match(selectCalls[0]?.title ?? "", /big.*current: openai\/gpt-4\.1-mini/);
+    });
+
+    it("returns null without asking for thinking when the RPC model dialog is dismissed", async () => {
+      const { editSingleTier } = await loadCommand();
+      const { ctx, selectCalls } = rpcCtx([undefined]);
+
+      const result = await editSingleTier(ctx as never, { big: "openai/gpt-4.1-mini" }, "big");
+
+      assert.equal(result, null);
+      assert.equal(selectCalls.length, 1, "thinking must not be asked after a dismissed model dialog");
+    });
+
+    it("edits and saves a single tier through /workflows-models in RPC mode", async () => {
+      const { registerWorkflowModelsCommand } = await loadCommand();
+      let handler: ((args: unknown, ctx: unknown) => Promise<void>) | undefined;
+      registerWorkflowModelsCommand({
+        registerCommand: (_name: string, opts: { handler: typeof handler }) => {
+          handler = opts.handler;
+        },
+      } as never);
+      assert.ok(handler, "handler should be registered");
+
+      const home = mkdtempSync(join(tmpdir(), "pi-dw-wmc-home-"));
+      const cwd = mkdtempSync(join(tmpdir(), "pi-dw-wmc-cwd-"));
+      try {
+        await withFakeHomeAsync(home, async () => {
+          const globalPath = getModelTierConfigPath();
+          mkdirSync(join(globalPath, ".."), { recursive: true });
+          writeFileSync(globalPath, JSON.stringify({ tiers: { small: "openai/gpt-4.1-mini" } }));
+          const { ctx } = rpcCtx([
+            "small tier → openai/gpt-4.1-mini",
+            "openai-codex/gpt-5.5",
+            "Default thinking (session setting)",
+            "Save and exit",
+          ]);
+          await (handler as (args: unknown, ctx: unknown) => Promise<void>)(undefined, {
+            ...ctx,
+            cwd,
+            waitForIdle: async () => {},
+            model: undefined,
+          });
+          const saved = JSON.parse(readFileSync(globalPath, "utf-8"));
+          assert.equal(saved.tiers.small, "openai-codex/gpt-5.5");
+        });
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(cwd, { recursive: true, force: true });
+      }
     });
   });
 
