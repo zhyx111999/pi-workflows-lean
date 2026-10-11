@@ -3,7 +3,8 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentUsage } from "../agent-usage.js";
 import { WorkflowCheckpointSuspensionError } from "../errors.js";
-import { INTERRUPTED_AGENT_CAUSE, TERMINAL_RUN_STATUSES } from "../run-persistence.js";
+import { INTERRUPTED_AGENT_CAUSE } from "../run-agent-settlement.js";
+import { TERMINAL_RUN_STATUSES } from "../run-persistence.js";
 import { isTaskListScript } from "../subagent-tasks.js";
 import {
   type JournalEntry,
@@ -151,7 +152,7 @@ function settleFailure(live: LiveRuns, managed: ManagedRun, error: unknown): unk
   const outcome = classifyFailure(managed, error);
   if (outcome.status) managed.status = outcome.status;
   if (outcome.usageLimitPaused) managed.usageLimitPause = outcome.error;
-  managed.error = outcome.terminalError;
+  managed.error = outcome.error;
   if (outcome.usageLimitPaused) {
     live.emit(managed, "paused", {
       runId: managed.runId,
@@ -162,7 +163,7 @@ function settleFailure(live: LiveRuns, managed: ManagedRun, error: unknown): unk
   } else if (!outcome.announced && live.hasListeners("error")) {
     // EventEmitter throws on an unheard "error", which would skip the final
     // write, the lease release, and the rethrow.
-    live.emit(managed, "error", { runId: managed.runId, error: outcome.terminalError });
+    live.emit(managed, "error", { runId: managed.runId, error: outcome.error });
   }
   // The drain has finished, so agents still marked active no longer run.
   if (managed.status === "paused") {

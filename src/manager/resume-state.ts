@@ -2,9 +2,8 @@
 
 import type { AgentUsage } from "../agent-usage.js";
 import { recomputeWorkflowSnapshot, type WorkflowAgentSnapshot } from "../display.js";
+import { agentHasNonTerminalStatus, INTERRUPTED_AGENT_CAUSE } from "../run-agent-settlement.js";
 import {
-  agentHasNonTerminalStatus,
-  INTERRUPTED_AGENT_CAUSE,
   type PersistedAgentState,
   type PersistedRunState,
   type RunLease,

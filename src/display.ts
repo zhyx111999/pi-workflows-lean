@@ -1,7 +1,8 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { AgentUsage } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
+import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
 import type { WorkflowErrorCode } from "./errors.js";
+import type { RunStatus } from "./run-persistence.js";
 import type { WorkflowMeta } from "./workflow.js";
 
 export type WorkflowAgentStatus = "queued" | "running" | "done" | "error" | "skipped";
@@ -46,16 +47,7 @@ export interface WorkflowSnapshot {
   errorCount: number;
   durationMs?: number;
   result?: unknown;
-  tokenUsage?: {
-    input: number;
-    output: number;
-    total: number;
-    cost?: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    /** True when the totals include character-heuristic estimates. */
-    estimated?: boolean;
-  };
+  tokenUsage?: RunTokenUsage;
   runId?: string;
 }
 
@@ -163,6 +155,35 @@ export function fmtCost(cost: number): string {
 // runtime default, matching toLocaleString() semantics.
 const FULL_NUMBER_FORMAT = new Intl.NumberFormat();
 export const fmtFull = (n: number): string => FULL_NUMBER_FORMAT.format(n);
+
+/** Compact number style for panels and narrow cells: 842, 35k, 35.7k, 1.3M (a trailing .0 is dropped). */
+export function fmtCompact(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) {
+    const k = n / 1000;
+    return `${k >= 100 ? Math.round(k) : trimZero(k.toFixed(1))}k`;
+  }
+  return `${trimZero((n / 1_000_000).toFixed(1))}M`;
+}
+
+function trimZero(s: string): string {
+  return s.endsWith(".0") ? s.slice(0, -2) : s;
+}
+
+/** Icon of a run's lifecycle status. Agent rows use {@link statusIcon}. */
+const RUN_STATUS_ICON: Record<RunStatus, string> = {
+  pending: "·",
+  running: "◆",
+  paused: "⏸",
+  completed: "✓",
+  failed: "✗",
+  aborted: "⊘",
+};
+
+export function runStatusIcon(status: string): string {
+  return RUN_STATUS_ICON[status as RunStatus] ?? "?";
+}
 
 export function createWorkflowSnapshot(meta: WorkflowMeta): WorkflowSnapshot {
   return {

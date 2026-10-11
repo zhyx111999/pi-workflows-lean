@@ -21,9 +21,8 @@
  */
 
 import { AgentSession, type ExtensionAPI, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import { fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
+import { fmtCompact, fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
 import type { PendingDeliveryMarker, PersistedRunState } from "./run-persistence.js";
-import { fmtTokensShort } from "./task-panel/compact-format.js";
 import {
   _resetDeliveryDispatchForTests,
   flushSessionDiskPending,
@@ -92,7 +91,7 @@ export function deliverText(run: ManagedRun, opts: { resultPath?: string; maxCha
   const summary = summarizeResult(run.result?.result, opts.maxChars);
   const tu = run.result?.tokenUsage;
   const cost = tu?.cost ? ` · ${fmtCost(tu.cost)}` : "";
-  const segment = fmtTokenSegment(tokenFigures(tu), fmtTokensShort);
+  const segment = fmtTokenSegment(tokenFigures(tu), fmtCompact);
   const tokens = `${segment ? ` · ${segment}` : ""}${cost}`;
   const agents = run.result?.agentCount ?? run.snapshot.agentCount;
   const duration = run.result?.durationMs ? ` · ${(run.result.durationMs / 1000).toFixed(1)}s` : "";

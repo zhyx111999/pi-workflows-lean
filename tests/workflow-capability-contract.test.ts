@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { CapabilityClassification, CapabilityOrigin, CapabilitySupport } from "../src/enums.js";
+import { WorkflowCapabilityContractError } from "../src/errors.js";
 import { createSubagentsTool } from "../src/subagents-tool.js";
 import { runWorkflow } from "../src/workflow.js";
 import {
-  CapabilityClassification,
-  CapabilityOrigin,
-  CapabilitySupport,
   defineWorkflowCapabilityContract,
   WORKFLOW_CAPABILITY_CONTRACT,
   WORKFLOW_CAPABILITY_DEFINITION,
-  WorkflowCapabilityContractError,
 } from "../src/workflow-capability-contract.js";
 
 const EXPECTED_RUNTIME_GLOBALS = [

@@ -2,7 +2,6 @@
 
 import type { WorkflowManager } from "../workflow-manager.js";
 import type { WorkflowSettings } from "../workflow-settings.js";
-import { formatBytes } from "./compact-format.js";
 
 /** Default cap on the JSON-dump fallback in a delivered result summary. Overridable
  *  via the `deliveredResultMaxChars` setting in ~/.pi/workflows/settings.json. */
@@ -90,4 +89,11 @@ export function pausedRunText({ runId, reason, error, resetHint, checkpoint }: P
     );
   }
   return undefined;
+}
+
+/** Human-readable byte size for the dropped-tail hint: 512 B, 3.2 KB, 1.4 MB. */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -4,6 +4,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import {
   aggregateAgentUsage,
+  fmtCompact,
   fmtCost,
   fmtTokenSegment,
   shorten,
@@ -16,7 +17,6 @@ import { shortModel } from "../navigator/format.js";
 import type { PersistedRunState } from "../run-persistence.js";
 import { runSummary } from "../run-record-store.js";
 import type { WorkflowManager } from "../workflow-manager.js";
-import { fmtTokensShort } from "./compact-format.js";
 
 function isActive(run: PersistedRunState): boolean {
   return run.status === "running" || run.status === "paused";
@@ -169,7 +169,7 @@ function renderRunBody(
       `${done}/${phaseAgents.length} agents`,
       running ? `${running} running` : "",
       errors ? `${errors} errors` : "",
-      fmtTokenSegment(aggregateAgentUsage(phaseAgents), fmtTokensShort),
+      fmtTokenSegment(aggregateAgentUsage(phaseAgents), fmtCompact),
     ]
       .filter(Boolean)
       .join(" · ");
@@ -177,7 +177,7 @@ function renderRunBody(
 
     const visible = phaseAgents.slice(-maxAgents);
     for (const a of visible) {
-      const segment = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtTokensShort);
+      const segment = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtCompact);
       const tok = segment ? dim(` ${segment}`) : "";
       const mdl = shortModel(a.model);
       const model = mdl ? dim(` · ${mdl}`) : "";
@@ -225,7 +225,7 @@ export function renderPanelDetailed(
     const meta = [
       `${done}/${snap ? agents.length : summary.total} agents`,
       snap?.currentPhase || "",
-      fmtTokenSegment(runUsage, fmtTokensShort),
+      fmtTokenSegment(runUsage, fmtCompact),
       // Cost is known only once the run finalizes its usage.
       usage?.cost ? fmtCost(usage.cost) : "",
       rate > 0 ? `${tokenRateIsEstimated(r.runId) ? "~" : ""}${Math.round(rate)} tok/s` : "",

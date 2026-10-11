@@ -221,16 +221,7 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * onAgent* events.
    */
   onAgentModel?: (event: { id: string; label: string; phase?: string; model: string }) => void;
-  onTokenUsage?: (usage: {
-    input: number;
-    output: number;
-    total: number;
-    cost: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    /** True when the totals include character-heuristic estimates. */
-    estimated?: boolean;
-  }) => void;
+  onTokenUsage?: (usage: AgentUsage) => void;
   /**
    * Top-level workflow error observed before runWorkflow drains in-flight agents.
    * This preserves error provenance for hosts whose own lifecycle control can race
@@ -250,16 +241,7 @@ export interface WorkflowRunResult<T = unknown> {
   agentCount: number;
   durationMs: number;
   runId?: string;
-  tokenUsage?: {
-    input: number;
-    output: number;
-    total: number;
-    cost: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    /** True when the totals include character-heuristic estimates. */
-    estimated?: boolean;
-  };
+  tokenUsage?: AgentUsage;
 }
 
 export interface AgentOptions<TSchemaDef extends TSchema | undefined = TSchema | undefined> {

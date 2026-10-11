@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
-import type { AgentUsage } from "../src/agent.js";
+import type { AgentUsage } from "../src/agent-usage.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { _setPausedExecutionSettleTimeoutForTests } from "../src/manager/execution-settlement.js";
 import type { PersistedAgentState, PersistedRunState } from "../src/run-persistence.js";

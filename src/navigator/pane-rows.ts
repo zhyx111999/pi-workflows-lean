@@ -2,8 +2,8 @@
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeLike } from "../display.js";
-import { fmtTokenSegment, tokenFigures } from "../display.js";
-import { compactTokens, ELLIPSIS, shortModel } from "./format.js";
+import { fmtCompact, fmtTokenSegment, tokenFigures } from "../display.js";
+import { ELLIPSIS, shortModel } from "./format.js";
 import type { AgentRow, PhaseRow } from "./rows.js";
 
 /** Narrowest usable Phases pane, in cells. */
@@ -93,7 +93,7 @@ export function rightAgentRow(
   theme: ThemeLike,
 ): string {
   const dotColor = AGENT_DOT_COLOR[a.status] ?? "dim";
-  const stats = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), compactTokens);
+  const stats = fmtTokenSegment(tokenFigures(a.tokenUsage, a.tokens), fmtCompact);
   const model = shortModel(a.model) ?? "";
 
   // Stable 2-cell marker so columns never shift on selection: "› " | "  ".

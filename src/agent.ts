@@ -33,8 +33,6 @@ import {
 import { loadModelTierConfig, type ModelTierConfig } from "./model-tier-config.js";
 import type { StructuredOutputCapture } from "./structured-output.js";
 
-export type { AgentUsage } from "./agent-usage.js";
-
 /** Child sessions load no host extensions unless explicitly opted in. */
 export const DEFAULT_PROVIDER_MIDDLEWARE_EXTENSIONS: readonly string[] = Object.freeze([]);
 

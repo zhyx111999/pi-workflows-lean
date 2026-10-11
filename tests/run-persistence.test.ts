@@ -13,13 +13,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { WorkflowErrorCode } from "../src/errors.js";
+import { INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents } from "../src/run-agent-settlement.js";
 import {
   createRunPersistence,
   generateRunId,
-  INTERRUPTED_AGENT_CAUSE,
   type PersistedAgentState,
   type PersistedRunState,
-  settleInterruptedPersistedAgents,
   settleNonTerminalPersistedAgents,
 } from "../src/run-persistence.js";
 import { WorkflowManager } from "../src/workflow-manager.js";

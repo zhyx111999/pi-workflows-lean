@@ -4,8 +4,8 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { AgentUsage } from "./agent.js";
 import type { AgentHistoryEntry } from "./agent-history.js";
+import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
 import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import {
   ensureDir as ensureDirFs,
@@ -16,12 +16,6 @@ import {
 } from "./fs-persistence.js";
 import { settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import { createRunRecordStore } from "./run-record-store.js";
-
-export {
-  agentHasNonTerminalStatus,
-  INTERRUPTED_AGENT_CAUSE,
-  settleInterruptedPersistedAgents,
-} from "./run-agent-settlement.js";
 
 import type { WorkflowCheckpoint } from "./workflow.js";
 import { workflowProjectPaths } from "./workflow-paths.js";
@@ -116,16 +110,7 @@ export interface PersistedRunState {
   updatedAt: string;
   completedAt?: string;
   durationMs?: number;
-  tokenUsage?: {
-    input: number;
-    output: number;
-    total: number;
-    cost?: number;
-    cacheRead?: number;
-    cacheWrite?: number;
-    /** True when the totals include character-heuristic estimates. */
-    estimated?: boolean;
-  };
+  tokenUsage?: RunTokenUsage;
   /**
    * Cached agent/checkpoint results for resume, keyed by deterministic call
    * index. `storeDelta` is this call's SharedStore write delta, replayed

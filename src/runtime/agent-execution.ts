@@ -3,12 +3,12 @@
 import type { TSchema } from "typebox";
 import type { AgentDefinition } from "../agent-registry.js";
 import { createAgentCallUsageTracker, sumAgentUsage } from "../agent-usage.js";
-import { WorkflowError, WorkflowErrorCode, wrapError } from "../errors.js";
+import { WorkflowError, WorkflowErrorCode, workflowAbortedError, wrapError } from "../errors.js";
 import type { AgentOptions } from "../workflow.js";
 import { createWorktree, removeWorktree, type Worktree } from "../worktree.js";
 import { type AttemptAbort, dispatchAttempt, linkAttemptAbort, withTimeout } from "./agent-attempt.js";
 import type { FanoutBatch } from "./fanout.js";
-import { type RunContext, workflowAbortedError } from "./run-context.js";
+import type { RunContext } from "./run-context.js";
 import { normalizeAgentRetries, retryBackoffMs } from "./run-limits.js";
 
 /** A validated agent() call with its reserved slot, resume identity and display state. */

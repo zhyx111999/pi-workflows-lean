@@ -1,3 +1,10 @@
+/**
+ * A run's token totals as persisted and displayed. Only input/output/total are
+ * guaranteed: older records may lack the cost and cache figures.
+ */
+export type RunTokenUsage = Pick<AgentUsage, "input" | "output" | "total"> &
+  Partial<Pick<AgentUsage, "cost" | "cacheRead" | "cacheWrite" | "estimated">>;
+
 /** Token and cost usage for one subagent attempt or logical agent call. */
 export interface AgentUsage {
   input: number;

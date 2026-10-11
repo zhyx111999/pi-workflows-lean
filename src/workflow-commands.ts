@@ -9,6 +9,7 @@ import {
   fmtTokenSegment,
   recomputeWorkflowSnapshot,
   renderWorkflowText,
+  runStatusIcon,
   tokenFigures,
   type WorkflowSnapshot,
 } from "./display.js";
@@ -21,22 +22,13 @@ import type { WorkflowManager } from "./workflow-manager.js";
 import type { WorkflowStorage } from "./workflow-saved.js";
 import { openWorkflowNavigator } from "./workflow-ui.js";
 
-const STATUS_ICON: Record<string, string> = {
-  pending: "·",
-  running: "◆",
-  paused: "⏸",
-  completed: "✓",
-  failed: "✗",
-  aborted: "⊘",
-};
-
 const USAGE =
   "Usage: /workflows [list] | run <prompt> | status <id> | watch <id> | stop <id> | pause <id> | resume <id> | rm <id> | save <name> [runId]";
 
 const RUN_USAGE = "Usage: /workflows run <prompt> — force a dynamic workflow from the prompt";
 
 function summarizeRun(run: PersistedRunState): string {
-  const icon = STATUS_ICON[run.status] ?? "?";
+  const icon = runStatusIcon(run.status);
   const { done, total } = runSummary(run);
   const segment = fmtTokenSegment(tokenFigures(run.tokenUsage), fmtFull);
   const tokens = segment ? ` · ${segment}` : "";
@@ -102,7 +94,7 @@ function watchRun(manager: WorkflowManager, pi: ExtensionAPI, ctx: ExtensionComm
 }
 
 function renderPersistedStatus(run: PersistedRunState): string {
-  const lines = [`${STATUS_ICON[run.status] ?? "?"} ${run.workflowName} (${run.runId}) — ${run.status}`];
+  const lines = [`${runStatusIcon(run.status)} ${run.workflowName} (${run.runId}) — ${run.status}`];
   if (run.currentPhase) lines.push(`  phase: ${run.currentPhase}`);
   for (const agent of run.agents) {
     const icon =

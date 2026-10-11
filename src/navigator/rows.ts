@@ -1,6 +1,6 @@
 /** Builds the navigator's run, phase, and agent rows from run snapshots. */
 
-import type { AgentUsage } from "../agent.js";
+import type { AgentUsage } from "../agent-usage.js";
 import type { WorkflowAgentSnapshot, WorkflowSnapshot } from "../display.js";
 import { aggregateAgentUsage, tokenFigures } from "../display.js";
 import type { PersistedRunState } from "../run-persistence.js";

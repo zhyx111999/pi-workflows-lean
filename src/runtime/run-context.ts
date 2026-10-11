@@ -2,7 +2,12 @@
 
 import type { AgentRegistry } from "../agent-registry.js";
 import type { AgentUsage } from "../agent-usage.js";
-import { type WorkflowCheckpointSuspensionError, WorkflowError, WorkflowErrorCode } from "../errors.js";
+import {
+  type WorkflowCheckpointSuspensionError,
+  WorkflowError,
+  WorkflowErrorCode,
+  workflowAbortedError,
+} from "../errors.js";
 import type { WorkflowLogger } from "../logger.js";
 import type { ModelRoutingConfig } from "../model-routing.js";
 import type { SharedStore } from "../shared-store.js";
@@ -85,10 +90,6 @@ export interface RunContext extends RunSetup {
   readonly agentLimitError: () => WorkflowError;
   /** Every logical agent() call and checkpoint consumes one slot of the run's maxAgents cap. */
   readonly ensureAgentCapacity: () => void;
-}
-
-export function workflowAbortedError(): WorkflowError {
-  return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
 }
 
 export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptions, concurrency: number): RuntimeState {

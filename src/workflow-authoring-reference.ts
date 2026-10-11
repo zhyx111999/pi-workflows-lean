@@ -1,8 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CapabilityClassification, CapabilitySupport } from "./enums.js";
 import {
-  CapabilityClassification,
-  CapabilitySupport,
   type OptionDescriptor,
   type StaticCapabilityFact,
   WORKFLOW_CAPABILITY_CONTRACT,

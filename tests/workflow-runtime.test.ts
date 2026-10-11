@@ -14,8 +14,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import type { AgentRunOptions, AgentUsage } from "../src/agent.js";
+import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
+import type { AgentUsage } from "../src/agent-usage.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow } from "../src/workflow.js";
 import { WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";

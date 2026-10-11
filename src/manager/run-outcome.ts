@@ -6,16 +6,13 @@ import {
   WorkflowCheckpointSuspensionError,
   WorkflowError,
   WorkflowErrorCode,
+  workflowAbortedError,
 } from "../errors.js";
 import type { ManagedRun } from "../workflow-manager.js";
 
-function abortedError(): WorkflowError {
-  return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
-}
-
 /** The escaped error as a WorkflowError. A checkpoint suspension during an abort is just the abort. */
 function asWorkflowError(error: unknown, aborted: boolean): WorkflowError {
-  if (error instanceof WorkflowCheckpointSuspensionError && aborted) return abortedError();
+  if (error instanceof WorkflowCheckpointSuspensionError && aborted) return workflowAbortedError();
   if (error instanceof WorkflowError) return error;
   const message = error instanceof Error ? error.message : String(error);
   return new WorkflowError(message, WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
@@ -23,10 +20,8 @@ function asWorkflowError(error: unknown, aborted: boolean): WorkflowError {
 
 /** How a failed execution settles its run. */
 export interface FailedExecution {
-  /** The error rethrown to whoever awaits the execution. */
+  /** The error recorded on the run and rethrown to whoever awaits the execution. */
   error: WorkflowError;
-  /** The error recorded on the run. */
-  terminalError: WorkflowError;
   /** The new status; undefined keeps the one pause()/stop() already set. */
   status?: "paused" | "aborted" | "failed";
   /** A provider usage limit pauses the run so it can resume automatically. */
@@ -69,7 +64,7 @@ export function classifyFailure(managed: ManagedRun, error: unknown): FailedExec
     // A real failure wins even when a pause()/stop() arrived after it escaped.
     status = "failed";
   }
-  return { error: workflowError, terminalError: workflowError, status, usageLimitPaused, announced };
+  return { error: workflowError, status, usageLimitPaused, announced };
 }
 
 /**

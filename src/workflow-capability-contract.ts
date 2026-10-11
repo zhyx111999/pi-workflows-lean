@@ -3,7 +3,6 @@ import { CapabilityClassification, CapabilityOrigin, CapabilitySupport, Diagnost
 import { WorkflowCapabilityContractError } from "./errors.js";
 
 /** Re-exported so contract consumers need only this module. */
-export { CapabilityClassification, CapabilityOrigin, CapabilitySupport, DiagnosticSeverity } from "./enums.js";
 
 /** Version marker: the contract was confirmed against this release, not that it was introduced there. */
 export interface PresentAtVersion {
@@ -78,8 +77,6 @@ export interface CapabilityDiagnostic {
   subject: string;
   message: string;
 }
-
-export { WorkflowCapabilityContractError } from "./errors.js";
 
 /** Runtime globals assembled from declared implementations plus non-fatal diagnostics. */
 export interface RuntimeBindingAssembly {

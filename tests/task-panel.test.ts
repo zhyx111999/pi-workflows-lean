@@ -646,7 +646,7 @@ describe("installResultDelivery", () => {
     assert.ok(calls[0].content.includes("test-workflow"), "should contain test-workflow");
     assert.ok(calls[0].content.includes("3 agents"), "should contain 3 agents");
     // deliverText shows "N tok"; the cached segment is omitted with no cache reads.
-    assert.ok(calls[0].content.includes("50.0K tok"), "should show the token count (input+output)");
+    assert.ok(calls[0].content.includes("50k tok"), "should show the token count (input+output)");
     assert.ok(!calls[0].content.includes("cached"), "omits the cached segment when cacheRead is 0");
     assert.ok(calls[0].content.includes("1.5s"), "should contain 1.5s");
   });
@@ -669,8 +669,8 @@ describe("installResultDelivery", () => {
     manager.emit("complete", { runId: "test-run-1" });
 
     const content = piCalls(pi)[0].content;
-    assert.ok(content.includes("100.0K tok"), `fresh (input+output) should read as tok; got: ${content}`);
-    assert.ok(content.includes("6.0M cached"), `cacheRead should read as cached; got: ${content}`);
+    assert.ok(content.includes("100k tok"), `fresh (input+output) should read as tok; got: ${content}`);
+    assert.ok(content.includes("6M cached"), `cacheRead should read as cached; got: ${content}`);
     assert.ok(content.includes("$6.70"), `cost should be shown; got: ${content}`);
   });
 
@@ -3123,7 +3123,7 @@ describe("renderPanelDetailed", () => {
     };
     const lines = renderPanelDetailed(manager as never, theme as never, undefined, 8, 1000);
     assert.ok(
-      lines.some((l) => l.includes("[1] ✓ cached_agent") && /100\.0K tok/.test(l) && /3\.0M cached/.test(l)),
+      lines.some((l) => l.includes("[1] ✓ cached_agent") && /100k tok/.test(l) && /3M cached/.test(l)),
       `expected a per-agent tok/cached row, got:\n${lines.join("\n")}`,
     );
   });
@@ -3177,17 +3177,17 @@ describe("renderPanelDetailed", () => {
   it("renders aggregate tokens, cost, phases, and per-agent rows", async () => {
     const { renderPanelDetailed, clearTokenSamples } = await import("../src/task-panel/panel-render.js");
     clearTokenSamples("r1");
-    // discover_routes 2100 + audit_auth 1800 = 3900 → "3.9K tok" aggregate.
+    // discover_routes 2100 + audit_auth 1800 = 3900 → "3.9k tok" aggregate.
     const lines = renderPanelDetailed(detailedManager(2100) as never, theme as never, undefined, 8, 1000);
     const text = lines.join("\n");
 
     assert.ok(/auth_audit/.test(text), "shows the run name");
     assert.ok(/1\/4 agents/.test(text), "shows done/total agents");
-    assert.ok(/3\.9K tok/.test(text), "shows aggregate tokens summed from per-agent tokens");
+    assert.ok(/3\.9k tok/.test(text), "shows aggregate tokens summed from per-agent tokens");
     assert.ok(/\$0\.02/.test(text), "shows cost");
     // Phase headers
     assert.ok(
-      lines.some((l) => l.includes("▶ Scan") && /1\/3 agents/.test(l) && /3\.9K tok/.test(l)),
+      lines.some((l) => l.includes("▶ Scan") && /1\/3 agents/.test(l) && /3\.9k tok/.test(l)),
       "Scan phase header with subtotal",
     );
     assert.ok(
@@ -3196,11 +3196,11 @@ describe("renderPanelDetailed", () => {
     );
     // Agent rows: status icons + label + tokens + model
     assert.ok(
-      lines.some((l) => l.includes("[1] ✓ discover_routes") && /2\.1K tok/.test(l) && /claude-haiku-4-5/.test(l)),
+      lines.some((l) => l.includes("[1] ✓ discover_routes") && /2\.1k tok/.test(l) && /claude-haiku-4-5/.test(l)),
       "done agent row with model",
     );
     assert.ok(
-      lines.some((l) => l.includes("[2] ● audit_auth") && /1\.8K tok/.test(l)),
+      lines.some((l) => l.includes("[2] ● audit_auth") && /1\.8k tok/.test(l)),
       "running agent row",
     );
     assert.ok(

@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, posix, relative } from "node:path";
 import test from "node:test";
 import packageJson from "../package.json" with { type: "json" };
+import { CapabilityClassification } from "../src/enums.js";
 import { runWorkflow } from "../src/workflow.js";
 import {
   CAPABILITY_TABLE_PUBLICATION_PATHS,
@@ -11,7 +12,7 @@ import {
   renderWorkflowCapabilityDetails,
   renderWorkflowCapabilityReference,
 } from "../src/workflow-authoring-reference.js";
-import { CapabilityClassification, WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
+import { WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
 import { measuredTools, permanentToolPromptLines } from "../src/workflow-context-measurement.js";
 
 const ROOT = join(import.meta.dirname, "..");

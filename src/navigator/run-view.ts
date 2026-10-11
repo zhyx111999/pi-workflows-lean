@@ -2,10 +2,10 @@
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { ThemeLike } from "../display.js";
-import { fmtTokenSegment } from "../display.js";
+import { fmtCompact, fmtTokenSegment } from "../display.js";
 import type { NavigatorModel, NavigatorState } from "../workflow-ui.js";
 import { BX, renderTwoPaneFrame, topTitleSegment } from "./box-frame.js";
-import { compactTokens, ELLIPSIS, pluralize } from "./format.js";
+import { ELLIPSIS, pluralize } from "./format.js";
 import { computeLeftWidth, computeModelColStart, LW_MIN, leftPhaseRow, RW_MIN, rightAgentRow } from "./pane-rows.js";
 import type { AgentRow, PhaseRow } from "./rows.js";
 import { scrollWindow } from "./viewport.js";
@@ -62,7 +62,7 @@ function runHeader(
   const line0 = theme.fg("accent", theme.bold(nameText));
 
   // Line 1 — left status, right summary.
-  const headerSegment = fmtTokenSegment({ fresh, cacheRead, estimated }, compactTokens);
+  const headerSegment = fmtTokenSegment({ fresh, cacheRead, estimated }, fmtCompact);
   const rightRaw = `${done}/${total} ${pluralize("agent", total)}${headerSegment ? ` · ${headerSegment}` : ""}`;
   const rightW = visibleWidth(rightRaw);
   const gap = 2;

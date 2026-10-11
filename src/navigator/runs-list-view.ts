@@ -1,23 +1,10 @@
 /** The top-level list: runs, then saved workflows, under a title showing the filter and scroll range. */
 
 import type { ThemeLike } from "../display.js";
-import { fmtCost, fmtFull, fmtTokenSegment } from "../display.js";
+import { fmtCost, fmtFull, fmtTokenSegment, runStatusIcon } from "../display.js";
 import type { NavigatorState } from "../workflow-ui.js";
 import { type NavigatorSnapshot, sameIdentity, type VisibleNavigatorItem } from "./items.js";
 import { type ScrollWin, scrollWindow } from "./viewport.js";
-
-const STATUS_ICON: Record<string, string> = {
-  pending: "·",
-  queued: "·",
-  running: "◆",
-  paused: "⏸",
-  completed: "✓",
-  done: "✓",
-  failed: "✗",
-  error: "✗",
-  aborted: "⊘",
-  skipped: "⊘",
-};
 
 function showsBothKinds(items: VisibleNavigatorItem[], win: ScrollWin): boolean {
   const slice = items.slice(win.start, win.start + win.count);
@@ -65,7 +52,7 @@ export function renderRunsList(
       lines.push(dim("  ── saved ──"));
     if (item.kind === "run") {
       const row = item.row;
-      const icon = STATUS_ICON[row.status] ?? "?";
+      const icon = runStatusIcon(row.status);
       const tok = fmtTokenSegment(row, fmtFull);
       const meta = [`${row.done}/${row.total}`, tok, row.cost > 0 ? fmtCost(row.cost) : ""].filter(Boolean).join(" · ");
       lines.push(mark(i, `${icon} ${row.name}  ${dim(`${row.runId} · ${row.status} · ${meta}`)}`));

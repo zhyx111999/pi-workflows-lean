@@ -105,6 +105,11 @@ export class WorkflowCapabilityContractError extends Error {
 }
 
 /** Narrow an unknown failure to WorkflowError. */
+/** The error of a workflow stopped by an abort. Recoverable: its journal can resume. */
+export function workflowAbortedError(): WorkflowError {
+  return new WorkflowError("workflow aborted", WorkflowErrorCode.WORKFLOW_ABORTED, { recoverable: true });
+}
+
 export function isWorkflowError(error: unknown): error is WorkflowError {
   return error instanceof WorkflowError;
 }
