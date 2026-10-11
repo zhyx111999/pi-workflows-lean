@@ -97,8 +97,6 @@ export interface WorkflowSettingsOptions {
   projectSettingsPath?: string;
   /** Explicit project-local (in-repo) settings path, primarily for tests. */
   projectLocalSettingsPath?: string;
-  /** Save destination when using saveWorkflowSettings with cwd. Default: global. */
-  scope?: "global" | "project";
 }
 
 /** Path to the user-level workflow settings JSON file (~/.pi/workflows/settings.json). */
@@ -142,19 +140,13 @@ export function loadWorkflowSettings(settingsPathOrOptions?: string | WorkflowSe
   };
 }
 
-/** Merge known settings into the user-level settings file. */
-export function saveWorkflowSettings(
-  settings: WorkflowSettings,
-  settingsPathOrOptions?: string | WorkflowSettingsOptions,
-): void {
-  const options = normalizeOptions(settingsPathOrOptions);
-  const projectPath =
-    options.projectSettingsPath ?? (options.cwd ? getWorkflowProjectSettingsPath(options.cwd) : undefined);
-  const path =
-    options.scope === "project" && projectPath ? projectPath : (options.settingsPath ?? getWorkflowSettingsPath());
+/**
+ * Merge the known keys of `settings` into the one settings file at `path`,
+ * creating it when missing. Other keys in the file are left as they are.
+ */
+export function writeWorkflowSettingsFile(path: string, settings: WorkflowSettings): void {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
   const existing = readObject(path);
   writeFileSync(path, `${JSON.stringify({ ...existing, ...normalizeSettings(settings) }, null, 2)}\n`, "utf-8");
 }
@@ -168,13 +160,13 @@ export function saveWorkflowSettings(
  * so later global changes still reach this project. The repo-local file is
  * never written: it belongs to the repository and may be shared.
  */
-export function saveWorkflowSettingsForCwd(settings: WorkflowSettings, cwd: string): void {
+export function saveWorkflowSettings(settings: WorkflowSettings, cwd: string): void {
   const next = normalizeSettings(settings);
-  saveWorkflowSettings(next);
+  writeWorkflowSettingsFile(getWorkflowSettingsPath(), next);
   const projectPath = getWorkflowProjectSettingsPath(cwd);
   const projectLayers = { ...readSettings(getProjectLocalWorkflowSettingsPath(cwd)), ...readSettings(projectPath) };
   const shadowed = Object.fromEntries(Object.entries(next).filter(([key]) => key in projectLayers));
-  if (Object.keys(shadowed).length) saveWorkflowSettings(shadowed, projectPath);
+  if (Object.keys(shadowed).length) writeWorkflowSettingsFile(projectPath, shadowed);
 }
 
 function normalizeOptions(settingsPathOrOptions?: string | WorkflowSettingsOptions): WorkflowSettingsOptions {
@@ -195,7 +187,7 @@ function readSettings(path: string): WorkflowSettings {
 /**
  * Copy only known, valid keys. Files written by older versions may still hold
  * keys for removed features; they are ignored here and left untouched on disk
- * by saveWorkflowSettings.
+ * by writeWorkflowSettingsFile.
  */
 function normalizeSettings(value: unknown): WorkflowSettings {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};

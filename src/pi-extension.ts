@@ -31,7 +31,7 @@ import { installParentPromptHook, registerWorkflowProgressCommands } from "./wor
 import { WorkflowManager } from "./workflow-manager.js";
 import { workflowProjectKey } from "./workflow-paths.js";
 import { createWorkflowStorage } from "./workflow-saved.js";
-import { loadWorkflowSettings, saveWorkflowSettingsForCwd, workflowRunLimits } from "./workflow-settings.js";
+import { loadWorkflowSettings, saveWorkflowSettings, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
 
 export { useHostSessionClass } from "./task-panel/host-session-capture.js";
@@ -211,7 +211,7 @@ export default function extension(pi: ExtensionAPI) {
   registerWorkflowCommands(pi, { getManager, getStorage, getCwd });
   registerWorkflowProgressCommands(pi, {
     load: () => loadWorkflowSettings({ cwd: getCwd() }),
-    save: (nextSettings) => saveWorkflowSettingsForCwd(nextSettings, getCwd()),
+    save: (nextSettings) => saveWorkflowSettings(nextSettings, getCwd()),
   });
   registerWorkflowModelsCommand(pi);
   registerBuiltinWorkflows(pi, { getManager, getCwd, getStorage });

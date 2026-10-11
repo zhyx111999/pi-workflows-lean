@@ -6,12 +6,7 @@
 
 import type { ExtensionAPI, ExtensionCommandContext, InputEvent } from "@earendil-works/pi-coding-agent";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "./parent-prompt.js";
-import {
-  loadWorkflowSettings,
-  saveWorkflowSettings,
-  type WorkflowSettings,
-  type WorkflowSettingsStore,
-} from "./workflow-settings.js";
+import type { WorkflowSettings, WorkflowSettingsStore } from "./workflow-settings.js";
 
 /**
  * The directive for the explicit `/workflows run <prompt>` command. The user
@@ -71,10 +66,7 @@ function isTypedPrompt(event: InputEvent): boolean {
  * other source for these values, so a failed save changes nothing and is
  * reported that way.
  */
-export function registerWorkflowProgressCommands(
-  pi: ExtensionAPI,
-  settingsStore: WorkflowSettingsStore = DEFAULT_SETTINGS_STORE,
-): void {
+export function registerWorkflowProgressCommands(pi: ExtensionAPI, settingsStore: WorkflowSettingsStore): void {
   pi.registerCommand?.("workflows-progress", {
     description: "Bottom progress panel: compact | detailed | status | max <N>",
     async handler(args: string, _ctx: ExtensionCommandContext) {
@@ -122,11 +114,6 @@ export function registerWorkflowProgressCommands(
     },
   });
 }
-
-const DEFAULT_SETTINGS_STORE: WorkflowSettingsStore = {
-  load: loadWorkflowSettings,
-  save: saveWorkflowSettings,
-};
 
 /** Save panel preferences; returns why the save failed, or undefined when it succeeded. */
 function saveProgressSettings(settingsStore: WorkflowSettingsStore, settings: WorkflowSettings): string | undefined {

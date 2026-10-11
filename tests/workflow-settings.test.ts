@@ -10,8 +10,8 @@ import {
   getWorkflowSettingsPath,
   loadWorkflowSettings,
   saveWorkflowSettings,
-  saveWorkflowSettingsForCwd,
   workflowRunLimits,
+  writeWorkflowSettingsFile,
 } from "../src/workflow-settings.js";
 import { withFakeHome } from "./helpers/fake-home.js";
 
@@ -62,7 +62,7 @@ describe("workflow settings", () => {
       });
 
       // Saving a current preference keeps the rest of the file as written.
-      saveWorkflowSettings({ progressPanelMaxAgents: 12 }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { progressPanelMaxAgents: 12 });
       assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf-8")), { ...legacy, progressPanelMaxAgents: 12 });
       assert.equal(loadWorkflowSettings(settingsPath).progressPanelMaxAgents, 12);
     });
@@ -70,10 +70,10 @@ describe("workflow settings", () => {
 
   it("saves and loads default agent timeout preference", () => {
     withSettingsPath((settingsPath) => {
-      saveWorkflowSettings({ defaultAgentTimeoutMs: 600000 }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { defaultAgentTimeoutMs: 600000 });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultAgentTimeoutMs: 600000 });
 
-      saveWorkflowSettings({ defaultAgentTimeoutMs: null }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { defaultAgentTimeoutMs: null });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultAgentTimeoutMs: null });
     });
   });
@@ -101,12 +101,12 @@ describe("workflow settings", () => {
     withSettingsPath((settingsPath) => {
       const projectSettingsPath = join(dirname(settingsPath), "project-settings.json");
       const options = { settingsPath, projectSettingsPath };
-      saveWorkflowSettings({ excludeSubagentTools: ["spawn"] }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { excludeSubagentTools: ["spawn"] });
 
-      saveWorkflowSettings({ excludeSubagentTools: [] }, { ...options, scope: "project" });
+      writeWorkflowSettingsFile(projectSettingsPath, { excludeSubagentTools: [] });
       assert.deepEqual(loadWorkflowSettings(options), { excludeSubagentTools: [] });
 
-      saveWorkflowSettings({ excludeSubagentTools: [] }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { excludeSubagentTools: [] });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { excludeSubagentTools: [] });
     });
   });
@@ -130,7 +130,7 @@ describe("workflow settings", () => {
         writeFileSync(settingsPath, JSON.stringify({ providerMiddlewareExtensions: value }), "utf-8");
         assert.deepEqual(loadWorkflowSettings(settingsPath), {});
       }
-      saveWorkflowSettings({ providerMiddlewareExtensions: ["example-provider-adapter"] }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { providerMiddlewareExtensions: ["example-provider-adapter"] });
       assert.deepEqual(loadWorkflowSettings(settingsPath), {
         providerMiddlewareExtensions: ["example-provider-adapter"],
       });
@@ -154,7 +154,7 @@ describe("workflow settings", () => {
 
   it("saves, loads, and normalizes defaultMaxAgents", () => {
     withSettingsPath((settingsPath) => {
-      saveWorkflowSettings({ defaultMaxAgents: 2500 }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { defaultMaxAgents: 2500 });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { defaultMaxAgents: 2500 });
 
       // Floats floor; zero/negative/garbage are dropped so the 1000 default applies.
@@ -201,7 +201,7 @@ describe("workflow settings", () => {
       withFakeHome(fakeHome, () => {
         const globalPath = getWorkflowSettingsPath();
         const localPath = getProjectLocalWorkflowSettingsPath(cwd);
-        saveWorkflowSettings({ progressPanelMode: "compact", defaultAgentTimeoutMs: 600000 }, globalPath);
+        writeWorkflowSettingsFile(globalPath, { progressPanelMode: "compact", defaultAgentTimeoutMs: 600000 });
         mkdirSync(dirname(localPath), { recursive: true });
         writeFileSync(localPath, JSON.stringify({ persistAgentSessions: true, progressPanelMode: "detailed" }));
 
@@ -215,7 +215,7 @@ describe("workflow settings", () => {
 
         // project-local file < per-project override: a user's own project
         // override still wins over what the repo ships.
-        saveWorkflowSettings({ persistAgentSessions: false }, { cwd, settingsPath: globalPath, scope: "project" });
+        writeWorkflowSettingsFile(getWorkflowProjectSettingsPath(cwd), { persistAgentSessions: false });
         assert.deepEqual(loadWorkflowSettings({ cwd, settingsPath: globalPath }), {
           progressPanelMode: "detailed",
           defaultAgentTimeoutMs: 600000,
@@ -243,14 +243,15 @@ describe("workflow settings", () => {
       withFakeHome(fakeHome, () => {
         const globalPath = getWorkflowSettingsPath();
         const projectPath = getWorkflowProjectSettingsPath(cwd);
-        saveWorkflowSettings(
-          { progressPanelMode: "compact", defaultAgentTimeoutMs: 600000, defaultConcurrency: 4 },
-          globalPath,
-        );
-        saveWorkflowSettings(
-          { progressPanelMode: "detailed", defaultConcurrency: 8 },
-          { cwd, settingsPath: globalPath, scope: "project" },
-        );
+        writeWorkflowSettingsFile(globalPath, {
+          progressPanelMode: "compact",
+          defaultAgentTimeoutMs: 600000,
+          defaultConcurrency: 4,
+        });
+        writeWorkflowSettingsFile(getWorkflowProjectSettingsPath(cwd), {
+          progressPanelMode: "detailed",
+          defaultConcurrency: 8,
+        });
 
         assert.deepEqual(loadWorkflowSettings(globalPath), {
           progressPanelMode: "compact",
@@ -274,7 +275,7 @@ describe("workflow settings", () => {
     const fakeHome = join(dir, "home");
     try {
       withFakeHome(fakeHome, () => {
-        saveWorkflowSettingsForCwd({ progressPanelMode: "detailed" }, cwd);
+        saveWorkflowSettings({ progressPanelMode: "detailed" }, cwd);
 
         assert.deepEqual(loadWorkflowSettings({ cwd }), { progressPanelMode: "detailed" });
         assert.equal(existsSync(getWorkflowProjectSettingsPath(cwd)), false);
@@ -290,15 +291,15 @@ describe("workflow settings", () => {
     const fakeHome = join(dir, "home");
     try {
       withFakeHome(fakeHome, () => {
-        saveWorkflowSettings({ progressPanelMode: "compact" }, { cwd, scope: "project" });
+        writeWorkflowSettingsFile(getWorkflowProjectSettingsPath(cwd), { progressPanelMode: "compact" });
 
-        saveWorkflowSettingsForCwd({ progressPanelMode: "detailed" }, cwd);
+        saveWorkflowSettings({ progressPanelMode: "detailed" }, cwd);
 
-        assert.deepEqual(loadWorkflowSettings(), { progressPanelMode: "detailed" });
+        // Each layer file on its own: the user default and the override that would otherwise shadow it.
+        const layer = (path: string) => JSON.parse(readFileSync(path, "utf-8"));
+        assert.deepEqual(layer(getWorkflowSettingsPath()), { progressPanelMode: "detailed" });
+        assert.deepEqual(layer(getWorkflowProjectSettingsPath(cwd)), { progressPanelMode: "detailed" });
         assert.deepEqual(loadWorkflowSettings({ cwd }), { progressPanelMode: "detailed" });
-        assert.deepEqual(loadWorkflowSettings({ projectSettingsPath: getWorkflowProjectSettingsPath(cwd) }), {
-          progressPanelMode: "detailed",
-        });
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -316,7 +317,7 @@ describe("workflow settings", () => {
         const repoSettings = JSON.stringify({ progressPanelMode: "compact" });
         writeFileSync(localPath, repoSettings);
 
-        saveWorkflowSettingsForCwd({ progressPanelMode: "detailed", progressPanelMaxAgents: 12 }, cwd);
+        saveWorkflowSettings({ progressPanelMode: "detailed", progressPanelMaxAgents: 12 }, cwd);
 
         assert.deepEqual(loadWorkflowSettings({ cwd }), { progressPanelMode: "detailed", progressPanelMaxAgents: 12 });
         assert.deepEqual(loadWorkflowSettings(), { progressPanelMode: "detailed", progressPanelMaxAgents: 12 });
@@ -333,11 +334,11 @@ describe("workflow settings", () => {
 
   it("preserves unknown settings when saving known settings", () => {
     withSettingsPath((settingsPath) => {
-      saveWorkflowSettings({ progressPanelMode: "compact" }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { progressPanelMode: "compact" });
       const current = JSON.parse(readFileSync(settingsPath, "utf-8"));
       writeFileSync(settingsPath, `${JSON.stringify({ ...current, theme: "dark" }, null, 2)}\n`, "utf-8");
 
-      saveWorkflowSettings({ progressPanelMode: "detailed" }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { progressPanelMode: "detailed" });
 
       assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf-8")), {
         progressPanelMode: "detailed",
@@ -348,10 +349,10 @@ describe("workflow settings", () => {
 
   it("saves and loads the progress panel mode", () => {
     withSettingsPath((settingsPath) => {
-      saveWorkflowSettings({ progressPanelMode: "detailed" }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { progressPanelMode: "detailed" });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { progressPanelMode: "detailed" });
 
-      saveWorkflowSettings({ progressPanelMode: "compact" }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { progressPanelMode: "compact" });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { progressPanelMode: "compact" });
     });
   });
@@ -386,10 +387,10 @@ describe("workflow settings", () => {
     withSettingsPath((settingsPath) => {
       assert.deepEqual(loadWorkflowSettings(settingsPath), {}, "absent by default");
 
-      saveWorkflowSettings({ persistAgentSessions: true }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { persistAgentSessions: true });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { persistAgentSessions: true });
 
-      saveWorkflowSettings({ persistAgentSessions: false }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { persistAgentSessions: false });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { persistAgentSessions: false });
     });
   });
@@ -411,10 +412,10 @@ describe("workflow settings", () => {
 
   it("saves, loads, and normalizes inheritMainModel", () => {
     withSettingsPath((settingsPath) => {
-      saveWorkflowSettings({ inheritMainModel: true }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { inheritMainModel: true });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { inheritMainModel: true });
 
-      saveWorkflowSettings({ inheritMainModel: false }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { inheritMainModel: false });
       assert.deepEqual(loadWorkflowSettings(settingsPath), { inheritMainModel: false });
 
       writeFileSync(settingsPath, JSON.stringify({ inheritMainModel: "true" }), "utf-8");
@@ -430,7 +431,7 @@ describe("workflow settings", () => {
       const projectLocalSettingsPath = join(dirname(settingsPath), "repo-settings.json");
       const projectSettingsPath = join(dirname(settingsPath), "project-settings.json");
       const options = { settingsPath, projectLocalSettingsPath, projectSettingsPath };
-      saveWorkflowSettings({ inheritMainModel: true }, settingsPath);
+      writeWorkflowSettingsFile(settingsPath, { inheritMainModel: true });
 
       assert.deepEqual(loadWorkflowSettings(options), { inheritMainModel: true });
 
@@ -447,7 +448,7 @@ describe("workflow settings", () => {
 
       // An external project overlay wins over the repo-local file.
       writeFileSync(projectLocalSettingsPath, JSON.stringify({ inheritMainModel: true }));
-      saveWorkflowSettings({ inheritMainModel: false }, { ...options, scope: "project" });
+      writeWorkflowSettingsFile(projectSettingsPath, { inheritMainModel: false });
       assert.deepEqual(loadWorkflowSettings(options), { inheritMainModel: false });
       assert.deepEqual(JSON.parse(readFileSync(projectLocalSettingsPath, "utf-8")), { inheritMainModel: true });
     });
@@ -480,8 +481,8 @@ describe("workflow settings", () => {
         const globalPath = getWorkflowSettingsPath();
         const projectPath = getWorkflowProjectSettingsPath(cwd);
 
-        saveWorkflowSettings({ persistAgentSessions: false }, globalPath);
-        saveWorkflowSettings({ persistAgentSessions: true }, { cwd, settingsPath: globalPath, scope: "project" });
+        writeWorkflowSettingsFile(globalPath, { persistAgentSessions: false });
+        writeWorkflowSettingsFile(getWorkflowProjectSettingsPath(cwd), { persistAgentSessions: true });
 
         assert.deepEqual(loadWorkflowSettings(globalPath), { persistAgentSessions: false });
         assert.deepEqual(loadWorkflowSettings({ cwd, settingsPath: globalPath, projectSettingsPath: projectPath }), {
