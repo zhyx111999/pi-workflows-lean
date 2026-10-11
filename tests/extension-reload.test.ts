@@ -134,6 +134,24 @@ test("a handoff nobody claims before its TTL expires pauses any still-running ru
   assert.equal(takeWorkflowRuntime(), undefined, "the expired entry must be gone so it can't be claimed later");
 });
 
+test("a stranded runtime releases its generation's hold; a claimed one is left to the next generation", async () => {
+  const released: string[] = [];
+  const staged = (name: string): WorkflowReloadRuntime => ({
+    ...runtime(`/tmp/reload-handoff-${process.pid}-release-${name}`),
+    release: () => released.push(name),
+  });
+  discardWorkflowRuntime();
+
+  handoffWorkflowRuntime(staged("claimed"));
+  assert.ok(claimWorkflowRuntime().compatible);
+  handoffWorkflowRuntime(staged("displaced"));
+  handoffWorkflowRuntime(staged("expired"), 10);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  pauseStrandedWorkflowRuntime(staged("rejected"));
+
+  assert.deepEqual(released, ["displaced", "expired", "rejected"]);
+});
+
 test("pauseStranded walks live runs even when listRuns is session-filtered empty", () => {
   const cwd = `/tmp/reload-handoff-${process.pid}-live-vs-filtered`;
   const paused: string[] = [];

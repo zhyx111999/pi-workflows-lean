@@ -58,7 +58,7 @@ WorkflowAgent.run()                          agent.ts
 |---|---|
 | `extensions/workflow.ts` | Pi 加载的入口：导入编译后的 `dist/pi-extension.js`，并带上修改时间参数，让 `/reload` 能加载新构建 |
 | `pi-extension.ts` | 装配一切：注册两个工具和斜杠命令，安装隐藏提示钩子、结果投递、额度暂停后的自动恢复；`session_start` 时绑定会话、处理跨项目切换 |
-| `extension-reload.ts` | `/reload`、`/new`、resume、fork 时，把正在运行的管理器交给下一代扩展，后台运行不中断 |
+| `extension-reload.ts` | `/reload`、`/new`、resume、fork 时，把正在运行的管理器交给下一代扩展，后台运行不中断；没人接管（例如扩展已停用）时暂停运行，并释放上一代占用的会话 |
 | `workflow-editor.ts` / `parent-prompt.ts` | 隐藏的主模型提示词、`/workflows run` 的指令文字、`/workflows-progress` 命令 |
 
 ### 工具层（给主模型）
@@ -146,7 +146,8 @@ WorkflowAgent.run()                          agent.ts
 | `task-panel.ts` | 入口：实时面板，以及把结果按会话投递回对话 |
 | `task-panel/delivery-*.ts` | 会话端点、发送与确认、有界重试 |
 | `task-panel/pending-markers.ts` | 先写“待投递”标记再发送，发送失败或进程崩溃都不丢结果 |
-| `task-panel/host-send-capture.ts` | 捕获宿主会话的发送函数，保证结果送回发起它的那个会话 |
+| `task-panel/host-session-capture.ts` | 通过本扩展自己的 `pi.sendMessage` 探测到它绑定的宿主会话，保证结果送回发起它的那个会话；只在这次同步探测期间包装宿主原型、随即还原，未加载本扩展的会话永远不会被捕获 |
+| `task-panel/confirmed-send.ts` | 等宿主空闲再发送，结果写进会话文件后才算送达 |
 | `task-panel/result-text.ts` | 完成、失败、暂停、等待暂停点时的通知文字 |
 | `task-panel/panel-*.ts` | 输入框下方的实时进度面板 |
 | `workflow-ui.ts` + `navigator/` | `/workflows` 导航器：运行列表 → 阶段 → 子代理 → 详情 → 全文分页 |

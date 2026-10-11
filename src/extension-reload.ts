@@ -23,6 +23,12 @@ export interface WorkflowReloadRuntime {
   /** Package version that created this manager. Only an exact match is retained. */
   extensionVersion: string;
   manager: WorkflowManager;
+  /**
+   * Lets go of what the outgoing extension generation still holds for its
+   * session, such as the captured host session, once no compatible generation
+   * will take the runtime over.
+   */
+  release?: () => void;
 }
 
 export interface WorkflowRuntimeClaim {
@@ -130,7 +136,9 @@ export function claimWorkflowRuntime(): WorkflowRuntimeClaim {
  * Move a runtime's live runs onto the existing journal recovery path when no
  * compatible manager will carry them forward — process exit, a replaced
  * extension version, a cross-project handoff rejection, or a staged handoff
- * that expired unclaimed.
+ * that expired unclaimed — and release what its generation still holds, since
+ * no later generation will rebind it. An extension disabled before a reload
+ * reaches this path through the expiry.
  *
  * Enumerates every live in-memory run (listLiveRuns), not the session-filtered
  * listRuns() view — after a session replacement the bound sessionId no longer
@@ -138,16 +146,22 @@ export function claimWorkflowRuntime(): WorkflowRuntimeClaim {
  * would silently leave them burning tokens.
  */
 export function pauseStrandedWorkflowRuntime(runtime: WorkflowReloadRuntime): number {
-  let paused = 0;
+  const paused = pauseLiveRuns(runtime.manager);
+  runtime.release?.();
+  return paused;
+}
+
+function pauseLiveRuns(manager: WorkflowManager): number {
   let live: Array<{ runId: string; status: string }>;
   try {
-    live = runtime.manager.listLiveRuns();
+    live = manager.listLiveRuns();
   } catch {
     // Stubs in tests / partially constructed managers — nothing to pause.
     return 0;
   }
+  let paused = 0;
   for (const run of live) {
-    if (run.status === "running" && runtime.manager.pause(run.runId)) paused++;
+    if (run.status === "running" && manager.pause(run.runId)) paused++;
   }
   return paused;
 }
