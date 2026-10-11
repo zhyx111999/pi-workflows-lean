@@ -9,6 +9,14 @@ import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
 import type { PriorAgentExecution } from "./display.js";
 import { RunRecordDeletedError, WorkflowErrorCode } from "./errors.js";
 import {
+  isDeadLockDebris,
+  type LockOwner,
+  newLockToken,
+  pidIsAlive,
+  releaseFileLock,
+  tryClaimFileLock,
+} from "./file-lock.js";
+import {
   ensureDir as ensureDirFs,
   listFilesSafe,
   type PersistenceFsLayer,
@@ -212,13 +220,12 @@ export interface RunLease {
   token: string;
 }
 
-interface LockFile {
+/** An execution lease: the lock owner record plus the run it covers. */
+type LockFile = LockOwner & {
   runId: string;
   runPath: string;
-  pid: number;
   startedAt: string;
-  token: string;
-}
+};
 
 /**
  * Filesystem operations used by run persistence.
@@ -347,80 +354,49 @@ export function createRunPersistence(
   // instance has never seen is still created normally.
   const knownRunIds = new Set<string>();
 
-  const pidIsAlive = (pid: number): boolean => {
-    if (!Number.isInteger(pid) || pid <= 0) return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch (err) {
-      if ((err as { code?: string }).code === "EPERM") return true;
-      return false;
-    }
-  };
+  const ownerIsGone = (owner: LockOwner) => !pidIsAlive(owner.pid);
 
-  const readLockAt = (path: string): LockFile | null => {
-    try {
-      return JSON.parse(_readFileSync(path, "utf-8")) as LockFile;
-    } catch {
-      return null;
-    }
-  };
-
-  const readLock = (runId: string): LockFile | null => readLockAt(lockPath(runId));
   // Short writer mutex serializes append + head commit, including metadata
-  // writes while a long-lived execution lease is held. Never busy-wait.
+  // writes while a long-lived execution lease is held. Never busy-wait: a
+  // write that finds another writer fails and the caller decides.
   const mutate = <T>(runId: string, fn: () => T): T => {
     ensureDir();
     const path = `${runPath(runId)}.write-lock`;
-    const token = `${process.pid}-${Date.now()}-${Math.random()}`;
-    const ownerFile = `${path}.${randomUUID()}.owner`;
-    const release = (target: string) => {
-      if (readLockAt(target)?.token === token) unlinkIfExistsSafe(fs, target);
-    };
-    const claim = (target: string, depth = 0): void => {
-      if (depth > 8) throw new Error("Run writer recovery chain is too deep");
-      for (let attempt = 0; ; attempt++) {
-        try {
-          fs.linkSync(ownerFile, target);
-          return;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "EEXIST" || attempt > 0) throw error;
-          const existing = readLockAt(target);
-          if (
-            !existing ||
-            typeof existing.token !== "string" ||
-            !Number.isInteger(existing.pid) ||
-            existing.pid <= 0 ||
-            pidIsAlive(existing.pid)
-          )
-            throw error;
-          // Serialize reapers of this exact dead-owner incarnation. Without
-          // this guard, a second reaper could unlink a new live mutex after
-          // both had observed the same stale owner.
-          const key = createHash("sha256").update(`${target}\0${existing.token}`).digest("hex");
-          const guard = `${path}.reap-${key}`;
-          claim(guard, depth + 1);
-          try {
-            if (readLockAt(target)?.token === existing.token) _unlinkSync(target);
-          } finally {
-            release(guard);
-          }
-        }
-      }
-    };
-    // Publish a fully written owner atomically. A process dying between open
-    // and write can leave only an unlinked candidate, never an empty mutex.
-    try {
-      _writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, token }), { flag: "wx" });
-      claim(path);
-    } finally {
-      unlinkIfExistsSafe(fs, ownerFile);
+    const token = newLockToken();
+    if (!tryClaimFileLock(fs, path, { pid: process.pid, token }, ownerIsGone)) {
+      throw Object.assign(new Error(`Run ${runId} is being written by another process`), { code: "EBUSY" });
     }
     try {
       return fn();
     } finally {
-      release(path);
+      releaseFileLock(fs, path, token);
       invalidateListCache();
+    }
+  };
+
+  /**
+   * The run's execution lease. A lease whose owner process is gone, or that was
+   * recorded for another runs directory, may be taken over.
+   */
+  const acquireLease = (runId: string): RunLease | null => {
+    ensureDir();
+    const path = runPath(runId);
+    const owner: LockFile = {
+      runId,
+      runPath: path,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      token: newLockToken(),
+    };
+    const stale = (existing: LockOwner) => existing.runPath !== path || !pidIsAlive(existing.pid);
+    return tryClaimFileLock(fs, lockPath(runId), owner, stale) ? { runId, token: owner.token } : null;
+  };
+
+  const releaseLease = (lease: RunLease): void => {
+    try {
+      releaseFileLock(fs, lockPath(lease.runId), lease.token);
+    } catch {
+      // Best-effort cleanup only.
     }
   };
 
@@ -528,15 +504,20 @@ export function createRunPersistence(
     const excess = terminal.length - maxTerminalRunsOnDisk;
     if (excess <= 0) return;
     for (const run of terminal.slice(0, excess)) {
+      // Hold the run's lease through the deletion, in the same order as resume
+      // (lease, then writer mutex), so no process can take the run over
+      // between the check and the delete.
+      const lease = acquireLease(run.runId);
+      if (!lease) continue;
       try {
         mutate(run.runId, () => {
-          const lock = readLock(run.runId);
-          if (lock && pidIsAlive(lock.pid)) return;
           const fresh = records.peek(runPath(run.runId));
           if (fresh && TERMINAL_RUN_STATUSES.has(fresh.status) && !fresh.pendingDelivery) deleteRunFiles(run.runId);
         });
       } catch {
         // Contended or unreadable records remain available for the next pass.
+      } finally {
+        releaseLease(lease);
       }
     }
     invalidateListCache();
@@ -554,6 +535,9 @@ export function createRunPersistence(
    */
   const deleteRunFiles = (runId: string): boolean => {
     const path = runPath(runId);
+    const isLockDebrisName = (name: string) =>
+      [`${runId}.json.write-lock.`, `${runId}.lock.`].some((prefix) => name.startsWith(prefix)) &&
+      (name.endsWith(".owner") || name.includes(".reap-"));
     listViews.delete(runId);
     records.forget(path);
     // A missing file is already deleted, which keeps every step idempotent.
@@ -584,8 +568,9 @@ export function createRunPersistence(
     try {
       for (const name of _existsSync(runsDir) ? fs.readdirSync(runsDir) : []) {
         if (name === `${runId}.log` || name.startsWith(`${runId}.json.result-`)) cleanUp(join(runsDir, name), true);
-        // Writer-mutex debris of crashed processes is removed but is not run data.
-        else if (name.startsWith(`${runId}.json.write-lock.`) && (name.endsWith(".owner") || name.includes(".reap-")))
+        // Lock debris (claim candidates, reap guards) of processes that are gone
+        // is removed but is not run data; a live process's claim stays untouched.
+        else if (isLockDebrisName(name) && isDeadLockDebris(fs, join(runsDir, name)))
           cleanUp(join(runsDir, name), false);
       }
     } catch (error) {
@@ -709,47 +694,9 @@ export function createRunPersistence(
       }
     },
 
-    acquireRunLease(runId: string): RunLease | null {
-      ensureDir();
-      const path = runPath(runId);
-      const lock = lockPath(runId);
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-        const payload: LockFile = {
-          runId,
-          runPath: path,
-          pid: process.pid,
-          startedAt: new Date().toISOString(),
-          token,
-        };
-        try {
-          _writeFileSync(lock, JSON.stringify(payload, null, 2), { flag: "wx" });
-          return { runId, token };
-        } catch (err) {
-          const code = (err as { code?: string }).code;
-          if (code !== "EEXIST") throw err;
-          const existing = readLock(runId);
-          if (existing && existing.runPath === path && pidIsAlive(existing.pid)) {
-            return null;
-          }
-          try {
-            _unlinkSync(lock);
-          } catch {
-            return null;
-          }
-        }
-      }
-      return null;
-    },
+    acquireRunLease: acquireLease,
 
-    releaseRunLease(lease: RunLease): void {
-      try {
-        const existing = readLock(lease.runId);
-        if (existing?.token === lease.token) _unlinkSync(lockPath(lease.runId));
-      } catch {
-        // Best-effort cleanup only.
-      }
-    },
+    releaseRunLease: releaseLease,
 
     getRunsDir(): string {
       return runsDir;

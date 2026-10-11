@@ -376,7 +376,10 @@ test(
     first.save(state("mutex"));
     const lock = join(first.getRunsDir(), "mutex.json.write-lock");
     writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "foreign" }));
-    assert.throws(() => first.save({ ...state("mutex"), script: "must not commit" }), /EEXIST/);
+    assert.throws(
+      () => first.save({ ...state("mutex"), script: "must not commit" }),
+      /being written by another process/,
+    );
     assert.equal(first.load("mutex")?.script, state("mutex").script);
     assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "foreign");
   }),
@@ -481,7 +484,7 @@ test(
         real.linkSync(from, to);
         if (String(to) === guard && !tested) {
           tested = true;
-          assert.throws(() => base.save(state("reapers")), /EEXIST/);
+          assert.throws(() => base.save(state("reapers")), /being written by another process/);
           assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "dead");
         }
       }) as typeof real.linkSync,
@@ -514,7 +517,7 @@ test(
         real.linkSync(from, to);
       }) as typeof real.linkSync,
     });
-    assert.throws(() => contender.save(state("replacement-owner")), /EEXIST/);
+    assert.throws(() => contender.save(state("replacement-owner")), /being written by another process/);
     assert.ok(replaced);
     assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "new-live-owner");
   }),
@@ -692,5 +695,86 @@ test(
       writer.save(path, { ...revision("race", i), logs: ["after the view"] });
     }
     assert.deepEqual(view.logs, ["after the view"], "a listed view still loads its fields after its log is retired");
+  }),
+);
+
+test(
+  "a stale lease observation cannot remove a lease another process just took",
+  withFixture((cwd) => {
+    const real = defaultPersistenceFs();
+    const base = createRunPersistence(cwd);
+    base.save(state("lease-race"));
+    const runsDir = base.getRunsDir();
+    const lock = join(runsDir, "lease-race.lock");
+    const owner = (pid: number, token: string) =>
+      JSON.stringify({ runId: "lease-race", runPath: join(runsDir, "lease-race.json"), pid, token, startedAt: "x" });
+    writeFileSync(lock, owner(2147483647, "dead"));
+    let replaced = false;
+    const contender = createRunPersistence(cwd, {
+      linkSync: ((from, to) => {
+        if (String(to).startsWith(`${lock}.reap-`) && !replaced) {
+          // Another process reclaimed the dead lease and took it while this
+          // contender was still acting on its old observation.
+          replaced = true;
+          writeFileSync(lock, owner(process.pid, "new-live-owner"));
+        }
+        real.linkSync(from, to);
+      }) as typeof real.linkSync,
+    });
+    assert.equal(contender.acquireRunLease("lease-race"), null);
+    assert.ok(replaced);
+    assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "new-live-owner");
+  }),
+);
+
+test(
+  "a lease lock is published whole, and one that is not an owner record is never deleted on a guess",
+  withFixture((cwd) => {
+    const real = defaultPersistenceFs();
+    const base = createRunPersistence(cwd);
+    base.save(state("lease-publish"));
+    const lock = join(base.getRunsDir(), "lease-publish.lock");
+    const seen: string[] = [];
+    const watcher = createRunPersistence(cwd, {
+      linkSync: ((from, to) => {
+        real.linkSync(from, to);
+        if (String(to) === lock) seen.push(readFileSync(lock, "utf8"));
+      }) as typeof real.linkSync,
+    });
+    const lease = watcher.acquireRunLease("lease-publish");
+    assert.ok(lease);
+    assert.equal(JSON.parse(seen[0] ?? "").token, lease.token, "the lock appeared with its complete owner record");
+    assert.equal(base.acquireRunLease("lease-publish"), null, "a live owner keeps its lease");
+    watcher.releaseRunLease(lease);
+
+    writeFileSync(lock, "");
+    assert.equal(base.acquireRunLease("lease-publish"), null);
+    assert.equal(readFileSync(lock, "utf8"), "", "a damaged lock stays for inspection");
+  }),
+);
+
+test(
+  "retention holds a run's lease while it deletes, so no process can take the run over mid-delete",
+  withFixture((cwd) => {
+    const real = defaultPersistenceFs();
+    const other = createRunPersistence(cwd);
+    let leaseDuringDelete: unknown = "not reached";
+    const pruner = createRunPersistence(
+      cwd,
+      {
+        unlinkSync: ((path) => {
+          if (String(path).endsWith(`${join("runs", "oldest.json")}`) && leaseDuringDelete === "not reached") {
+            leaseDuringDelete = other.acquireRunLease("oldest");
+          }
+          real.unlinkSync(path);
+        }) as typeof real.unlinkSync,
+      },
+      { maxTerminalRunsOnDisk: 1 },
+    );
+    pruner.save({ ...state("oldest"), updatedAt: "2026-01-01T00:00:00.000Z" });
+    pruner.save(state("newest"));
+    assert.equal(leaseDuringDelete, null, "the pruner held the lease at the commit point");
+    assert.equal(pruner.load("oldest"), null);
+    assert.ok(pruner.load("newest"));
   }),
 );
