@@ -379,8 +379,7 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     return head ? preview(path, head) : null;
   }
   /** A light view of a run from its head; fields outside the index load the log on first access. */
-  function preview(path: string, head: unknown): PersistedRunState {
-    validateHead(head);
+  function preview(path: string, head: Head): PersistedRunState {
     const { index } = head;
     const view = { ...index } as unknown as PersistedRunState;
     // Getters close over only the small head/path, never the hydrated state.
@@ -552,7 +551,6 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
   return {
     read,
     peek,
-    preview,
     save,
     updateMetadata,
     recoverInterrupted,
