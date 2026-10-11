@@ -25,16 +25,18 @@ workflow) through the tool's top-level `name` input.
 
 ## Result
 
-`deep-research` returns `{ question, results }`, one `results` entry per
-planned query, in order:
+`deep-research` returns `{ question, planning, results }`. `planning` is
+`{ requestedAngles, plannedQueries, fellBackToQuestion }`: fewer planned
+queries than requested, or `fellBackToQuestion: true` when the planner failed
+and the question itself became the single query, means narrower coverage.
+`results` has one entry per planned query, in order:
 
 - `{ query, status: "ok", sources: [{ url, claims }] }` — the query was
   researched. Empty `sources` means nothing usable was found.
 - `{ query, status: "failed" }` — its research subagent did not finish, so the
   query is not covered either way. Check the run's subagents for the cause.
 
-If the planner fails, the question itself is the single query. Sources are raw;
-check the claims before relying on them.
+Sources are raw; check the claims before relying on them.
 
 ## Example
 

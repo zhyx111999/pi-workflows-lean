@@ -19,7 +19,7 @@ test("generateDeepResearchWorkflow produces a valid, parseable script", () => {
     meta.phases?.map((p) => p.title),
     ["Queries", "Gather"],
   );
-  assert.match(body, /return \{ question, results \}/, "returns per-query results to the parent");
+  assert.match(body, /return \{ question, planning, results \}/, "returns the planning and per-query results");
   assert.match(body, /args\.question/);
   assert.match(body, /web_search/);
   assert.match(body, /web_fetch/);
@@ -62,6 +62,7 @@ test("deep_research returns every gathered source to the parent and takes no fil
   });
   assert.deepEqual(output, {
     question: "Q",
+    planning: { requestedAngles: 2, plannedQueries: 2, fellBackToQuestion: false },
     results: [
       { query: "q1", status: "ok", sources: [{ url: "https://a.example", claims: ["only-a"] }] },
       { query: "q2", status: "ok", sources: [{ url: "https://b.example", claims: ["only-b"] }] },
@@ -88,13 +89,22 @@ test("deep_research plans the default number of angles when args.angles is omitt
     const { output, prompts } = await runDeepResearch(args, planned);
     assert.match(prompts[0], new RegExp(`Produce ${DEEP_RESEARCH_DEFAULT_ANGLES} diverse`));
     assert.equal(output.results.length, DEEP_RESEARCH_DEFAULT_ANGLES);
+    assert.equal(
+      JSON.stringify(output.planning),
+      JSON.stringify({
+        requestedAngles: DEEP_RESEARCH_DEFAULT_ANGLES,
+        plannedQueries: DEEP_RESEARCH_DEFAULT_ANGLES,
+        fellBackToQuestion: false,
+      }),
+    );
   }
 });
 
 test("workflow-patterns skill documents the deep-research result and angles bounds", () => {
   const skill = readFileSync(join(import.meta.dirname, "../skills/workflow-patterns/SKILL.md"), "utf8");
   assert.match(skill, new RegExp(`from 1 to ${DEEP_RESEARCH_MAX_ANGLES}, default ${DEEP_RESEARCH_DEFAULT_ANGLES}`));
-  assert.match(skill, /`\{ question, results \}`/);
+  assert.match(skill, /`\{ question, planning, results \}`/);
+  assert.match(skill, /`\{ requestedAngles, plannedQueries, fellBackToQuestion \}`/);
   assert.match(skill, /\{ query, status: "ok", sources: \[\{ url, claims \}\] \}/);
   assert.match(skill, /\{ query, status: "failed" \}/);
 });
@@ -147,6 +157,11 @@ test("deep_research tolerates a null query planner and falls back to the questio
   // have the realm's Array prototype and fail a strict reference-equal check.
   const results = (result.result as { results?: Array<{ query: string; status: string }> })?.results;
   assert.equal(results?.length, 1, "a null planner should fall back to exactly one query");
+  const planning = (result.result as { planning?: Record<string, unknown> })?.planning;
+  assert.equal(
+    JSON.stringify(planning),
+    JSON.stringify({ requestedAngles: 3, plannedQueries: 1, fellBackToQuestion: true }),
+  );
   assert.equal(results?.[0].query, "What is WebGPU?", "the fallback query should be the original question");
   assert.equal(results?.[0].status, "ok");
 });

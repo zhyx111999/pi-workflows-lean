@@ -23,8 +23,8 @@ export const DEEP_RESEARCH_MAX_ANGLES = MAX_CONCURRENCY;
  * so the question is never string-interpolated into source — no escaping hazards.
  * builtin-workflows.ts validates `args` before a run starts, so the script trusts
  * them. The run supplies the web tools (see builtin-workflows.ts). The result keeps
- * every query with its outcome and sources, so the parent model can check coverage
- * as well as the claims.
+ * every query with its outcome and sources, and says how the queries were
+ * planned, so the parent model can check coverage as well as the claims.
  */
 export function generateDeepResearchWorkflow(): string {
   return `export const meta = {
@@ -50,7 +50,11 @@ const plan = await agent(
 // question as a single query so research still proceeds (degraded) instead of
 // crashing on plan.queries.
 const planned = plan && Array.isArray(plan.queries) ? plan.queries.filter((q) => typeof q === 'string' && q.trim().length > 0) : []
-const queries = (planned.length > 0 ? planned : [question]).slice(0, angles)
+const fellBack = planned.length === 0
+const queries = (fellBack ? [question] : planned).slice(0, angles)
+// How the queries came about: fewer than requested, or the question itself when
+// planning failed, is reduced coverage the parent should know about.
+const planning = { requestedAngles: angles, plannedQueries: queries.length, fellBackToQuestion: fellBack }
 
 phase('Gather')
 const gathered = await parallel(queries.map((q, i) => () =>
@@ -72,5 +76,5 @@ const results = queries.map((query, i) => {
     : { query, status: 'failed' }
 })
 
-return { question, results }`;
+return { question, planning, results }`;
 }
