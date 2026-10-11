@@ -47,11 +47,10 @@ export function createCheckpoint(ctx: RunContext) {
       activeResponse?.checkpointId !== checkpointId
     ) {
       state.agentCount++;
+      ctx.noteReplayed(callIndex);
       return cached.result;
     }
-    if (cached == null || cached.hash !== callHash) {
-      state.journalMissed = true;
-    }
+    if (cached == null || cached.hash !== callHash) ctx.noteJournalMiss();
     state.agentCount++;
 
     if (activeResponse) {

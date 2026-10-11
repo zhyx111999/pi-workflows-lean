@@ -29,6 +29,8 @@ export interface RuntimeState {
    * stale result.
    */
   journalMissed: boolean;
+  /** Journal indices this execution replayed, so a miss can tell the caller which entries remain valid. */
+  replayedIndices: Set<number>;
   limiter: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Logical agent()/checkpoint() slots reserved so far; capped by maxAgents. */
   agentCount: number;
@@ -94,6 +96,15 @@ export interface RunContext extends RunSetup {
   readonly agentLimitError: () => WorkflowError;
   /** Every logical agent() call and checkpoint consumes one slot of the run's maxAgents cap. */
   readonly ensureAgentCapacity: () => void;
+  /** Record that the call at `index` replayed its journaled result. */
+  readonly noteReplayed: (index: number) => void;
+  /**
+   * Record that a call missed the journal. In a script run the first miss ends
+   * the unchanged prefix: entries this execution has not replayed by then
+   * describe calls that now run after a changed one, so the caller drops them
+   * instead of keeping them for a later resume to replay.
+   */
+  readonly noteJournalMiss: () => void;
 }
 
 export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptions, concurrency: number): RuntimeState {
@@ -106,6 +117,7 @@ export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptio
     currentPhase: firstPhase,
     scriptCalls: CallSequence.forScript(),
     journalMissed: false,
+    replayedIndices: new Set<number>(),
     limiter: createLimiter(concurrency),
     // Not seeded on resume: the script replays from call 0 and every replayed
     // call counts again, so maxAgents stays a cumulative cap on its own.
@@ -148,5 +160,24 @@ export function createRunContext(setup: RunSetup): RunContext {
   const ensureAgentCapacity = () => {
     if (state.agentCount >= maxAgents) throw agentLimitError();
   };
-  return { ...setup, log, isAborted, throwIfAborted, agentLimitError, ensureAgentCapacity };
+  const noteReplayed = (index: number) => {
+    state.replayedIndices.add(index);
+  };
+  const noteJournalMiss = () => {
+    if (state.journalMissed) return;
+    state.journalMissed = true;
+    if (!options.independentCalls && options.resumeJournal?.size) {
+      options.onJournalPrefixEnd?.([...state.replayedIndices]);
+    }
+  };
+  return {
+    ...setup,
+    log,
+    isAborted,
+    throwIfAborted,
+    agentLimitError,
+    ensureAgentCapacity,
+    noteReplayed,
+    noteJournalMiss,
+  };
 }

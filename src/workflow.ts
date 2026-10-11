@@ -147,6 +147,13 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
   independentCalls?: boolean;
   /** Called after each live agent completes so the caller can persist the journal. */
   onAgentJournal?: (entry: JournalEntry) => void;
+  /**
+   * A resumed script run missed its journal: only the listed entries, which
+   * this execution replayed before the miss, still hold. The caller drops the
+   * rest, which belong to calls now made after a changed one, so a later
+   * resume cannot replay them. Never called for independent calls.
+   */
+  onJournalPrefixEnd?: (replayedIndices: number[]) => void;
   /** Active durable checkpoint response supplied by WorkflowManager.resume(). */
   resumeCheckpoint?: WorkflowCheckpoint;
   /** Persist a durable checkpoint transition before it becomes externally observable. */

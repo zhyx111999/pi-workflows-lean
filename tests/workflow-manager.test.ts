@@ -6288,3 +6288,46 @@ return await agent('x')`;
     assert.deepEqual(events, [runId], "watchers still get the lifecycle fact");
   }),
 );
+
+test(
+  "a resume after an edited rerun never replays results that ran after the edited call",
+  withTempCwd(async (cwd) => {
+    const ran: string[] = [];
+    let failB = false;
+    const runner = {
+      async run(prompt: string) {
+        ran.push(prompt);
+        if (prompt === "B" && failB) {
+          throw new WorkflowError("B broke", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
+        }
+        return `${prompt}-result`;
+      },
+    };
+    const manager = new WorkflowManager({ cwd, agent: runner });
+    manager.on("error", () => {});
+    const script = (a: string) => `export const meta = { name: 'two_step', description: 'A then B' }
+const a = await agent('${a}', { label: 'a' })
+const b = await agent('B', { label: 'b' })
+return [a, b]`;
+
+    const { runId, promise } = manager.startInBackground(script("A1"));
+    // Script values come from the vm realm; copy them into this realm to compare.
+    assert.deepEqual(Array.from((await promise).result as unknown[]), ["A1-result", "B-result"]);
+
+    // Edit A: the new A runs live, so B must run live too, and here it fails.
+    failB = true;
+    assert.equal(await manager.resume(runId, { script: script("A2") }), true);
+    while (manager.findRun(runId)?.status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(manager.findRun(runId)?.status, "failed");
+
+    // Resume without an edit: A2 replays, but B's journaled result belongs to
+    // the run before the edit and must not come back.
+    failB = false;
+    ran.length = 0;
+    assert.equal(await manager.resume(runId), true);
+    while (manager.findRun(runId)?.status === "running") await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(manager.findRun(runId)?.status, "completed");
+    assert.deepEqual(ran, ["B"], "only B runs; the edited A replays");
+    assert.deepEqual(Array.from(manager.getRun(runId)?.result?.result as unknown[]), ["A2-result", "B-result"]);
+  }),
+);

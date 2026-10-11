@@ -27,6 +27,7 @@ export type RunEventHooks = Pick<
   WorkflowRunOptions,
   | "onWorkflowCheckpoint"
   | "onAgentJournal"
+  | "onJournalPrefixEnd"
   | "onLog"
   | "onPhase"
   | "onAgentStart"
@@ -59,6 +60,11 @@ export function runEventHooks(managed: ManagedRun, sink: RunEventSink): RunEvent
         managed.status = previousStatus;
         throw error;
       }
+    },
+    onJournalPrefixEnd: (replayedIndices) => {
+      const kept = new Set(replayedIndices);
+      managed.journal = managed.journal.filter((e) => kept.has(e.index));
+      sink.schedulePersist();
     },
     onAgentJournal: (entry) => {
       // Keep the latest entry per call index. This fires once per finished agent

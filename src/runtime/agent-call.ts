@@ -126,12 +126,11 @@ export function createAgent(ctx: RunContext) {
     const cachedEmptyOutput = hashMatches && isEmptyTextAgentResult(cached.result, agentOptions.schema);
     const withinReplay = ctx.options.independentCalls || !state.journalMissed;
     if (!state.resumeBarrierReached && hashMatches && !cachedEmptyOutput && withinReplay) {
+      ctx.noteReplayed(index);
       return replayFromJournal(ctx, call, cached);
     }
     // A genuine miss marks where the unchanged prefix ends.
-    if (!hashMatches || cachedEmptyOutput) {
-      state.journalMissed = true;
-    }
+    if (!hashMatches || cachedEmptyOutput) ctx.noteJournalMiss();
     return runLiveAgent(ctx, call);
   };
 
