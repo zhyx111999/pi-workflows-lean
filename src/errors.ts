@@ -91,6 +91,22 @@ export class RunRecordDeletedError extends Error {
   }
 }
 
+/**
+ * A run's record files exist but cannot be read: a damaged head and backup, or
+ * a log that does not match its committed head. The files are left as they are
+ * for diagnosis, and the run is never treated as missing, which would let a
+ * later write replace it.
+ */
+export class RunRecordUnreadableError extends Error {
+  readonly path: string;
+
+  constructor(path: string, reason: string) {
+    super(`workflow run record ${path} cannot be read: ${reason}`);
+    this.name = "RunRecordUnreadableError";
+    this.path = path;
+  }
+}
+
 /** Contract failure that retains every definition or assembly diagnostic. */
 export class WorkflowCapabilityContractError extends Error {
   readonly diagnostics: readonly CapabilityErrorDiagnostic[];

@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { RunRecordUnreadableError } from "../src/errors.js";
 import { defaultPersistenceFs, type PersistenceFsLayer } from "../src/fs-persistence.js";
 import { createRunPersistence, type PersistedRunState } from "../src/run-persistence.js";
 import { createRunRecordStore } from "../src/run-record-store.js";
@@ -176,14 +177,14 @@ test(
     rp.save(state(truncatedId, [{ index: 0, hash: "h", result: "value" }]));
     const truncatedLog = join(runsDir, `${truncatedId}.json.events.jsonl`);
     truncateSync(truncatedLog, statSync(truncatedLog).size - 1);
-    assert.equal(createRunPersistence(cwd).load(truncatedId), null);
+    assert.throws(() => createRunPersistence(cwd).load(truncatedId), RunRecordUnreadableError);
 
     const modifiedId = "modified-events";
     rp.save(state(modifiedId, [{ index: 0, hash: "h", result: "value" }]));
     const modifiedLog = join(runsDir, `${modifiedId}.json.events.jsonl`);
     const raw = readFileSync(modifiedLog, "utf8");
     writeFileSync(modifiedLog, raw.replace("value", "tampered"), "utf8");
-    assert.equal(createRunPersistence(cwd).load(modifiedId), null);
+    assert.throws(() => createRunPersistence(cwd).load(modifiedId), RunRecordUnreadableError);
   }),
 );
 
@@ -393,9 +394,9 @@ test(
     const path = join(rp.getRunsDir(), "tampered-head.json");
     const head = JSON.parse(readFileSync(path, "utf8"));
     writeFileSync(path, JSON.stringify({ ...head, hash: "invalid" }));
-    assert.equal(rp.load("tampered-head"), null);
+    assert.throws(() => rp.load("tampered-head"), RunRecordUnreadableError);
     writeFileSync(path, JSON.stringify({ ...head, format: "pi-workflow-run-v99" }));
-    assert.equal(rp.load("tampered-head"), null);
+    assert.throws(() => rp.load("tampered-head"), /Unsupported/);
     assert.throws(() => rp.save(state("tampered-head")), /Unsupported/);
   }),
 );
@@ -776,5 +777,42 @@ test(
     assert.equal(leaseDuringDelete, null, "the pruner held the lease at the commit point");
     assert.equal(pruner.load("oldest"), null);
     assert.ok(pruner.load("newest"));
+  }),
+);
+
+test(
+  "a record whose head and backup are both damaged fails closed and is never written over",
+  withFixture((cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save(state("both-damaged", [{ index: 0, hash: "h", result: "paid result" }]));
+    const path = join(rp.getRunsDir(), "both-damaged.json");
+    const log = `${path}.events.jsonl`;
+    const before = readFileSync(log, "utf8");
+    writeFileSync(path, "{ torn");
+    writeFileSync(`${path}.bak`, "{ torn too");
+
+    const reader = createRunPersistence(cwd);
+    assert.throws(() => reader.load("both-damaged"), RunRecordUnreadableError);
+    assert.throws(() => reader.loadPreview("both-damaged"), RunRecordUnreadableError);
+    assert.throws(() => reader.save(state("both-damaged")), RunRecordUnreadableError);
+    assert.equal(readFileSync(log, "utf8"), before, "the committed log is untouched");
+  }),
+);
+
+test(
+  "a head that parses but is not a valid commit falls back to its backup like a torn one",
+  withFixture((cwd) => {
+    const rp = createRunPersistence(cwd);
+    rp.save(state("bad-head"));
+    const path = join(rp.getRunsDir(), "bad-head.json");
+    const head = JSON.parse(readFileSync(path, "utf8"));
+    writeFileSync(path, JSON.stringify({ ...head, bytes: -1 }));
+
+    const reader = createRunPersistence(cwd);
+    assert.equal(reader.load("bad-head")?.runId, "bad-head");
+    assert.ok(
+      reader.list().some((run) => run.runId === "bad-head"),
+      "listed exactly as load() reads it",
+    );
   }),
 );

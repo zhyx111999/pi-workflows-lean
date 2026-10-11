@@ -652,13 +652,9 @@ export function createRunPersistence(
     },
 
     load(runId: string): PersistedRunState | null {
-      // The store recovers a corrupt head from its .bak; a damaged log reads as no run.
-      let state: PersistedRunState | null;
-      try {
-        state = records.read(runPath(runId));
-      } catch {
-        return null;
-      }
+      // Null means no record. A damaged one throws RunRecordUnreadableError:
+      // reading it as missing would let a caller treat the run as deleted.
+      const state = records.read(runPath(runId));
       if (state) knownRunIds.add(runId);
       return state;
     },

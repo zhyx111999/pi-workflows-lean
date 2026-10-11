@@ -125,7 +125,6 @@ describe("subagents-setup skill", () => {
       const example = `${fenced("Agent roles", "markdown")}\n`;
       assert.deepEqual(parseAgentDefinition(example, "user", "reviewer.md"), {
         name: "reviewer",
-        description: "One line",
         tools: ["read", "bash"],
         disallowedTools: ["write"],
         model: "<provider>/<model>",

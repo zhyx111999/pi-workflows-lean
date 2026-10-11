@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -192,6 +193,11 @@ const DELETED_FILES = [
   { file: "backup", matches: (name: string) => name === "doomed.json.bak", committed: false },
   { file: "head", matches: (name: string) => name === "doomed.json", committed: false },
   { file: "event log", matches: (name: string) => name === "doomed.json.events.jsonl", committed: true },
+  {
+    file: "staged generation log",
+    matches: (name: string) => /^doomed.json.events.[0-9a-f-]{36}.jsonl$/.test(name),
+    committed: true,
+  },
   { file: "temporary head", matches: (name: string) => name === "doomed.json.tmp", committed: true },
   { file: "result artifact", matches: (name: string) => name.startsWith("doomed.json.result-"), committed: true },
   { file: "run log", matches: (name: string) => name === "doomed.log", committed: true },
@@ -214,6 +220,8 @@ for (const { file, matches, committed } of DELETED_FILES) {
       owner.exportResult("doomed", { answer: 42 });
       writeFileSync(join(owner.getRunsDir(), "doomed.log"), "[log] entry\n");
       writeFileSync(join(owner.getRunsDir(), "doomed.json.tmp"), "{}");
+      // A generation switch that crashed before committing leaves its staged log.
+      writeFileSync(join(owner.getRunsDir(), `doomed.json.events.${randomUUID()}.jsonl`), "");
 
       assert.throws(() => deleter.delete("doomed"), /EPERM/, "the failure is reported");
       const reader = createRunPersistence(cwd);
@@ -234,6 +242,23 @@ for (const { file, matches, committed } of DELETED_FILES) {
     }),
   );
 }
+
+test(
+  "a deletion whose cleanup fails after the commit still tells watchers the run is gone",
+  withTempProject(async (cwd) => {
+    const owner = createRunPersistence(cwd);
+    owner.save(record("half-deleted", "completed"));
+    // A directory where the run log should be cannot be unlinked, so the
+    // cleanup after the commit point fails.
+    mkdirSync(join(owner.getRunsDir(), "half-deleted.log"));
+    const manager = new WorkflowManager({ cwd });
+    const deleted: string[] = [];
+    manager.on("deleted", (event: { runId: string }) => deleted.push(event.runId));
+    assert.throws(() => manager.deleteRun("half-deleted"));
+    assert.deepEqual(deleted, ["half-deleted"]);
+    assert.equal(manager.findRun("half-deleted"), undefined);
+  }),
+);
 
 for (const write of ["updateMetadata", "moveSession", "recoverInterrupted"] as const) {
   test(

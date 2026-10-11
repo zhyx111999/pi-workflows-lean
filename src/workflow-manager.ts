@@ -634,8 +634,22 @@ export class WorkflowManager extends EventEmitter {
       // listeners, even when the files were already gone.
       if (deleted || managed) this.emit("deleted", { runId });
       return deleted;
+    } catch (error) {
+      // Removing the head commits a deletion. If only the cleanup after it
+      // failed, the run is gone all the same and watchers must hear it now.
+      if (this.recordIsGone(runId)) this.emit("deleted", { runId });
+      throw error;
     } finally {
       this.persistence.releaseRunLease(heldLease);
+    }
+  }
+
+  /** Whether the run has no record at all; a damaged record still counts as present. */
+  private recordIsGone(runId: string): boolean {
+    try {
+      return this.persistence.loadPreview(runId) === null;
+    } catch {
+      return false;
     }
   }
 

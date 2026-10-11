@@ -5,12 +5,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { aggregateAgentUsage } from "./display.js";
-import {
-  type PersistenceFsLayer,
-  readJsonWithBackupRecovery,
-  unlinkIfExistsSafe,
-  writeJsonAtomicWithBackup,
-} from "./fs-persistence.js";
+import { RunRecordUnreadableError } from "./errors.js";
+import { type PersistenceFsLayer, unlinkIfExistsSafe, writeJsonAtomicWithBackup } from "./fs-persistence.js";
 import { INTERRUPTED_AGENT_CAUSE, settleInterruptedPersistedAgents } from "./run-agent-settlement.js";
 import type { PersistedRunState } from "./run-persistence.js";
 
@@ -139,11 +135,34 @@ function validateHead(record: unknown): asserts record is Head {
   )
     throw new Error("Invalid run head");
 }
+/**
+ * The committed head, from the head file or, when that is torn or damaged, its
+ * backup. Null only when neither file exists. A head of another format came
+ * from a different writer version and is never bypassed for an older backup;
+ * when every file present is damaged the record fails closed instead of
+ * reading as missing, so no write can recreate the run over it.
+ */
 function readHead(fs: PersistenceFsLayer, path: string): Head | null {
-  const record = readJsonWithBackupRecovery<unknown>(fs, path);
-  if (record === null) return null;
-  validateHead(record);
-  return record;
+  let damage: string | undefined;
+  for (const candidate of [path, `${path}.bak`]) {
+    let record: unknown;
+    try {
+      record = JSON.parse(fs.readFileSync(candidate, "utf-8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") damage ??= (error as Error).message;
+      continue;
+    }
+    const format = (record as { format?: unknown } | null)?.format;
+    if (typeof format === "string" && format !== FORMAT) throw new Error("Unsupported run record format");
+    try {
+      validateHead(record);
+      return record;
+    } catch (error) {
+      damage ??= (error as Error).message;
+    }
+  }
+  if (damage !== undefined) throw new RunRecordUnreadableError(path, damage);
+  return null;
 }
 function digest(line: string): string {
   return createHash("sha256").update(line).digest("hex");
@@ -372,7 +391,13 @@ export function createRunRecordStore(fs: PersistenceFsLayer) {
     if (!head) return null;
     // A committed-but-damaged log fails closed, rather than silently replaying
     // an older paid-call prefix. Only a corrupt/missing head uses its backup.
-    return structuredClone(replay(path, head));
+    try {
+      return structuredClone(replay(path, head));
+    } catch (error) {
+      throw error instanceof RunRecordUnreadableError
+        ? error
+        : new RunRecordUnreadableError(path, (error as Error).message);
+    }
   }
   function peek(path: string): PersistedRunState | null {
     const head = readHead(fs, path);
