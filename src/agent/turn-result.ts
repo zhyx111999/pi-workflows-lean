@@ -60,7 +60,7 @@ export async function resolveStructuredOutput<T>(
   turnMessages: unknown[],
   capture: StructuredOutputCapture<T>,
   schema: TSchema,
-  options: TurnCheckOptions & { maxSchemaRetries?: number },
+  options: TurnCheckOptions & { maxSchemaRetries?: number; onNotice?: (message: string) => void },
 ): Promise<T> {
   if (capture.called) return capture.value as T;
 
@@ -80,8 +80,8 @@ export async function resolveStructuredOutput<T>(
 
   const extracted = extractValidated<T>(lastAssistantText(turnMessages), schema);
   if (extracted !== undefined) {
-    console.warn(
-      "[workflow] structured_output recovered from prose extraction (the model never called the tool); prefer a tool-reliable model",
+    options.onNotice?.(
+      "structured_output recovered from prose extraction (the model never called the tool); prefer a tool-reliable model",
     );
     return extracted;
   }

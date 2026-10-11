@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { ModelRegistry, ModelRuntime, type SessionManager } from "@earendil-works/pi-coding-agent";
+import type { SessionManagers } from "../src/agent/session-managers.js";
 import { WorkflowAgent } from "../src/agent.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
 
@@ -35,7 +36,7 @@ async function fauxRegistry(
 }
 
 type WorkflowAgentPrivates = {
-  createSessionManager(thread?: string, cwd?: string): SessionManager;
+  sessionManagers: SessionManagers;
 };
 
 type BindingProbe = { expectedSession?: unknown };
@@ -122,8 +123,8 @@ test("trusted middleware keeps appendEntry bound to the session whose hook is ru
         providerMiddlewareExtensions: ["binding-isolation-adapter"],
       });
       const privateAgent = agent as unknown as WorkflowAgentPrivates;
-      const firstManager = privateAgent.createSessionManager("first", cwd);
-      const secondManager = privateAgent.createSessionManager("second", cwd);
+      const firstManager = privateAgent.sessionManagers.forCall("first", cwd);
+      const secondManager = privateAgent.sessionManagers.forCall("second", cwd);
       const firstSessionId = firstManager.getSessionId();
       const secondSessionId = secondManager.getSessionId();
       const created: string[] = [];

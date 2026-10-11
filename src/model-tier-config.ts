@@ -210,12 +210,11 @@ export function buildDefaultTierConfig(
 }
 
 /**
- * One-time notice shown when an agent requests `opts.tier` but no
- * model-tiers.json is configured — in that state tiers silently fall back to
- * the session model (see `resolveAgentModelSpec` in agent/model-selection.ts), which is easy to
- * miss. This surfaces the fallback and the mapping the user *would* get by
- * configuring, using the same `buildDefaultTierConfig` ranking so the hint is
- * actionable. Pure/string-only so the caller owns how it's emitted.
+ * Notice for an agent that requests a tier while no model-tiers.json is saved:
+ * the session's main model stands in (see routeAgentModel in
+ * agent/model-selection.ts), which is easy to miss. It names the stand-in and
+ * the mapping configuring tiers would give, ranked like buildDefaultTierConfig,
+ * so the hint is actionable.
  */
 export function formatTierFallbackNotice(
   mainModel: string | undefined,
@@ -227,7 +226,7 @@ export function formatTierFallbackNotice(
     .map((tier) => `${tier}=${suggested.tiers[tier] || "?"}`)
     .join("  ");
   return (
-    `[workflow] An agent requested opts.tier but no model-tiers.json is configured, so tiers currently ` +
+    `An agent requested a tier but no model-tiers.json is configured, so tiers currently ` +
     `fall back to ${fallback}. Run /workflows-models to configure them` +
     (mapping ? `. Suggested mapping from your available models: ${mapping}` : ".")
   );

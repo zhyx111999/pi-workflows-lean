@@ -135,12 +135,12 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
   thinking?: ModelThinkingLevel;
   /**
    * Model tier name (e.g. "small", "medium", "big"), resolved from the user's
-   * model-tiers.json when no explicit `model` is given, falling back to the
-   * session's main model when the tier has no configured entry. A requested
-   * tier that resolves to an unavailable spec throws MODEL_NOT_FOUND naming the
-   * tier and the spec, just like an explicit `model`. Only the implicit route of
-   * an untagged agent degrades instead (see onModelFallback), because the
-   * script never asked for that model.
+   * model-tiers.json when no explicit `model` is given. With no
+   * model-tiers.json saved, the session's main model stands in. A tier the
+   * saved file does not define, or one that resolves to an unavailable spec,
+   * throws MODEL_NOT_FOUND naming the tier, just like an explicit `model`.
+   * Only the implicit route of an untagged agent degrades instead (see
+   * onNotice), because the script never asked for that model.
    */
   tier?: string;
   /**
@@ -151,14 +151,14 @@ export interface AgentRunOptions<TSchemaDef extends TSchema | undefined = undefi
    */
   onModelResolved?: (modelId: string) => void;
   /**
-   * Called at most once per WorkflowAgent instance when an untagged agent's
-   * implicit route — the default "medium" tier, or the inherited main model
-   * when inheritMainModel is on — resolves to an unavailable spec. That case
-   * degrades to the session default instead of throwing, so the run's own
-   * log must still record it. `tier` is only meaningful when
-   * `source === "medium-tier"`; key on `source`.
+   * Called with a notice the run's own log should record instead of raw
+   * console output: an untagged agent's implicit model route degrading to the
+   * session default, a tier used with no model-tiers.json saved, the model
+   * resolver's warning about a spec, a persisted-session warning or degrade,
+   * or a schema answer recovered from prose. Each kind of model degrade and
+   * the persisted-session warning are reported once per WorkflowAgent instance.
    */
-  onModelFallback?: (info: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) => void;
+  onNotice?: (message: string) => void;
   /** Called with a compact snapshot of this subagent's message/tool history. */
   onHistory?: (history: AgentHistoryEntry[]) => void;
   /**
@@ -303,7 +303,7 @@ export class WorkflowAgent {
     //    project cwd, not runCwd, so short-lived worktree agents still group
     //    under the project.
     const agentDir = getAgentDir();
-    const sessionManager = this.createSessionManager(options.thread, runCwd);
+    const sessionManager = this.sessionManagers.forCall(options.thread, runCwd, options.onNotice);
     const effectiveSessionManager =
       options.thread || !this.sessionOptions.sessionManager ? sessionManager : this.sessionOptions.sessionManager;
     // Report the child identity before the first prompt or usage event.
@@ -469,10 +469,6 @@ export class WorkflowAgent {
 
   private getSharedResourceLoader(agentDir: string, cwd = this.cwd): Promise<DefaultResourceLoader> {
     return this.resourceLoaders.get(agentDir, cwd);
-  }
-
-  private createSessionManager(thread?: string, cwd?: string): SessionManager {
-    return this.sessionManagers.forCall(thread, cwd);
   }
 
   /** Roll a thread back to its leaf before a failed turn, so the next turn continues from there. */

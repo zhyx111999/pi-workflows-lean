@@ -130,7 +130,6 @@ function settleCompleted(live: LiveRuns, managed: ManagedRun, result: WorkflowRu
   if (warning) {
     managed.snapshot.logs.push(warning);
     live.emit(managed, "log", { runId: managed.runId, message: warning });
-    console.warn(`[workflow] ${warning.replace(/\n\s*/g, " ")}`);
   }
   managed.result = result;
   if (controllingLifecycleAction(managed) === undefined) {

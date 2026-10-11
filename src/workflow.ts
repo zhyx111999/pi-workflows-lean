@@ -234,11 +234,11 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * before onAgentEnd. onAgentStart can only carry a guess (this call's
    * explicit/phase spec, else the session's main model), which is wrong for
    * tier-routed agents and for untagged agents that are routed through the
-   * "medium" tier or inherit the main model (see resolveAgentModelSpec). When
-   * that implicit route degrades to the settings default no spec resolves, so
-   * this does not fire. Fires once per attempt (and per turn of a named
-   * thread): treat it as idempotent. `id` is the per-call id of the other
-   * onAgent* events.
+   * "medium" tier or inherit the main model (see routeAgentModel). When no
+   * spec resolves (the settings default, or an implicit route that degraded
+   * to it) it reports the model the session bound. Fires once per attempt
+   * (and per turn of a named thread): treat it as idempotent. `id` is the
+   * per-call id of the other onAgent* events.
    */
   onAgentModel?: (event: { id: string; label: string; phase?: string; model: string }) => void;
   onTokenUsage?: (usage: AgentUsage) => void;

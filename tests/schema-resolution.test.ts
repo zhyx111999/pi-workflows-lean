@@ -178,8 +178,14 @@ describe("resolveStructuredOutput", () => {
 
   it("falls back to strict prose extraction from the turn transcript when repair fails", async () => {
     const { session, turnMessages, capture } = makeSession([], [assistant('{"word":"fromProse"}')]);
-    const r = await resolveStructuredOutput(session, turnMessages, capture, Schema, opts);
+    const notices: string[] = [];
+    const r = await resolveStructuredOutput(session, turnMessages, capture, Schema, {
+      ...opts,
+      onNotice: (message) => notices.push(message),
+    });
     assert.deepEqual(r, { word: "fromProse" });
+    assert.equal(notices.length, 1, "the recovery is reported to the run, not the console");
+    assert.match(notices[0], /recovered from prose extraction/);
   });
 
   it("throws SCHEMA_NONCOMPLIANCE when repair and extraction both fail", async () => {

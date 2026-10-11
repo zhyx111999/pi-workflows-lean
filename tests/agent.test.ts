@@ -15,8 +15,9 @@ import {
 import { Type } from "typebox";
 import { listAvailableModelSpecs } from "../src/agent/available-models.js";
 import { runtimeOf } from "../src/agent/model-registry.js";
-import { resolveAgentModelSpec } from "../src/agent/model-selection.js";
+import { AgentModelSelector, routeAgentModel } from "../src/agent/model-selection.js";
 import { isProviderMiddlewareExtensionPath } from "../src/agent/provider-middleware.js";
+import type { SessionManagers } from "../src/agent/session-managers.js";
 import { DEFAULT_EXCLUDED_SUBAGENT_TOOLS, subagentExcludedTools } from "../src/agent/session-tools.js";
 import { usageFromStats } from "../src/agent/session-usage.js";
 import { finalAssistantText, lastAssistantText } from "../src/agent/turn-result.js";
@@ -39,7 +40,7 @@ import { readProviderSystemPrompt } from "./helpers/pi-context.js";
 // Private methods used for testing - cast to this type to access them without `any`
 type WorkflowAgentPrivates = {
   buildPrompt(prompt: string, options: AgentRunOptions<any>, structured: boolean): string;
-  createSessionManager(thread?: string, cwd?: string): SessionManager;
+  sessionManagers: SessionManagers;
   restoreThreadLeaf(manager: SessionManager, leafId: string | null): void;
   getRegistry(perRunRegistry?: ModelRegistry): Promise<ModelRegistry>;
   getSharedResourceLoader(agentDir: string, cwd?: string): Promise<DefaultResourceLoader>;
@@ -77,13 +78,13 @@ function bashCwd(context: unknown): string {
 
 test("WorkflowAgent uses an in-memory session manager by default", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" });
-  const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+  const manager = (agent as unknown as WorkflowAgentPrivates).sessionManagers.forCall();
   assert.equal(manager.isPersisted(), false, "default must stay in-memory (back-compat)");
 });
 
 test("WorkflowAgent with persistAgentSessions=false explicitly stays in-memory", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp", persistAgentSessions: false });
-  const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+  const manager = (agent as unknown as WorkflowAgentPrivates).sessionManagers.forCall();
   assert.equal(manager.isPersisted(), false);
 });
 
@@ -94,7 +95,7 @@ test("WorkflowAgent with persistAgentSessions=true creates a file-backed manager
   try {
     withFakeHome(fakeHome, () => {
       const agent = new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true });
-      const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+      const manager = (agent as unknown as WorkflowAgentPrivates).sessionManagers.forCall();
       assert.equal(manager.isPersisted(), true, "flag must yield a file-backed session manager");
       // Sessions must be keyed by the runner's project cwd — never a per-call
       // worktree cwd — so transcripts group under the project's session dir.
@@ -120,7 +121,7 @@ test("persistent child sessions record the parentSession header without inheriti
       assert.ok(parentSessionFile);
 
       const agent = new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true, parentSessionFile });
-      const child = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
+      const child = (agent as unknown as WorkflowAgentPrivates).sessionManagers.forCall();
       assert.equal(child.getHeader()?.parentSession, parentSessionFile);
       assert.deepEqual(child.getEntries(), [], "parent messages must not be inherited");
 
@@ -143,7 +144,7 @@ test("persistent and in-memory child sessions omit parentSession without a paren
     withFakeHome(fakeHome, () => {
       const persistent = (
         new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true }) as unknown as WorkflowAgentPrivates
-      ).createSessionManager();
+      ).sessionManagers.forCall();
       assert.equal(persistent.getHeader()?.parentSession, undefined);
 
       const ephemeral = (
@@ -152,7 +153,7 @@ test("persistent and in-memory child sessions omit parentSession without a paren
           persistAgentSessions: false,
           parentSessionFile: "/parent.jsonl",
         }) as unknown as WorkflowAgentPrivates
-      ).createSessionManager();
+      ).sessionManagers.forCall();
       assert.equal(ephemeral.isPersisted(), false);
       assert.equal(ephemeral.getSessionFile(), undefined, "ephemeral children must not claim a session file");
       assert.equal(ephemeral.getHeader()?.parentSession, undefined);
@@ -204,7 +205,7 @@ test("onSessionCreated reports the effective manager before prompting and preser
       await agent.run("second threaded turn", { ...options, thread: "worker" });
       assert.deepEqual(identities[2], identities[1], "thread turns must report one stable identity");
       assert.notEqual(identities[1].sessionId, injected.getSessionId());
-      const threadManager = (agent as unknown as WorkflowAgentPrivates).createSessionManager("worker", worktree);
+      const threadManager = (agent as unknown as WorkflowAgentPrivates).sessionManagers.forCall("worker", worktree);
       assert.equal(identities[1].sessionId, threadManager.getSessionId());
       assert.equal(identities[1].sessionFile, threadManager.getSessionFile());
       assert.equal(threadManager.getCwd(), cwd, "persistence stays grouped by the project, not worktree");
@@ -265,16 +266,16 @@ test("registerSteer queues host instructions into the live session and unregiste
 
 test("WorkflowAgent retains one session manager per named thread", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" }) as unknown as WorkflowAgentPrivates;
-  const first = agent.createSessionManager("implementer");
-  const again = agent.createSessionManager("implementer");
-  const reviewer = agent.createSessionManager("reviewer");
+  const first = agent.sessionManagers.forCall("implementer");
+  const again = agent.sessionManagers.forCall("implementer");
+  const reviewer = agent.sessionManagers.forCall("reviewer");
 
   assert.equal(again, first);
   assert.equal(again.getSessionId(), first.getSessionId());
   assert.notEqual(reviewer.getSessionId(), first.getSessionId());
   const nextInvocation = new WorkflowAgent({ cwd: "/tmp" }) as unknown as WorkflowAgentPrivates;
-  assert.notEqual(nextInvocation.createSessionManager("implementer").getSessionId(), first.getSessionId());
-  assert.notEqual(agent.createSessionManager(), agent.createSessionManager(), "unthreaded calls remain one-shot");
+  assert.notEqual(nextInvocation.sessionManagers.forCall("implementer").getSessionId(), first.getSessionId());
+  assert.notEqual(agent.sessionManagers.forCall(), agent.sessionManagers.forCall(), "unthreaded calls remain one-shot");
 });
 
 test("WorkflowAgent rejects a named thread when its canonical cwd changes", () => {
@@ -282,14 +283,14 @@ test("WorkflowAgent rejects a named thread when its canonical cwd changes", () =
   const secondCwd = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-thread-cwd-second-"));
   try {
     const agent = new WorkflowAgent({ cwd: firstCwd }) as unknown as WorkflowAgentPrivates;
-    const first = agent.createSessionManager("implementer", firstCwd);
+    const first = agent.sessionManagers.forCall("implementer", firstCwd);
     assert.equal(
-      agent.createSessionManager("implementer", firstCwd),
+      agent.sessionManagers.forCall("implementer", firstCwd),
       first,
       "same canonical cwd retains the conversation",
     );
     assert.throws(
-      () => agent.createSessionManager("implementer", secondCwd),
+      () => agent.sessionManagers.forCall("implementer", secondCwd),
       (error: unknown) => {
         assert.ok(error instanceof WorkflowError);
         assert.equal(error.code, WorkflowErrorCode.SCRIPT_VALIDATION_ERROR);
@@ -670,7 +671,7 @@ test("WorkflowAgent.run loads AGENTS resources per canonical cwd and reuses only
 
 test("WorkflowAgent restores a failed named turn to its previous leaf", () => {
   const agent = new WorkflowAgent({ cwd: "/tmp" }) as unknown as WorkflowAgentPrivates;
-  const manager = agent.createSessionManager("implementer");
+  const manager = agent.sessionManagers.forCall("implementer");
   const acceptedLeaf = manager.appendSessionInfo("accepted");
   manager.appendSessionInfo("failed-attempt");
 
@@ -688,17 +689,34 @@ test("persistAgentSessions uses one file per named thread", () => {
         cwd: projectCwd,
         persistAgentSessions: true,
       }) as unknown as WorkflowAgentPrivates;
-      const implementer = agent.createSessionManager("implementer");
+      const implementer = agent.sessionManagers.forCall("implementer");
       implementer.appendSessionInfo("first turn");
-      agent.createSessionManager("implementer").appendSessionInfo("second turn");
-      agent.createSessionManager("reviewer").appendSessionInfo("review");
+      agent.sessionManagers.forCall("implementer").appendSessionInfo("second turn");
+      agent.sessionManagers.forCall("reviewer").appendSessionInfo("review");
 
       const sessionFiles = new Set([
         implementer.getSessionFile(),
-        agent.createSessionManager("implementer").getSessionFile(),
-        agent.createSessionManager("reviewer").getSessionFile(),
+        agent.sessionManagers.forCall("implementer").getSessionFile(),
+        agent.sessionManagers.forCall("reviewer").getSessionFile(),
       ]);
       assert.equal(sessionFiles.size, 2);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a persisted agent session warns once per WorkflowAgent that transcripts are written to disk", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-dynamic-workflows-persist-notice-"));
+  try {
+    withFakeHome(join(dir, "home"), () => {
+      const notices: string[] = [];
+      const agent = new WorkflowAgent({ cwd: join(dir, "project"), persistAgentSessions: true });
+      const managers = (agent as unknown as WorkflowAgentPrivates).sessionManagers;
+      managers.forCall(undefined, undefined, (m) => notices.push(m));
+      managers.forCall(undefined, undefined, (m) => notices.push(m));
+      assert.equal(notices.length, 1);
+      assert.match(notices[0], /persistAgentSessions is on: full subagent transcripts, which may include secrets/);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -718,20 +736,14 @@ test("WorkflowAgent degrades to in-memory when the session directory can't be cr
       mkdirSync(dirname(sessionsPath), { recursive: true });
       writeFileSync(sessionsPath, "not a directory");
 
-      const originalWarn = console.warn;
-      const warnings: unknown[][] = [];
-      console.warn = (...args: unknown[]) => warnings.push(args);
-      try {
-        const agent = new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true });
-        const manager = (agent as unknown as WorkflowAgentPrivates).createSessionManager();
-        assert.equal(manager.isPersisted(), false, "must degrade to in-memory rather than throw");
-        assert.ok(
-          warnings.some((args) => String(args[0]).includes("persistAgentSessions")),
-          "should log a warning about the degradation",
-        );
-      } finally {
-        console.warn = originalWarn;
-      }
+      const notices: string[] = [];
+      const agent = new WorkflowAgent({ cwd: projectCwd, persistAgentSessions: true });
+      const manager = (agent as unknown as WorkflowAgentPrivates).sessionManagers.forCall(undefined, undefined, (m) =>
+        notices.push(m),
+      );
+      assert.equal(manager.isPersisted(), false, "must degrade to in-memory rather than throw");
+      assert.equal(notices.length, 1, "the degrade is reported to the run, not the console");
+      assert.match(notices[0], /persistAgentSessions: could not persist this agent's session .*continuing in memory/);
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -756,97 +768,129 @@ test("listAvailableModelSpecs entries have provider/model format when non-empty"
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// resolveAgentModelSpec — model precedence: explicit model > tier > main model
+// routeAgentModel — explicit model > tier > inherited main model > medium tier > session default
 // ═══════════════════════════════════════════════════════════════════════════
 
 const tierConfig: ModelTierConfig = {
   tiers: { small: "vendor/small", medium: "vendor/medium", big: "vendor/big" },
 };
-const loadCfg = () => tierConfig;
-const noCfg = () => null;
 
-test("resolveAgentModelSpec: explicit model wins over tier (the precedence bug fix)", () => {
-  // Even with a tier set AND a config that resolves it, an explicit model wins.
-  assert.equal(
-    resolveAgentModelSpec({ model: "explicit/model", tier: "small" }, "main/model", loadCfg),
-    "explicit/model",
+test("routeAgentModel: an explicit model wins over a tier, with or without a tier config", () => {
+  for (const config of [tierConfig, null]) {
+    assert.deepEqual(routeAgentModel({ model: "explicit/model", tier: "small" }, "main/model", config), {
+      kind: "model",
+      spec: "explicit/model",
+    });
+  }
+});
+
+test("routeAgentModel: a tier resolves from the config", () => {
+  assert.deepEqual(routeAgentModel({ tier: "big" }, "main/model", tierConfig), {
+    kind: "tier",
+    tier: "big",
+    spec: "vendor/big",
+  });
+});
+
+test("routeAgentModel: a tier the saved config does not define fails instead of running another model", () => {
+  assert.throws(
+    () => routeAgentModel({ tier: "bigg", label: "typo" }, "main/model", tierConfig),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.MODEL_NOT_FOUND &&
+      !error.recoverable &&
+      error.agentLabel === "typo" &&
+      /tier "bigg" is not defined in model-tiers\.json \(defined: small, medium, big\)/.test(error.message),
   );
 });
 
-test("resolveAgentModelSpec: explicit model wins even when no config exists", () => {
-  assert.equal(
-    resolveAgentModelSpec({ model: "explicit/model", tier: "small" }, "main/model", noCfg),
-    "explicit/model",
+test("routeAgentModel: with no tier config the current main model stands in for a tier", () => {
+  assert.deepEqual(routeAgentModel({ tier: "medium" }, "start-prov/model-a", null), {
+    kind: "tier-without-config",
+    tier: "medium",
+    spec: "start-prov/model-a",
+  });
+  assert.deepEqual(routeAgentModel({ tier: "medium" }, "live-prov/model-b", null), {
+    kind: "tier-without-config",
+    tier: "medium",
+    spec: "live-prov/model-b",
+  });
+  assert.deepEqual(routeAgentModel({ tier: "small" }, undefined, null), {
+    kind: "tier-without-config",
+    tier: "small",
+    spec: undefined,
+  });
+});
+
+test("routeAgentModel: an untagged agent takes the configured medium tier, else the session default", () => {
+  assert.deepEqual(routeAgentModel({}, "main/model", tierConfig), { kind: "medium-tier", spec: "vendor/medium" });
+  assert.deepEqual(routeAgentModel({}, "main/model", null), { kind: "session-default" });
+  assert.deepEqual(routeAgentModel({}, "main/model", { tiers: { small: "vendor/small" } }), {
+    kind: "session-default",
+  });
+});
+
+test("routeAgentModel: inheritMainModel routes only untagged agents to the main model", () => {
+  for (const config of [tierConfig, null]) {
+    assert.deepEqual(routeAgentModel({}, "main/model", config, true), { kind: "inherit-main", spec: "main/model" });
+  }
+  assert.deepEqual(routeAgentModel({ model: "explicit/model" }, "main/model", tierConfig, true), {
+    kind: "model",
+    spec: "explicit/model",
+  });
+  assert.deepEqual(routeAgentModel({ tier: "big" }, "main/model", tierConfig, true), {
+    kind: "tier",
+    tier: "big",
+    spec: "vendor/big",
+  });
+});
+
+test("AgentModelSelector: a tier with no model-tiers.json runs on the main model and says so once", () => {
+  const registry = catalogRegistry([catalogModel("prov", "main")]);
+  const selector = new AgentModelSelector({
+    mainModel: "prov/main",
+    inheritMainModel: false,
+    loadTierConfig: () => null,
+    listModels: () => [],
+  });
+  const notices: string[] = [];
+  for (const tier of ["small", "big"]) {
+    const choice = selector.select({ tier, onNotice: (m) => notices.push(m) }, registry);
+    assert.equal(choice.model?.id, "main");
+  }
+  assert.equal(notices.length, 1);
+  assert.match(
+    notices[0],
+    /requested a tier but no model-tiers\.json is configured, so tiers currently fall back to prov\/main/,
   );
 });
 
-test("resolveAgentModelSpec: tier resolves from config when no explicit model", () => {
-  assert.equal(resolveAgentModelSpec({ tier: "big" }, "main/model", loadCfg), "vendor/big");
-});
-
-test("resolveAgentModelSpec: unconfigured tier falls back to the main model", () => {
-  assert.equal(resolveAgentModelSpec({ tier: "small" }, "main/model", noCfg), "main/model");
-  assert.equal(resolveAgentModelSpec({ tier: "unknown-tier" }, "main/model", loadCfg), "main/model");
-});
-
-test("resolveAgentModelSpec: no model-tiers.json — after mainModel refresh, tier:medium uses the NEW mainModel", () => {
-  // #148: /model then /code-review with no model-tiers.json. Agents tagged
-  // { tier: "medium" } fall through to mainModel, which must be the post-/model
-  // value — not a session-start snapshot.
-  assert.equal(resolveAgentModelSpec({ tier: "medium" }, "start-prov/model-a", noCfg), "start-prov/model-a");
-  assert.equal(resolveAgentModelSpec({ tier: "medium" }, "live-prov/model-b", noCfg), "live-prov/model-b");
-});
-
-test("resolveAgentModelSpec: untagged agent defaults to the configured medium tier", () => {
-  // The "set tier but nothing changed" fix: an agent with no model and no tier
-  // falls back to the user's medium tier when a config exists.
-  assert.equal(resolveAgentModelSpec({}, "main/model", loadCfg), "vendor/medium");
-});
-
-test("resolveAgentModelSpec: untagged agent with NO config falls through to session default", () => {
-  assert.equal(resolveAgentModelSpec({}, "main/model", noCfg), undefined);
-});
-
-test("resolveAgentModelSpec: untagged agent with a config lacking a medium tier => session default", () => {
-  const noMedium = () => ({ tiers: { small: "vendor/small" } });
-  assert.equal(resolveAgentModelSpec({}, "main/model", noMedium), undefined);
-});
-
-test("resolveAgentModelSpec: inheritMainModel routes untagged agents to the session's main model", () => {
-  // The native inheritance opt-in: no tier config required, and a configured
-  // medium tier no longer captures untagged agents.
-  assert.equal(resolveAgentModelSpec({}, "main/model", noCfg, undefined, { inheritMainModel: true }), "main/model");
-  assert.equal(resolveAgentModelSpec({}, "main/model", loadCfg, undefined, { inheritMainModel: true }), "main/model");
-});
-
-test("resolveAgentModelSpec: inheritMainModel does not affect explicit model or tier tags", () => {
-  assert.equal(
-    resolveAgentModelSpec({ model: "explicit/model" }, "main/model", loadCfg, undefined, { inheritMainModel: true }),
-    "explicit/model",
-  );
-  assert.equal(
-    resolveAgentModelSpec({ tier: "big" }, "main/model", loadCfg, undefined, { inheritMainModel: true }),
-    "vendor/big",
+test("AgentModelSelector: an unavailable main model standing in for a tier is named as the main model", () => {
+  const selector = new AgentModelSelector({
+    mainModel: "gone/model",
+    inheritMainModel: false,
+    loadTierConfig: () => null,
+    listModels: () => [],
+  });
+  assert.throws(
+    () => selector.select({ tier: "small", label: "t" }, catalogRegistry([catalogModel("prov", "other")])),
+    (error: unknown) =>
+      error instanceof WorkflowError &&
+      error.code === WorkflowErrorCode.MODEL_NOT_FOUND &&
+      /tier "small" \(no model-tiers\.json, so the session's main model "gone\/model"\) cannot be used/.test(
+        error.message,
+      ),
   );
 });
 
-test("resolveAgentModelSpec: inheritMainModel with no main model falls back to legacy routing", () => {
-  // Nothing to inherit: the legacy untagged route applies instead of silently
-  // pinning the settings default — a configured medium tier still wins, and
-  // with no config the session default is used.
-  assert.equal(resolveAgentModelSpec({}, undefined, loadCfg, undefined, { inheritMainModel: true }), "vendor/medium");
-  assert.equal(resolveAgentModelSpec({}, undefined, noCfg, undefined, { inheritMainModel: true }), undefined);
-});
-
-test("resolveAgentModelSpec: tier with no main model and no config yields undefined", () => {
-  assert.equal(resolveAgentModelSpec({ tier: "small" }, undefined, noCfg), undefined);
+test("routeAgentModel: inheritMainModel with no main model takes the untagged route", () => {
+  assert.deepEqual(routeAgentModel({}, undefined, tierConfig, true), { kind: "medium-tier", spec: "vendor/medium" });
+  assert.deepEqual(routeAgentModel({}, undefined, null, true), { kind: "session-default" });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WorkflowAgent#loadTierConfig — memoize model-tiers.json once per instance
-// (perf fix: resolveAgentModelSpec's loadConfig previously re-read+parsed the
-// file from disk on every run() call for any agent without an explicit
-// options.model, which is a sync fs read on the hot per-agent path)
+// (a sync fs read on the hot per-agent path otherwise)
 // ═══════════════════════════════════════════════════════════════════════════
 
 type WorkflowAgentTierPrivates = {
@@ -1432,7 +1476,7 @@ test("WorkflowAgent.run() runs a bare model id shared by two providers on the on
 //     resolved to.
 //   - the IMPLICIT default "medium" tier an UNTAGGED agent (no model, no
 //     tier) gets routed through never asked for that model, so it degrades
-//     to the session default instead — but only after firing onModelFallback
+//     to the session default instead — but only after reporting it through onNotice
 //     so the degrade is still visible in the run's own log stream, not a
 //     silent continuation.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1466,7 +1510,7 @@ test("WorkflowAgent.run() throws MODEL_NOT_FOUND naming the tier when an EXPLICI
   }
 });
 
-test("WorkflowAgent.run(): an untagged agent's IMPLICIT default medium tier degrades to the session default (not a throw) when it resolves to an unavailable model, and fires onModelFallback at most once per instance", async () => {
+test("WorkflowAgent.run(): an untagged agent's IMPLICIT default medium tier degrades to the session default (not a throw) when it resolves to an unavailable model, and reports it through onNotice once per instance", async () => {
   const home = mkdtempSync(join(tmpdir(), "pi-dw-tier-dead-implicit-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-tier-dead-implicit-cwd-"));
   const core = createFauxCore({
@@ -1512,29 +1556,28 @@ test("WorkflowAgent.run(): an untagged agent's IMPLICIT default medium tier degr
         fauxAssistantMessage("untagged-second", { stopReason: "stop" }),
       ]);
 
-      const fallbacks: Array<{ tier: string; requestedSpec: string; source: string }> = [];
+      const notices: string[] = [];
       const resolvedModels: string[] = [];
       const agent = new WorkflowAgent({ cwd, modelRegistry: registry });
-      const onModelFallback = (info: { tier: string; requestedSpec: string; source: "medium-tier" | "inherit-main" }) =>
-        fallbacks.push(info);
+      const onNotice = (message: string) => notices.push(message);
 
       const first = await agent.run("task one", {
         label: "untagged-1",
-        onModelFallback,
+        onNotice,
         onModelResolved: (id) => resolvedModels.push(id),
       });
       const second = await agent.run("task two", {
         label: "untagged-2",
-        onModelFallback,
+        onNotice,
         onModelResolved: (id) => resolvedModels.push(id),
       });
 
       assert.ok(first.includes("untagged-first"), "first untagged agent should still complete via session default");
       assert.ok(second.includes("untagged-second"), "second untagged agent should still complete via session default");
       assert.deepEqual(
-        fallbacks,
-        [{ tier: "medium", requestedSpec: "deadprov/ghost-model", source: "medium-tier" }],
-        "onModelFallback fires exactly once across both run() calls on the same instance",
+        notices,
+        ['default "medium" tier model "deadprov/ghost-model" unavailable — using the session default'],
+        "the degrade is reported exactly once across both run() calls on the same instance",
       );
       assert.deepEqual(
         resolvedModels,
@@ -1852,7 +1895,7 @@ test("WorkflowAgent.run(): an unavailable inherited main model degrades loudly, 
       const registry = await fauxRegistryFor(home, [["fauxtest-default", defaultCore]]);
       defaultCore.setResponses([fauxAssistantMessage("ran-on-settings-default", { stopReason: "stop" })]);
 
-      const fallbacks: Array<{ tier: string; requestedSpec: string; source: string }> = [];
+      const notices: string[] = [];
       const agent = new WorkflowAgent({
         cwd,
         modelRegistry: registry,
@@ -1861,12 +1904,12 @@ test("WorkflowAgent.run(): an unavailable inherited main model degrades loudly, 
       });
       const result = await agent.run("task", {
         label: "untagged",
-        onModelFallback: (info) => fallbacks.push(info),
+        onNotice: (message) => notices.push(message),
       });
 
       assert.ok(result.includes("ran-on-settings-default"), "an unavailable inherited model degrades, not throws");
-      assert.deepEqual(fallbacks, [
-        { tier: "medium", requestedSpec: "fauxtest-ghost/ghost-model", source: "inherit-main" },
+      assert.deepEqual(notices, [
+        'inherited main model "fauxtest-ghost/ghost-model" unavailable — using the session default',
       ]);
     });
   } finally {
@@ -1876,10 +1919,9 @@ test("WorkflowAgent.run(): an unavailable inherited main model degrades loudly, 
 });
 
 test("WorkflowAgent.run(): inheritMainModel with NO main model takes the medium-tier route, and its degrade is reported as medium-tier", async () => {
-  // The source discriminator must follow the route ACTUALLY taken, not the
-  // setting: flag on + no mainModel falls through to the medium tier, so a
-  // ghost medium entry degrades with source "medium-tier" (blaming a main
-  // model that does not exist would misdirect debugging).
+  // The notice must follow the route actually taken, not the setting: flag on
+  // and no mainModel falls through to the medium tier, so a ghost medium entry
+  // is blamed (blaming a main model that does not exist would misdirect debugging).
   const home = mkdtempSync(join(tmpdir(), "pi-dw-no-main-degrade-home-"));
   const cwd = mkdtempSync(join(tmpdir(), "pi-dw-no-main-degrade-cwd-"));
   const defaultCore = createFauxCore({
@@ -1903,16 +1945,16 @@ test("WorkflowAgent.run(): inheritMainModel with NO main model takes the medium-
       const registry = await fauxRegistryFor(home, [["fauxtest-default", defaultCore]]);
       defaultCore.setResponses([fauxAssistantMessage("ran-on-settings-default", { stopReason: "stop" })]);
 
-      const fallbacks: Array<{ tier: string; requestedSpec: string; source: string }> = [];
+      const notices: string[] = [];
       const agent = new WorkflowAgent({ cwd, modelRegistry: registry, inheritMainModel: true });
       const result = await agent.run("task", {
         label: "untagged",
-        onModelFallback: (info) => fallbacks.push(info),
+        onNotice: (message) => notices.push(message),
       });
 
       assert.ok(result.includes("ran-on-settings-default"));
-      assert.deepEqual(fallbacks, [
-        { tier: "medium", requestedSpec: "fauxtest-ghost/ghost-model", source: "medium-tier" },
+      assert.deepEqual(notices, [
+        'default "medium" tier model "fauxtest-ghost/ghost-model" unavailable — using the session default',
       ]);
     });
   } finally {
@@ -1922,7 +1964,7 @@ test("WorkflowAgent.run(): inheritMainModel with NO main model takes the medium-
 });
 
 test("runWorkflow(): the degrade log names the route that actually degraded (inherit-main vs medium tier)", async () => {
-  // The onModelFallback log branch must not blame the medium tier when the
+  // The degrade log must not blame the medium tier when the
   // inheritMainModel route degraded — pinning both messages end-to-end so a
   // swapped branch or renamed message fails CI.
   const home = mkdtempSync(join(tmpdir(), "pi-dw-fallback-log-home-"));
