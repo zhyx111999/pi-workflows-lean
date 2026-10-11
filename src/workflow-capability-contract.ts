@@ -235,7 +235,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
     constraints: [
       "requires functions rather than promises",
       "result order matches input order",
-      "recoverable thunk failures become null; nonrecoverable failures throw",
+      "a thunk's recoverable workflow failure becomes null, as with agent(); nonrecoverable failures and errors thrown by the thunk's own code reject parallel()",
     ],
   }),
   runtimeGlobal("pipeline", {
@@ -244,7 +244,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "items run concurrently while stages per item run sequentially",
       "each stage receives previousValue, originalItem, and zero-based index",
       "a null stage result is passed to the next stage; authors must guard missing coverage explicitly",
-      "recoverable stage failures become null; nonrecoverable failures throw",
+      "a stage's recoverable workflow failure becomes null, as with agent(); nonrecoverable failures and errors thrown by the stage's own code reject pipeline()",
     ],
   }),
   runtimeGlobal("checkpoint", {

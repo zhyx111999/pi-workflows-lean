@@ -18,6 +18,8 @@ import type { AgentRunOptions } from "../src/agent.js";
 import type { AgentDefinition } from "../src/agent-registry.js";
 import type { AgentUsage } from "../src/agent-usage.js";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
+import { createParallel, createPipeline } from "../src/runtime/fanout.js";
+import type { RunContext } from "../src/runtime/run-context.js";
 import { type JournalEntry, parseWorkflowScript, runWorkflow } from "../src/workflow.js";
 import { WORKFLOW_CAPABILITY_CONTRACT } from "../src/workflow-capability-contract.js";
 
@@ -1832,6 +1834,7 @@ function abortAwareAgent(delayMs: number) {
         if (prompt === "failer") {
           throw new WorkflowError("boom", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
         }
+        if (prompt === "flaky") throw new Error("transient failure");
         return await new Promise((resolve, reject) => {
           const timer = setTimeout(() => {
             state.completed++;
@@ -1929,21 +1932,63 @@ return { caught, after }`;
   assert.equal(state.completed, 2, "the caught sibling and the later agent() both ran to completion");
 });
 
-test("parallel()'s recoverable-error-to-null contract does not seal the run's fate (siblings unaffected)", async () => {
+test("a recoverable agent() failure inside parallel() becomes null without aborting siblings", async () => {
   const { state, runner } = abortAwareAgent(20);
-  // A plain (non-WorkflowError) throw from a thunk is classified recoverable by
-  // wrapError()'s default — parallel() must swallow it to null, not rethrow,
-  // and must NOT abort the sibling still in flight.
   const script = `export const meta = { name: 'recoverable_null', description: 'recoverable swallowed' }
 const xs = await parallel([
-  () => { throw new Error('plain failure') },
+  () => agent('flaky', { label: 'flaky' }),
   () => agent('sib', { label: 'sib' }),
 ])
 return xs`;
   const result = await runWorkflow<Array<unknown>>(script, { agent: runner, persistLogs: false });
-  assert.deepEqual(result.result, [null, "done:sib"], "the thrown thunk resolves to null; the sibling still succeeds");
-  assert.equal(state.aborted, 0, "a recoverable, swallowed-to-null error must never trigger a run-fatal abort");
+  assert.deepEqual(result.result, [null, "done:sib"], "the failed branch resolves to null; the sibling still succeeds");
+  assert.equal(state.aborted, 0, "a recoverable failure must never trigger a run-fatal abort");
   assert.equal(state.completed, 1);
+});
+
+for (const [name, fanout] of [
+  ["parallel() thunk", "parallel([() => agent('sib', { label: 'sib' }), () => BUG])"],
+  ["pipeline() stage", "pipeline(['sib', 'bug'], (item) => (item === 'bug' ? BUG : agent(item, { label: item })))"],
+] as const) {
+  for (const [errorName, bug] of [
+    ["ReferenceError", "missingBinding"],
+    ["TypeError", "null.field"],
+  ] as const) {
+    test(`a ${errorName} in a ${name} rejects the fan-out instead of becoming null`, async () => {
+      const { state, runner } = abortAwareAgent(200);
+      const script = `export const meta = { name: 'fanout_bug', description: 'script bug in a branch' }
+return await ${fanout.replace("BUG", bug)}`;
+      await assert.rejects(runWorkflow(script, { agent: runner, persistLogs: false }), (error: Error) => {
+        assert.equal(error.name, errorName, "the script's own error propagates unchanged");
+        return true;
+      });
+      assert.equal(state.completed, 0, "the sibling is aborted with the failed run instead of completing");
+    });
+  }
+}
+
+test("parallel() and pipeline() turn only a recoverable WorkflowError into null", async () => {
+  const logs: string[] = [];
+  const ctx = { throwIfAborted: () => {}, isAborted: () => false, log: (line: string) => logs.push(line) };
+  const recoverable = () => {
+    throw new WorkflowError("transient", WorkflowErrorCode.AGENT_TIMEOUT, { recoverable: true });
+  };
+  const fatal = new WorkflowError("fatal", WorkflowErrorCode.AGENT_EXECUTION_ERROR, { recoverable: false });
+  const parallel = createParallel(ctx as unknown as RunContext);
+  const pipeline = createPipeline(ctx as unknown as RunContext);
+
+  assert.deepEqual(await parallel([recoverable, async () => "ok"]), [null, "ok"]);
+  const firstFails = (n: unknown) => (n === 1 ? recoverable() : n);
+  assert.deepEqual(await pipeline([1, 2], firstFails, (n) => n), [null, 2]);
+  assert.deepEqual(logs, ["parallel[0] failed: transient", "pipeline[0] failed: transient"]);
+  await assert.rejects(
+    parallel([
+      async () => {
+        throw fatal;
+      },
+    ]),
+    (error) => error === fatal,
+  );
 });
 
 // ── Un-awaited agent() calls must not outlive the run: the run drains every
