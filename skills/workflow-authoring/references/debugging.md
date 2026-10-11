@@ -9,7 +9,7 @@ Start from the symptom, then reproduce through the real workflow runtime with de
 | Synthesis starts early | Fan-out was not awaited as one complete result set | [pattern selection](pattern-selection.md#fan-out-and-synthesize) |
 | Coverage silently disappears | `null` results were filtered before IDs were ledgered | [lifecycle](lifecycle.md#retry-and-recoverable-failure) |
 | Wrong model is used | A higher-priority selector overrides the expected route | [registry ownership](registry-ownership.md#priority) |
-| Unknown `agentType` log | A live registry name was guessed or is unavailable | [registry ownership](registry-ownership.md#agent-types) |
+| `unknown agentType` error | A live registry name was guessed or is unavailable | [registry ownership](registry-ownership.md#agent-types) |
 | Later calls rerun on resume | An earlier call missed or changed, ending the replayable prefix | [lifecycle](lifecycle.md#resume) |
 | Resume reruns a call that already "succeeded" once before | Its only prior attempt(s) ended in a recoverable failure (e.g. `AGENT_EMPTY_OUTPUT`) and were never journaled | [lifecycle](lifecycle.md#resume) |
 | A field read off `agent()`'s result is `undefined` | No `schema` was set; the prompt asking for JSON does not change that `agent()` returns raw text | [lifecycle](lifecycle.md#serialization) |

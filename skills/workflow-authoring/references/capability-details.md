@@ -24,7 +24,7 @@ Every exact fact below is projected from the installed extension's capability co
 - `keepWorktree`: boolean (optional; default: true)
 - `cwd`: absolute directory path (optional; must exist; resolved to its real path; coding tools and session cwd use the target directory; settings and AGENTS/skill resources also use it unless explicitly injected by the embedding host; cannot combine with worktree isolation; on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory)
 - `thread`: non-empty string (optional; trimmed; same-name calls must be sequential)
-- `agentType`: non-empty string (optional; must come from provided context; dynamic reference: agent-types)
+- `agentType`: non-empty string (optional; must come from provided context; a name the agent registry does not define fails the call; dynamic reference: agent-types)
 - Constraint: prompt must be a non-empty string; options must be an object using only the declared option names, each value matching its declared type (undefined means omitted); anything else fails before dispatch with SCRIPT_VALIDATION_ERROR listing the accepted names or values
 - Constraint: recoverable failures return null after retries; nonrecoverable failures throw
 - Constraint: schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries

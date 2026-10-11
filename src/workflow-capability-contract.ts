@@ -212,7 +212,14 @@ export const AGENT_OPTIONS: OptionShape = {
       "on Windows a path segment that ends with a dot or space is rejected, because processes would start in a different directory",
     ]),
     option("thread", NON_EMPTY_STRING, true, null, ["trimmed; same-name calls must be sequential"]),
-    option("agentType", NON_EMPTY_STRING, true, null, ["must come from provided context"], "agent-types"),
+    option(
+      "agentType",
+      NON_EMPTY_STRING,
+      true,
+      null,
+      ["must come from provided context", "a name the agent registry does not define fails the call"],
+      "agent-types",
+    ),
   ],
 };
 interface RuntimeDescriptorOptions {

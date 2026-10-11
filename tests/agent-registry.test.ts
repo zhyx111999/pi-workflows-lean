@@ -14,6 +14,7 @@ import {
   parseAgentDefinition,
   resolveAgentType,
 } from "../src/agent-registry.js";
+import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import { runWorkflow } from "../src/workflow.js";
 
 // ── parseAgentDefinition ───────────────────────────────────────────────────
@@ -481,25 +482,20 @@ return {}`;
     }
   });
 
-  it("unknown agentType logs a fallback and binds no tools/model", async () => {
+  it("an unknown agentType fails the call before any agent runs", async () => {
     const { seen, runner } = capturingAgent();
-    const logs: string[] = [];
     const script = `export const meta = { name: 'at', description: 'agentType' }
 await agent('do it', { label: 'a', agentType: 'nope' })
 return {}`;
-    await runWorkflow(script, {
-      agent: runner,
-      persistLogs: false,
-      agentRegistry: registry,
-      onLog: (m) => logs.push(m),
-    });
-    assert.equal(seen[0].model, undefined, "no model bound");
-    assert.equal(seen[0].toolNames, undefined, "no tool allowlist bound");
-    assert.equal(seen[0].instructions, undefined, "no role prompt is invented for an unknown name");
-    assert.ok(
-      logs.some((l) => /unknown agentType/i.test(l)),
-      "warns about the unknown agentType",
+    await assert.rejects(
+      runWorkflow(script, { agent: runner, persistLogs: false, agentRegistry: registry }),
+      (error: unknown) =>
+        error instanceof WorkflowError &&
+        error.code === WorkflowErrorCode.SCRIPT_VALIDATION_ERROR &&
+        !error.recoverable &&
+        /unknown agentType "nope"/.test(error.message),
     );
+    assert.equal(seen.length, 0, "no untyped agent runs in its place");
   });
 
   it("editing a definition invalidates the resume cache for that call", async () => {

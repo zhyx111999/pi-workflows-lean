@@ -8,7 +8,7 @@ The model-tier configuration owns route names. Standard routes are `small`, `med
 
 ## Agent types
 
-The agent registry owns agent-type names and their bound instructions, tools, model, and isolation policy. Use `agentType` only when context supplies both its name and purpose. Do not infer an agent type from a role-like label.
+The agent registry owns agent-type names and their bound instructions, tools, model, and isolation policy. Use `agentType` only when context supplies both its name and purpose. Do not infer an agent type from a role-like label. A name the registry does not define fails the call with `SCRIPT_VALIDATION_ERROR`; it never runs as an untyped agent.
 
 ## Priority
 

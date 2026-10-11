@@ -46,6 +46,15 @@ export function createAgent(ctx: RunContext) {
     // Invalid local configuration must fail before a slot is reserved, so it
     // cannot change the run's capacity or scheduling state.
     const definition = resolveAgentType(agentOptions.agentType, ctx.agentRegistry);
+    // A misspelled or removed type must not quietly run as an untyped agent
+    // with the default tools and model; that is a different agent.
+    if (agentOptions.agentType && !definition) {
+      throw new WorkflowError(
+        `unknown agentType "${agentOptions.agentType}"`,
+        WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
+        { recoverable: false },
+      );
+    }
     const isolation = resolveIsolation(agentOptions.isolation, definition?.isolation);
     // Already resolved to its real path by parseAgentCall.
     const cwd = agentOptions.cwd;
@@ -71,9 +80,6 @@ export function createAgent(ctx: RunContext) {
         WorkflowErrorCode.SCRIPT_VALIDATION_ERROR,
         { recoverable: false },
       );
-    }
-    if (agentOptions.agentType && !definition) {
-      ctx.log(`unknown agentType "${agentOptions.agentType}"; using default tools/model`);
     }
 
     // Precedence: explicit model > agentType model > tier > phase model. With

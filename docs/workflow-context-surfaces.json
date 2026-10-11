@@ -54,7 +54,7 @@
     "workflowAuthoringSkillCorpus": {
       "serialization": "sum of UTF-8 bytes for every file under skills/workflow-authoring",
       "files": 20,
-      "bytes": 55591
+      "bytes": 55769
     },
     "representativeAuthoringProfiles": {
       "serialization": "sum of UTF-8 bytes for each profile's declared package-relative files",
@@ -104,7 +104,7 @@
             "skills/workflow-authoring/references/checkpoint.md",
             "skills/workflow-authoring/examples/defensive-json-parsing.js"
           ],
-          "bytes": 14020
+          "bytes": 14022
         },
         {
           "name": "loop",
