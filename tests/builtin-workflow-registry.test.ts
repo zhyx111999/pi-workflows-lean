@@ -17,7 +17,7 @@ import {
   findBuiltinWorkflow,
   resolveWorkflowInvocation,
 } from "../src/builtin-workflows.js";
-import { generateDeepResearchWorkflow } from "../src/deep-research.js";
+import { DEEP_RESEARCH_MAX_ANGLES, generateDeepResearchWorkflow } from "../src/deep-research.js";
 import { parseWorkflowScript } from "../src/workflow.js";
 import { createWorkflowStorage } from "../src/workflow-saved.js";
 import { withFakeHome } from "./helpers/fake-home.js";
@@ -79,6 +79,38 @@ test("deep-research resolve() rejects a missing/blank question", () => {
   assert.throws(() => resolve("/tmp", {}), /question/);
   assert.throws(() => resolve("/tmp", { question: "   " }), /question/);
 });
+
+test("deep-research resolve() rejects an angles value that is not an integer within bounds", () => {
+  const resolve = requireBuiltin("deep-research").resolve;
+  const invalid = [
+    "nonsense",
+    "4",
+    -4,
+    0,
+    2.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    DEEP_RESEARCH_MAX_ANGLES + 1,
+    true,
+  ];
+  for (const angles of invalid) {
+    assert.throws(
+      () => resolve("/tmp", { question: "q", angles }),
+      new RegExp(`args\\.angles, when given, to be an integer from 1 to ${DEEP_RESEARCH_MAX_ANGLES}`),
+      `angles ${String(angles)} should be rejected`,
+    );
+  }
+});
+
+test(
+  "deep-research resolve() accepts omitted, null, and in-range integer angles",
+  withTempCwd((cwd) => {
+    const resolve = requireBuiltin("deep-research").resolve;
+    for (const angles of [undefined, null, 1, DEEP_RESEARCH_MAX_ANGLES]) {
+      assert.equal(resolve(cwd, { question: "q", angles }).script, generateDeepResearchWorkflow());
+    }
+  }),
+);
 
 // ─── resolveWorkflowInvocation: precedence and fallback ────────────────────────
 
