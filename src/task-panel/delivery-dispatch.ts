@@ -246,7 +246,7 @@ export function routeBackgroundDelivery(
   const pending = markRunPending(run, marker);
   const deliveryId = pending.deliveryId;
   if (!deliveryId) return;
-  const saved = persistRunPending(manager, run);
+  const saved = persistRunPending(manager, run, "notification");
   if (saved === "deleted") {
     abandonDeletedDelivery(run.runId, run);
     return;
@@ -275,14 +275,20 @@ export function flushSessionDiskPending(
   const tryOne = (runId: string, marker: PendingDeliveryMarker, run?: ManagedRun, persisted?: PersistedRunState) => {
     if (inFlightDeliveries.has(runId)) return;
     // A live run re-persists its marker; a disk-only run only needs a missing id.
-    const identified = run ? markRunPending(run, marker) : marker.deliveryId ? marker : markerWithId(marker);
+    const identified = run ? markRunPending(run, marker) : markerWithId(marker);
     const saved = run
-      ? persistRunPending(manager, run)
+      ? persistRunPending(manager, run, "retry")
       : identified === marker
         ? "saved"
         : persistDiskMarker(manager, runId, identified);
     if (saved === "deleted") {
       abandonDeletedDelivery(runId, run);
+      return;
+    }
+    if (saved === "stale") {
+      // A newer execution elsewhere owns the record's delivery; the disk pass
+      // below delivers that one from the record.
+      if (run) run.pendingDelivery = undefined;
       return;
     }
     if (saved === "failed") {
@@ -300,14 +306,20 @@ export function flushSessionDiskPending(
   // Live in-memory runs this session owns by their record. A run nobody owns is
   // claimable only from this manager's own live runs (completions before the
   // first bind), never from a foreign manager.
-  try {
-    for (const run of manager.listLiveRuns()) {
-      if (!run.pendingDelivery) continue;
-      if (claimRunSession(manager.getPersistence(), run, sessionId) !== sessionId) continue;
-      tryOne(run.runId, run.pendingDelivery, run);
+  // One failing run must not keep the others from going out.
+  const tryEach = (deliver: () => void) => {
+    try {
+      deliver();
+    } catch {
+      // A run another process just deleted, or whose record is unreadable, is skipped.
     }
-  } catch {
-    // listLiveRuns may be absent on stubs
+  };
+  for (const run of manager.listLiveRuns()) {
+    if (!run.pendingDelivery) continue;
+    tryEach(() => {
+      if (claimRunSession(manager.getPersistence(), run, sessionId) !== sessionId) return;
+      if (run.pendingDelivery) tryOne(run.runId, run.pendingDelivery, run);
+    });
   }
 
   // Disk runs, including terminal runs already evicted from memory. Require an
@@ -320,12 +332,10 @@ export function flushSessionDiskPending(
       // Skip if the live copy still carries the marker — the loop above owns it.
       const live = manager.getRun(state.runId);
       if (live?.pendingDelivery) continue;
-      try {
-        tryOne(state.runId, state.pendingDelivery, live, state);
-      } catch {
-        // The list can still show a run another process just deleted, whose
-        // record then fails to read; skip it so the other results still go out.
-      }
+      // Only an execution holding the lease is newer than the record. A settled
+      // copy may predate a resume another process ran, so the record renders.
+      const pending = state.pendingDelivery;
+      tryEach(() => tryOne(state.runId, pending, live?.lease ? live : undefined, state));
     }
   } catch {
     // best-effort

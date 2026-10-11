@@ -284,7 +284,8 @@ describe("installResultDelivery", () => {
         const active = status === "running" || status === "paused";
         const undelivered = managed.pendingDelivery != null;
         if (!active && !undelivered) continue;
-        if (managed.sessionId === newId) continue;
+        // Like the real manager: only runs the previous session owned move.
+        if (managed.sessionId === newId || managed.sessionId !== prev) continue;
         managed.sessionId = newId;
         const existing = disk.get(String(managed.runId));
         if (existing) disk.set(String(existing.runId), { ...existing, sessionId: newId });
@@ -1284,6 +1285,93 @@ describe("installResultDelivery", () => {
     assert.equal(run.pendingDelivery, undefined);
   });
 
+  it("a second result of one run is a new delivery even after the first was sent but not cleared", async () => {
+    const pi = createMockPi();
+    const run = makeRun();
+    const manager = createMockManager(run);
+    const persistence = manager.getPersistence();
+    persistence.save({ runId: "test-run-1", sessionId: SESSION, status: "completed" });
+    const sent: string[] = [];
+    // The first send is confirmed, but clearing its marker fails once, as a
+    // locked record file would make it.
+    let refuseClear = true;
+    const updateMetadata = persistence.updateMetadata;
+    manager.getPersistence = () => ({
+      ...persistence,
+      updateMetadata: (id: string, patch: Record<string, unknown>, expected?: string) => {
+        if (refuseClear && "pendingDelivery" in patch && patch.pendingDelivery === undefined) {
+          refuseClear = false;
+          throw new Error("EBUSY");
+        }
+        return updateMetadata(id, patch, expected);
+      },
+    });
+    setup(pi, manager, SESSION, {
+      stableSend: (message) => {
+        sent.push(String(message.content));
+        return Promise.resolve();
+      },
+    });
+
+    run.result = { ...(run.result as object), result: { verdict: "FIRST_RESULT" } };
+    manager.emit("complete", { runId: "test-run-1" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const first = run.pendingDelivery?.deliveryId;
+    assert.ok(first, "the uncleared first delivery keeps its marker");
+
+    run.result = { ...(run.result as object), result: { verdict: "SECOND_RESULT" } };
+    manager.emit("complete", { runId: "test-run-1" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.ok(
+      sent.some((content) => content.includes("SECOND_RESULT")),
+      "the second result is sent",
+    );
+    assert.equal(run.pendingDelivery, undefined);
+  });
+
+  it("a retry from a settled copy never overwrites the marker a newer execution wrote", async () => {
+    const pi = createMockPi();
+    const run = makeRun({ pendingDelivery: { kind: "complete", deliveryId: "old-delivery" } });
+    const manager = createMockManager(run);
+    const persistence = manager.getPersistence();
+    persistence.save({
+      runId: "test-run-1",
+      sessionId: SESSION,
+      status: "completed",
+      result: "newer result",
+      pendingDelivery: { kind: "text", text: "NEWER_TEXT", deliveryId: "new-delivery" },
+    });
+    const sent: string[] = [];
+    setup(pi, manager, SESSION, {
+      stableSend: (message) => {
+        sent.push(String(message.content));
+        return Promise.resolve();
+      },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      (persistence.loadPreview("test-run-1")?.pendingDelivery as { deliveryId?: string } | undefined)?.deliveryId ??
+        "cleared",
+      "cleared",
+      "the newer delivery was sent and cleared, never replaced by the old one",
+    );
+    assert.ok(sent.some((content) => content.includes("NEWER_TEXT")));
+    assert.ok(!sent.some((content) => content.includes("All tests passed")), "the stale copy's result is not sent");
+  });
+
+  it("a reloaded module copy replaces the previous listeners instead of adding a second set", () => {
+    const pi = createMockPi();
+    const manager = createMockManager(makeRun());
+    mod.installResultDelivery(pi, manager);
+    // A host that reloads the module graph starts with empty module state but
+    // hands over the same manager.
+    mod._resetDeliveryRegistriesForTests();
+    mod.installResultDelivery(createMockPi(), manager);
+    assert.equal(manager.listenerCount("complete"), 1);
+    assert.equal(manager.listenerCount("error"), 1);
+    assert.equal(manager.listenerCount("paused"), 1);
+  });
+
   it("cancels active streaming waiters on suspend so they cannot ACK a later generation", async () => {
     const pi = createMockPi();
     const freshPi = createMockPi();
@@ -1296,9 +1384,12 @@ describe("installResultDelivery", () => {
     const hostSend = confirmedSessionSend(
       {
         isStreaming: true,
+        // A real host can confirm deliveries, so the send waits for idle
+        // instead of rejecting at once; that wait is what suspend must cancel.
         sessionManager: {
           getSessionId: () => SESSION,
-          getEntries: () => [],
+          getBranch: () => [],
+          getSessionFile: () => join(tmpdir(), "streaming-waiter-session.jsonl"),
         },
         subscribe: (next: typeof gen1Listener) => {
           gen1Listener = next;
@@ -1319,6 +1410,7 @@ describe("installResultDelivery", () => {
     manager.emit("complete", { runId: "test-run-1" });
     await Promise.resolve();
     assert.ok(run.pendingDelivery);
+    assert.ok(gen1Listener, "the send is waiting for the streaming host to go idle");
 
     // Suspend generation 1
     mod.suspendSessionDelivery(SESSION);

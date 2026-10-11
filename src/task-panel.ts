@@ -238,15 +238,6 @@ export function suspendResultDelivery(manager: WorkflowManager): void {
   suspendSessionDelivery(manager.getSessionId());
 }
 
-/**
- * Unsuspend and flush queued deliveries for the manager's bound session.
- * Must run only after Pi has finished bindCore (i.e. from session_start).
- * Prefer {@link bindSessionDelivery} which also captures a fresh stable send.
- */
-export function resumeResultDelivery(manager: WorkflowManager): void {
-  resumeSessionDelivery(manager.getSessionId(), manager);
-}
-
 // ─── Result delivery ───────────────────────────────────────────────────────────
 
 /**
@@ -266,13 +257,14 @@ let turnEndDeliveryManagers = new WeakMap<ExtensionAPI, { manager: WorkflowManag
  * into the originating conversation and continue the turn so the assistant can
  * act on it, without blocking the user meanwhile:
  *
- *  - Delivery is routed by `run.sessionId` through the session endpoints.
+ *  - Delivery goes to the session the run's record names as its owner.
  *  - `triggerTurn: true` starts a fresh turn when the agent is idle.
  *  - `deliverAs: "followUp"` queues behind an in-flight turn — never interrupts.
  *  - The durable pending marker clears only after the send is confirmed.
  *
- * Idempotent per manager. Across session replacement the manager and these
- * listeners survive via the handoff path; each new session calls
+ * One set of listeners per manager: installing again, from this or a reloaded
+ * copy of the module, replaces the previous set. Across session replacement the
+ * manager survives via the handoff path; each new session calls
  * {@link bindSessionDelivery} on session_start.
  */
 export function installResultDelivery(
@@ -280,8 +272,7 @@ export function installResultDelivery(
   manager: WorkflowManager,
   opts: { loadSettings?: () => WorkflowSettings } = {},
 ): void {
-  const installed = deliveryInstalls.get(manager);
-  const install = installed ?? {};
+  const install = deliveryInstalls.get(manager) ?? {};
   install.loadSettings = opts.loadSettings;
   deliveryInstalls.set(manager, install);
 
@@ -303,10 +294,10 @@ export function installResultDelivery(
       }
       if (!sid) return;
 
-      let endpoint = sessionEndpoints.get(sid);
+      const endpoint = sessionEndpoints.get(sid);
       if (!endpoint || typeof endpoint.send !== "function") {
         // Bind only once a send is captured; a failed capture leaves the
-        // session as it was for the next turn to retry.
+        // session as it was for the next turn to retry. Binding flushes.
         const send = captureSessionSend(pi, sid);
         if (send) {
           bindSessionDelivery(sid, pi, {
@@ -315,13 +306,10 @@ export function installResultDelivery(
             sessionManager: ctx?.sessionManager,
             stableSend: send,
           });
-          endpoint = sessionEndpoints.get(sid);
         }
+        return;
       }
-
-      if (endpoint && !endpoint.suspended && endpoint.manager) {
-        flushSessionDiskPending(endpoint.manager, sid, endpoint);
-      }
+      if (!endpoint.suspended && endpoint.manager) flushSessionDiskPending(endpoint.manager, sid, endpoint);
     });
   }
 
@@ -337,37 +325,60 @@ export function installResultDelivery(
     }
   }
 
-  if (installed) return;
+  replaceDeliveryListeners(manager, [
+    [
+      "complete",
+      ({ runId }: { runId: string }) => {
+        const run = manager.getRun(runId);
+        if (!run) return;
+        const sessionId = resolveDeliverySessionId(run, manager);
+        const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
+        const content = deliverText(run, {
+          resultPath: persistedResultPath(manager, runId, run.result?.result),
+          maxChars: deliveredMaxChars(endpoint?.loadSettings ?? install.loadSettings),
+        });
+        routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
+      },
+    ],
+    [
+      "error",
+      ({ runId, error }: { runId: string; error?: { message?: string } }) => {
+        const run = manager.getRun(runId);
+        if (!run) return;
+        const text = failedRunText(runId, error);
+        routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
+      },
+    ],
+    // Two pauses need the model: a provider usage limit (the run is resumable
+    // once the limit resets, not dead) and a script waiting at a durable
+    // checkpoint (it stays paused until someone answers). A manual pause()
+    // carries no reason and is the user's own action, so it delivers nothing.
+    [
+      "paused",
+      (event: PausedEvent) => {
+        const run = manager.getRun(event.runId);
+        if (!run) return;
+        const text = pausedRunText(event);
+        if (text) routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
+      },
+    ],
+  ]);
+}
 
-  manager.on("complete", ({ runId }: { runId: string }) => {
-    const run = manager.getRun(runId);
-    if (!run) return;
-    const sessionId = resolveDeliverySessionId(run, manager);
-    const endpoint = sessionId ? sessionEndpoints.get(sessionId) : undefined;
-    const content = deliverText(run, {
-      resultPath: persistedResultPath(manager, runId, run.result?.result),
-      maxChars: deliveredMaxChars(endpoint?.loadSettings ?? install.loadSettings),
-    });
-    routeBackgroundDelivery(manager, run, { kind: "complete" }, content);
-  });
+/**
+ * Where a manager keeps its delivery listeners, under a key every loaded copy of
+ * this module shares. A host that reloads the module graph hands the same
+ * manager to the new copy, whose install then replaces the old copy's listeners
+ * instead of stacking a second set that would act on stale module state.
+ */
+const DELIVERY_LISTENERS = Symbol.for("pi-workflows-lean.result-delivery-listeners");
+type DeliveryListener = [event: string, listener: (...args: any[]) => void];
 
-  manager.on("error", ({ runId, error }: { runId: string; error?: { message?: string } }) => {
-    const run = manager.getRun(runId);
-    if (!run) return;
-    const text = failedRunText(runId, error);
-    routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
-  });
-
-  // Two pauses need the model: a provider usage limit (the run is resumable once
-  // the limit resets, not dead) and a script waiting at a durable checkpoint (it
-  // stays paused until someone answers). A manual pause() carries no reason and
-  // is the user's own action, so it delivers nothing.
-  manager.on("paused", (event: PausedEvent) => {
-    const run = manager.getRun(event.runId);
-    if (!run) return;
-    const text = pausedRunText(event);
-    if (text) routeBackgroundDelivery(manager, run, { kind: "text", text }, text);
-  });
+function replaceDeliveryListeners(manager: WorkflowManager, listeners: DeliveryListener[]): void {
+  const owner = manager as unknown as { [DELIVERY_LISTENERS]?: DeliveryListener[] };
+  for (const [event, listener] of owner[DELIVERY_LISTENERS] ?? []) manager.off(event, listener);
+  for (const [event, listener] of listeners) manager.on(event, listener);
+  owner[DELIVERY_LISTENERS] = listeners;
 }
 
 // ─── Test helpers ──────────────────────────────────────────────────────────────
