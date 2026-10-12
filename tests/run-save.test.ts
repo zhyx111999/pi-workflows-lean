@@ -47,7 +47,7 @@ test(
 test(
   "planRunSave treats declared parameters as different content",
   withStorage((storage) => {
-    assert.ok(storage.save({ ...draft, parameters: { topic: { type: "string" } } }).ok);
+    assert.ok(storage.save({ ...draft, parameters: { topic: { default: "x" } } }).ok);
     assert.equal(planRunSave(storage, draft).kind, "replace");
   }),
 );

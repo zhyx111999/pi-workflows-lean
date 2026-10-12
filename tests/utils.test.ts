@@ -507,7 +507,7 @@ describe("display", () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await load();
     const meta: WorkflowMeta = { name: "wf", description: "d" };
     const snap = createWorkflowSnapshot(meta);
-    snap.tokenUsage = { input: 100, output: 50, total: 150, cost: 0.002 };
+    snap.tokenUsage = { input: 100, output: 50, total: 150, cost: 0.002, cacheRead: 0, cacheWrite: 0 };
     const text = renderWorkflowText(snap);
     assert.ok(text.includes("150"), "should contain 150");
     assert.ok(text.includes("$0.0020"), "should contain $0.0020");

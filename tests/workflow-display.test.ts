@@ -132,19 +132,19 @@ describe("renderWorkflowText", () => {
   it("shows cost info when tokenUsage has cost", async () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
-    snap.tokenUsage = { input: 1000, output: 500, total: 1500, cost: 0.042 };
+    snap.tokenUsage = { input: 1000, output: 500, total: 1500, cost: 0.042, cacheRead: 0, cacheWrite: 0 };
     const text = renderWorkflowText(snap);
     // fmtCost: 2 decimals from one cent up, 4 below it (shared across all surfaces).
     assert.ok(text.includes("$0.04"), "should show cost");
   });
 
-  it("shows token info without cost when cost is absent", async () => {
+  it("shows token info without cost when nothing was billed", async () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
-    snap.tokenUsage = { input: 500, output: 300, total: 800 };
+    snap.tokenUsage = { input: 500, output: 300, total: 800, cost: 0, cacheRead: 0, cacheWrite: 0 };
     const text = renderWorkflowText(snap);
     assert.ok(text.includes("800"), "should show token count");
-    assert.ok(!text.includes("$"), "should NOT show cost when absent");
+    assert.ok(!text.includes("$"), "should NOT show a zero cost");
   });
 
   it("shows skipped agents in phase line", async () => {
@@ -231,7 +231,7 @@ describe("renderWorkflowText", () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     // onUsage never fired: breakdown is all-zero, total carries the estimate.
-    snap.tokenUsage = { input: 0, output: 0, total: 800 };
+    snap.tokenUsage = { input: 0, output: 0, total: 800, cost: 0, cacheRead: 0, cacheWrite: 0 };
     const text = renderWorkflowText(snap);
     assert.ok(text.includes("800 tok"), `estimate should survive in the header; got: ${text}`);
     assert.ok(!/\b0 tok/.test(text), `must not render a zero breakdown; got: ${text}`);
@@ -254,7 +254,7 @@ describe("renderWorkflowText", () => {
     const { createWorkflowSnapshot, renderWorkflowText } = await loadDisplay();
     const snap = createWorkflowSnapshot(fakeMeta());
     // e.g. a fully journal-replayed resume, or a run whose agents were all skipped.
-    snap.tokenUsage = { input: 0, output: 0, total: 0 };
+    snap.tokenUsage = { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 };
     const text = renderWorkflowText(snap);
     assert.ok(!/\b0 tok/.test(text), `an all-zero aggregate must not render "0 tok"; got: ${text}`);
   });
@@ -361,7 +361,7 @@ describe("deliverText", () => {
       result: {
         result: { verdict: "All checks passed" },
         agentCount: 5,
-        tokenUsage: { input: 100, output: 50, total: 150, cost: 0.003 },
+        tokenUsage: { input: 100, output: 50, total: 150, cost: 0.003, cacheRead: 0, cacheWrite: 0 },
         durationMs: 12345,
       },
       ...overrides,
@@ -643,19 +643,25 @@ describe("fmtTokenSegment estimate marking", () => {
     );
   });
 
-  it("keeps legacy callers without estimated as metered output", () => {
+  it("treats usage without an estimated flag as metered", () => {
     const rendered = fmtTokenSegment({ fresh: 1200, cacheRead: 0 }, fmtFull);
     assert.equal(rendered, "1,200 tok");
     assert.doesNotMatch(rendered, /~/);
   });
 
   it("tokenFigures and aggregateAgentUsage propagate the flag", () => {
-    assert.deepEqual(tokenFigures({ input: 10, output: 5, total: 15, estimated: true }), {
-      fresh: 15,
-      cacheRead: 0,
-      estimated: true,
-    });
-    assert.equal(tokenFigures({ input: 10, output: 5, total: 15 }).estimated, false);
+    assert.deepEqual(
+      tokenFigures({ input: 10, output: 5, total: 15, cost: 0, cacheRead: 0, cacheWrite: 0, estimated: true }),
+      {
+        fresh: 15,
+        cacheRead: 0,
+        estimated: true,
+      },
+    );
+    assert.equal(
+      tokenFigures({ input: 10, output: 5, total: 15, cost: 0, cacheRead: 0, cacheWrite: 0 }).estimated,
+      false,
+    );
     const aggregate = aggregateAgentUsage([
       { tokens: 10, tokenUsage: undefined },
       {

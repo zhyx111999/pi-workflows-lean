@@ -19,12 +19,9 @@ export function resumedRun(input) {
     const persistedAgents = taskMoves
         ? recordedAgents.map((agent) => retargetAgentRow(agent, taskMoves))
         : recordedAgents;
-    const priorTokenUsage = normalizedTokenUsage(persisted.tokenUsage);
-    const journal = replayableJournal(persisted, runId, taskMoves);
+    const priorTokenUsage = persisted.tokenUsage ? { ...persisted.tokenUsage } : undefined;
+    const journal = replayableJournal(persisted, taskMoves);
     const seeded = seedAgents(persistedAgents, persisted.updatedAt);
-    // A record without a session of its own (an old one) moves to the current
-    // session; one with a session keeps it, and with it its parent lineage.
-    const sessionId = persisted.sessionId ?? input.currentSessionId;
     const managed = {
         runId,
         status: "running",
@@ -49,8 +46,9 @@ export function resumedRun(input) {
         args: input.args,
         journal,
         checkpoint: persisted.checkpoint,
-        sessionId,
-        parentSessionId: persisted.parentSessionId ?? sessionId,
+        // A run without an owner is claimed by the resuming session (see WorkflowManager.resume).
+        sessionId: persisted.sessionId,
+        parentSessionId: persisted.parentSessionId,
         parentSessionFile: persisted.parentSessionFile,
         pendingDelivery: persisted.pendingDelivery,
         lease: input.lease,
@@ -73,38 +71,19 @@ export function resumedRun(input) {
     };
     return { managed, journal, priorTokenUsage };
 }
-/** The recorded total with concrete numbers; old records may lack cost or cache fields. */
-function normalizedTokenUsage(usage) {
-    if (!usage)
-        return undefined;
-    return {
-        input: usage.input,
-        output: usage.output,
-        total: usage.total,
-        cost: usage.cost ?? 0,
-        cacheRead: usage.cacheRead ?? 0,
-        cacheWrite: usage.cacheWrite ?? 0,
-        // An estimated total must stay marked as an estimate.
-        estimated: usage.estimated,
-    };
-}
 /**
  * The record's journal entries that can replay. Malformed entries are dropped.
- * So are entries tagged with another frame's runId, left by older releases whose
- * scripts could nest saved workflows. An edited task list moves each unchanged
- * task's entry to its new index and drops the rest.
+ * An edited task list moves each unchanged task's entry to its new index and
+ * drops the rest.
  */
-function replayableJournal(persisted, runId, taskMoves) {
+function replayableJournal(persisted, taskMoves) {
     return (Array.isArray(persisted.journal) ? persisted.journal : []).flatMap((entry) => {
         if (!entry || typeof entry !== "object" || typeof entry.index !== "number")
             return [];
-        const { runId: frameRunId, ...journalEntry } = entry;
-        if (frameRunId !== undefined && frameRunId !== runId)
-            return [];
         if (!taskMoves)
-            return [journalEntry];
-        const index = taskMoves.indices.get(journalEntry.index);
-        return index === undefined ? [] : [{ ...journalEntry, index }];
+            return [entry];
+        const index = taskMoves.indices.get(entry.index);
+        return index === undefined ? [] : [{ ...entry, index }];
     });
 }
 /**

@@ -11,8 +11,8 @@ import { groupAgentsByPhase } from "./phase-groups.js";
  *   under-report real spend; only cacheRead is the cheap reuse shown apart.
  * - `fresh` is never less than what the estimate can account for after
  *   removing cache reads, so estimate-only providers, cost-only providers
- *   (billed but zero token counts), and mixed runs keep the count the display
- *   showed before the split existed, instead of a false "0 tok".
+ *   (billed but zero token counts), and mixed runs keep their estimated
+ *   count instead of a false "0 tok".
  */
 export function tokenFigures(usage, scalarTokens) {
     const cacheRead = usage?.cacheRead ?? 0;

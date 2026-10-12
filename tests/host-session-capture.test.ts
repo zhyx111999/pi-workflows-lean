@@ -17,9 +17,9 @@ import {
 import installExtension from "../src/pi-extension.js";
 import { sessionEndpoints } from "../src/task-panel/delivery-endpoints.js";
 import {
+  _useHostSessionClassForTests,
   captureSessionSend,
   DELIVERY_PROBE_CUSTOM_TYPE,
-  useHostSessionClass,
 } from "../src/task-panel/host-session-capture.js";
 import { _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
 import type { ManagedRun } from "../src/workflow-manager.js";
@@ -42,7 +42,7 @@ function result(deliveryId: string): HostMessage {
 beforeEach(() => {
   _resetDeliveryRegistriesForTests();
   discardWorkflowRuntime();
-  useHostSessionClass(FakeHostSession);
+  _useHostSessionClassForTests(FakeHostSession);
 });
 
 afterEach(() => {
@@ -95,7 +95,7 @@ describe("captureSessionSend", () => {
 
   it("leaves no own property on a host class that inherits sendCustomMessage", () => {
     class InheritingHostSession extends FakeHostSession {}
-    useHostSessionClass(InheritingHostSession);
+    _useHostSessionClassForTests(InheritingHostSession);
 
     assert.ok(captureSessionSend(piBoundTo(new InheritingHostSession("bound")), "bound"));
     assert.equal(Object.hasOwn(InheritingHostSession.prototype, "sendCustomMessage"), false);

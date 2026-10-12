@@ -52,16 +52,21 @@ function assertSafeSavedWorkflowName(name) {
 function isJsonObject(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function parametersProblem(parameters) {
+/** The parameters as the runtime uses them, or why they are unusable. Other keys of a parameter are dropped. */
+function checkParameters(parameters) {
+    const checked = {};
     for (const [key, spec] of Object.entries(parameters)) {
-        if (!isJsonObject(spec) || typeof spec.type !== "string")
-            return `parameter "${key}" needs a string "type"`;
-        if (spec.description !== undefined && typeof spec.description !== "string")
-            return `parameter "${key}" has a non-string "description"`;
-        if (spec.required !== undefined && typeof spec.required !== "boolean")
-            return `parameter "${key}" has a non-boolean "required"`;
+        if (!isJsonObject(spec))
+            return { ok: false, problem: `parameter "${key}" must be an object` };
+        if (spec.description !== undefined && typeof spec.description !== "string") {
+            return { ok: false, problem: `parameter "${key}" has a non-string "description"` };
+        }
+        checked[key] = {
+            ...(spec.default !== undefined && { default: spec.default }),
+            ...(spec.description !== undefined && { description: spec.description }),
+        };
     }
-    return undefined;
+    return { ok: true, parameters: checked };
 }
 /**
  * Check parsed saved-workflow JSON against the `SavedWorkflow` shape. These
@@ -83,12 +88,14 @@ function checkSavedWorkflowFile(data) {
         return problem('"savedAt" must be a string');
     if (toolset != null && typeof toolset !== "string")
         return problem('"toolset" must be a string');
+    let checkedParameters;
     if (parameters != null) {
         if (!isJsonObject(parameters))
             return problem('"parameters" must be an object');
-        const parameterProblem = parametersProblem(parameters);
-        if (parameterProblem)
-            return problem(parameterProblem);
+        const checked = checkParameters(parameters);
+        if (!checked.ok)
+            return problem(checked.problem);
+        checkedParameters = checked.parameters;
     }
     let source;
     if (Object.hasOwn(data, "script")) {
@@ -108,7 +115,7 @@ function checkSavedWorkflowFile(data) {
             name,
             description,
             savedAt,
-            ...(parameters != null && { parameters: parameters }),
+            ...(checkedParameters && { parameters: checkedParameters }),
             ...(typeof toolset === "string" && { toolset }),
             source,
         },

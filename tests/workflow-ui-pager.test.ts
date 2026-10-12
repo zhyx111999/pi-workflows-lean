@@ -355,61 +355,20 @@ test("short pagers and long run lists stay within their viewport", () => {
   assert.match(lines.join("\n"), /workflow-19/);
 });
 
-test("cold journal rehydration keeps a legacy nested frame's call indexes apart from the run's own", () => {
-  // Releases that could nest saved workflows tagged child-frame journal entries
-  // with the child's runId; their rows must still show the right results.
+test("an agent row without a stored result shows its recorded preview", () => {
   const persisted = {
-    runId: "parent-run",
-    workflowName: "nested",
-    status: "paused",
-    phases: ["Work"],
-    agents: [
-      {
-        id: 1,
-        callId: "parent-run-nested1:0",
-        label: "nested worker",
-        phase: "Work",
-        prompt: "nested",
-        status: "done",
-      },
-      {
-        id: 2,
-        callId: "parent-run:0",
-        label: "parent worker",
-        phase: "Work",
-        prompt: "parent",
-        status: "done",
-      },
-    ],
-    journal: [
-      { index: 0, runId: "parent-run", hash: "parent", result: "parent result" },
-      { index: 0, runId: "parent-run-nested1", hash: "nested", result: "nested result" },
-    ],
-    logs: [],
-    script: "",
-    startedAt: "",
-    updatedAt: "",
-  } as unknown as PersistedRunState;
-  const model = new NavigatorModel({ listRuns: () => [persisted], getRun: () => undefined });
-
-  assert.equal(model.agentDetail("parent-run", 1)?.result, "nested result");
-  assert.equal(model.agentDetail("parent-run", 2)?.result, "parent result");
-});
-
-test("legacy persisted result previews remain visible", () => {
-  const persisted = {
-    runId: "legacy",
-    workflowName: "legacy",
+    runId: "preview-only",
+    workflowName: "preview-only",
     status: "completed",
     phases: ["Work"],
     agents: [
       {
         id: 1,
-        label: "legacy worker",
+        label: "preview worker",
         phase: "Work",
         prompt: "old prompt",
         status: "done",
-        resultPreview: "legacy final preview",
+        resultPreview: "recorded final preview",
       },
     ],
     logs: [],
@@ -419,5 +378,5 @@ test("legacy persisted result previews remain visible", () => {
   } as PersistedRunState;
   const model = new NavigatorModel({ listRuns: () => [persisted], getRun: () => undefined });
   const state = enterAgentDetail(model);
-  assert.match(renderNavigator(state, model, 80).join("\n"), /legacy final preview/);
+  assert.match(renderNavigator(state, model, 80).join("\n"), /recorded final preview/);
 });

@@ -1,5 +1,5 @@
 import type { AgentHistoryEntry } from "./agent-history.js";
-import type { AgentUsage, RunTokenUsage } from "./agent-usage.js";
+import type { AgentUsage } from "./agent-usage.js";
 import type { WorkflowErrorCode } from "./errors.js";
 import { asText } from "./navigator/as-text.js";
 import { groupAgentsByPhase, type PhaseGroup } from "./phase-groups.js";
@@ -70,7 +70,7 @@ export interface WorkflowSnapshot {
   errorCount: number;
   durationMs?: number;
   result?: unknown;
-  tokenUsage?: RunTokenUsage;
+  tokenUsage?: AgentUsage;
   runId?: string;
 }
 
@@ -85,8 +85,8 @@ export interface WorkflowSnapshot {
  *   under-report real spend; only cacheRead is the cheap reuse shown apart.
  * - `fresh` is never less than what the estimate can account for after
  *   removing cache reads, so estimate-only providers, cost-only providers
- *   (billed but zero token counts), and mixed runs keep the count the display
- *   showed before the split existed, instead of a false "0 tok".
+ *   (billed but zero token counts), and mixed runs keep their estimated
+ *   count instead of a false "0 tok".
  */
 export function tokenFigures(
   usage: Partial<AgentUsage> | undefined,

@@ -20,7 +20,6 @@ import { workflowProjectKey } from "./workflow-paths.js";
 import { createWorkflowStorage } from "./workflow-saved.js";
 import { loadWorkflowSettings, saveWorkflowSettings, workflowRunLimits } from "./workflow-settings.js";
 import { registerWorkflowModelsCommand } from "./workflows-models-command.js";
-export { useHostSessionClass } from "./task-panel/host-session-capture.js";
 /**
  * Bound for the read-only session-header probe (first line only). Independent of
  * pi's own ~1MiB session scan — we only need the header and keep the read small.

@@ -4,7 +4,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
-import type { RunTokenUsage } from "./agent-usage.js";
+import type { AgentUsage } from "./agent-usage.js";
 import type { WorkflowAgentSnapshot } from "./display.js";
 import { RunRecordDeletedError, RunRecordUnreadableError, WorkflowErrorCode } from "./errors.js";
 import {
@@ -51,7 +51,7 @@ export interface PersistedJournalEntry {
   hash: string;
   result: unknown;
   storeDelta?: Record<string, unknown>;
-  /** The model the call ran on; absent on journals written before this field existed. */
+  /** The model the call ran on; absent on checkpoints, which run no model. */
   model?: string;
 }
 
@@ -87,7 +87,7 @@ export interface PersistedRunState {
   error?: string;
   /**
    * Classified terminal cause. Written with `error` for `failed` and `aborted`
-   * runs; absent on running/paused/completed runs and on older records.
+   * runs; absent on running/paused/completed runs.
    */
   errorCode?: WorkflowErrorCode;
   /** Why a paused run is paused. */
@@ -105,7 +105,7 @@ export interface PersistedRunState {
   updatedAt: string;
   completedAt?: string;
   durationMs?: number;
-  tokenUsage?: RunTokenUsage;
+  tokenUsage?: AgentUsage;
   /**
    * Cached agent/checkpoint results for resume, keyed by deterministic call
    * index. `storeDelta` is this call's SharedStore write delta, replayed

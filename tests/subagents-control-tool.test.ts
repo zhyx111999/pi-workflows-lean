@@ -31,7 +31,7 @@ function run(status: RunStatus = "running", runId = "audit-abc123"): PersistedRu
     logs: [],
     startedAt: "2026-07-14T00:00:00.000Z",
     updatedAt: "2026-07-14T00:00:01.000Z",
-    tokenUsage: { input: 20, output: 10, total: 30 },
+    tokenUsage: { input: 20, output: 10, total: 30, cost: 0, cacheRead: 0, cacheWrite: 0 },
   };
 }
 
@@ -271,7 +271,7 @@ test("status uses agent usage when the live run aggregate is lagging", async () 
     runningCount: 1,
     doneCount: 1,
     errorCount: 0,
-    tokenUsage: { input: 0, output: 0, total: 0 },
+    tokenUsage: { input: 0, output: 0, total: 0, cost: 0, cacheRead: 0, cacheWrite: 0 },
   };
   const { manager } = fakeManager([run()], { "audit-abc123": live });
   const status = await execute(manager, { action: "status", runId: "audit-abc123" });
@@ -281,7 +281,12 @@ test("status uses agent usage when the live run aggregate is lagging", async () 
 
 test("status marks heuristic-estimated token totals with ~", async () => {
   const persisted = await execute(
-    fakeManager([{ ...run("completed"), tokenUsage: { input: 0, output: 0, total: 200, estimated: true } }]).manager,
+    fakeManager([
+      {
+        ...run("completed"),
+        tokenUsage: { input: 0, output: 0, total: 200, cost: 0, cacheRead: 0, cacheWrite: 0, estimated: true },
+      },
+    ]).manager,
     { action: "status", runId: "audit-abc123" },
   );
   assert.match(persisted.text, /tokens=~200\n/);
@@ -296,7 +301,7 @@ test("status marks heuristic-estimated token totals with ~", async () => {
     runningCount: 1,
     doneCount: 0,
     errorCount: 0,
-    tokenUsage: { input: 0, output: 0, total: 640, estimated: true },
+    tokenUsage: { input: 0, output: 0, total: 640, cost: 0, cacheRead: 0, cacheWrite: 0, estimated: true },
   } as WorkflowSnapshot;
   const live = await execute(fakeManager([run()], { "audit-abc123": liveTotal }).manager, {
     action: "status",
@@ -316,7 +321,7 @@ test("status marks heuristic-estimated token totals with ~", async () => {
         tokenUsage: { input: 0, output: 80, cacheRead: 0, cacheWrite: 0, total: 80, cost: 0, estimated: true },
       },
     ],
-    tokenUsage: { input: 5, output: 5, total: 10 },
+    tokenUsage: { input: 5, output: 5, total: 10, cost: 0, cacheRead: 0, cacheWrite: 0 },
   } as WorkflowSnapshot;
   const summed = await execute(fakeManager([run()], { "audit-abc123": agentSum }).manager, {
     action: "status",

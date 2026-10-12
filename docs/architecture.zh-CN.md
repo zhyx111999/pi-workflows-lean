@@ -220,7 +220,7 @@ WorkflowAgent.run()                          agent.ts
 
 **能力契约是唯一事实来源。** 运行时注入哪些全局、`agent()` 接受哪些选项、文档里列出哪些能力，都来自同一份契约，并有测试保证三者一致。
 
-**只服务 Pi，不做兼容层。** 插件只由 Pi 通过 `extensions/workflow.ts` 加载，没有给其他程序用的库出口；只支持当前的 Pi，没有为其他宿主或旧版本保留的分支；运行记录只读当前的“索引头 + 日志”格式，也只读 `~/.pi/workflows` 下的目录。唯一保留的旧数据处理是 `manager/resume-state.ts` 过滤日志里带其他 `runId` 标签的条目，因为现有记录里确实有这类条目。
+**只服务 Pi，不做兼容层。** 插件只由 Pi 通过 `extensions/workflow.ts` 加载，没有给其他程序用的库出口；只支持当前的 Pi，没有为其他宿主或旧版本保留的分支；运行记录只读当前的“索引头 + 日志”格式，也只读 `~/.pi/workflows` 下的目录。不保留任何针对旧版本数据的处理。
 
 **`dist/` 随仓库提交。** Pi 从 git 安装插件时只执行 `npm install --omit=dev`，不安装 TypeScript，也不编译，所以必须提交编译产物。`npm run check:dist` 保证提交的产物与源码一致。
 

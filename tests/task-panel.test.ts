@@ -9,7 +9,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
 import { confirmedSessionSend } from "../src/task-panel/confirmed-send.js";
-import { DELIVERY_PROBE_CUSTOM_TYPE, useHostSessionClass } from "../src/task-panel/host-session-capture.js";
+import { _useHostSessionClassForTests, DELIVERY_PROBE_CUSTOM_TYPE } from "../src/task-panel/host-session-capture.js";
 import { UsageLimitScheduler } from "../src/usage-limit-scheduler.js";
 import type { WorkflowRunResult } from "../src/workflow.js";
 import { type ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
@@ -445,7 +445,7 @@ describe("installResultDelivery", () => {
         ...(sessionManager as object | undefined),
       },
     });
-    useHostSessionClass(TestHostSession);
+    _useHostSessionClassForTests(TestHostSession);
     routePiTo(pi, session);
     return session;
   }
@@ -2137,7 +2137,7 @@ describe("installResultDelivery", () => {
       const sid = session.sessionManager.getSessionId();
       const run = makeRun({ sessionId: sid });
       const manager = createMockManager(run);
-      useHostSessionClass(AgentSession);
+      _useHostSessionClassForTests(AgentSession);
       routePiTo(pi, session as unknown as { sendCustomMessage: (m: never, o: never) => unknown });
 
       mod.installResultDelivery(pi, manager);

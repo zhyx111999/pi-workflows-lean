@@ -6,6 +6,7 @@ import { setImmediate as tick } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as hostSdk from "@earendil-works/pi-coding-agent";
 import packageJson from "../package.json" with { type: "json" };
+import { sessionStartContext } from "./helpers/mock-pi.js";
 
 // These tests load the published entry, which imports the built dist/;
 // npm run test:unit builds it first.
@@ -23,14 +24,6 @@ function runIsolated(script: string): void {
   assert.equal(run.status, 0, run.stderr || run.stdout);
   assert.equal(run.stderr, "", "loading writes nothing to stderr, which would draw over Pi's TUI");
 }
-
-const sessionStartContext = (sessionId: string) => ({
-  cwd: process.cwd(),
-  model: undefined,
-  modelRegistry: {},
-  sessionManager: { getSessionId: () => sessionId, getSessionFile: () => undefined },
-  ui: { setWidget: () => {}, notify: () => {} },
-});
 
 test("published extension loads through the unbundled host aliases and probes the actual host", () => {
   // Run without tsx/source-runtime hooks: the production Node host uses aliases,

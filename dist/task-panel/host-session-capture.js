@@ -22,7 +22,7 @@ let hostSessionClass = AgentSession;
  * running Pi (host-modules.ts routes this module's import to it); tests
  * substitute a session double.
  */
-export function useHostSessionClass(sessionClass) {
+export function _useHostSessionClassForTests(sessionClass) {
     hostSessionClass = sessionClass;
 }
 /**

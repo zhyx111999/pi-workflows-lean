@@ -55,9 +55,9 @@ describe("parseCommandArgs", () => {
   it("fills parameter defaults for missing keys", async () => {
     const { parseCommandArgs } = await load();
     const result = parseCommandArgs("foo=bar", {
-      foo: { type: "string" },
-      limit: { type: "number", default: 10 },
-      label: { type: "string", default: "test" },
+      foo: {},
+      limit: { default: 10 },
+      label: { default: "test" },
     });
     assert.equal(result.foo, "bar");
     assert.equal(result.limit, 10);
@@ -66,7 +66,7 @@ describe("parseCommandArgs", () => {
 
   it("does NOT override explicit values with defaults", async () => {
     const { parseCommandArgs } = await load();
-    const result = parseCommandArgs("limit=5", { limit: { type: "number", default: 10 } });
+    const result = parseCommandArgs("limit=5", { limit: { default: 10 } });
     assert.equal(result.limit, "5");
   });
 

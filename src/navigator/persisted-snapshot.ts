@@ -28,22 +28,17 @@ export function persistedToSnapshot(p: PersistedRunState): WorkflowSnapshot {
 function rebuildSnapshot(p: PersistedRunState): WorkflowSnapshot {
   // Corrupt arrays must not crash the overlay. Resumable runs keep each full
   // result only in the journal, not also in agents[], so done agents are
-  // rehydrated by call identity; the positional index is the fallback for
-  // records written before callId existed.
+  // rehydrated by call identity. A row without one (an execution a later one
+  // superseded) keeps only its own result.
   const agents = (Array.isArray(p.agents) ? p.agents : []).filter((agent) => agent && typeof agent === "object");
-  const journalByIndex = new Map<number, unknown>();
   const journalByCallId = new Map<string, unknown>();
   for (const entry of Array.isArray(p.journal) ? p.journal : []) {
     if (entry && typeof entry === "object" && typeof entry.index === "number") {
-      journalByIndex.set(entry.index, entry.result);
-      // Records from releases that could nest saved workflows tag child-frame
-      // entries with the child's runId; honour it so those rows still rehydrate.
-      const frameRunId = (entry as { runId?: unknown }).runId;
-      journalByCallId.set(`${typeof frameRunId === "string" ? frameRunId : p.runId}:${entry.index}`, entry.result);
+      journalByCallId.set(`${p.runId}:${entry.index}`, entry.result);
     }
   }
-  const snapshotAgents = agents.map((a, callIndex) => {
-    const journalResult = a.callId ? journalByCallId.get(a.callId) : journalByIndex.get(callIndex);
+  const snapshotAgents = agents.map((a) => {
+    const journalResult = a.callId ? journalByCallId.get(a.callId) : undefined;
     const result = a.result === undefined && a.status === "done" ? journalResult : a.result;
     // The record's row is the display row plus its timestamps, which the snapshot keeps elsewhere.
     const { startedAt: _startedAt, endedAt: _endedAt, ...row } = a;

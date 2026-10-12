@@ -350,7 +350,7 @@ test("shadow positional mapping: equals-only topics and declared defaults", asyn
       storage: makeFakeStorage({
         "deep-research": {
           script: "export const meta = { name: 'shadow', description: 's' }",
-          parameters: { question: { type: "string", default: "DEFAULT" } },
+          parameters: { question: { default: "DEFAULT" } },
         },
       }),
     }),

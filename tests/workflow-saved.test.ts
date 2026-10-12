@@ -226,13 +226,12 @@ test(
       description: "Has params",
       script: "export const meta = { name: 'p', description: 'p' }",
       parameters: {
-        input: { type: "string", description: "Input value", required: true },
-        limit: { type: "number", description: "Max results", default: 10 },
+        input: { description: "Input value" },
+        limit: { description: "Max results", default: 10 },
       },
     });
     assert.ok(saved.parameters, "parameters should be truthy");
-    assert.equal(saved.parameters?.input.type, "string");
-    assert.equal(saved.parameters?.input.required, true);
+    assert.equal(saved.parameters?.input.description, "Input value");
     assert.equal(saved.parameters?.limit.default, 10);
 
     const loaded = storage.load("param-wf");
@@ -413,7 +412,12 @@ test(
       "number-saved-at": { name: "number-saved-at", description: "d", script: "s", savedAt: 1 },
       "array-parameters": { name: "array-parameters", description: "d", script: "s", parameters: [] },
       "null-parameter": { name: "null-parameter", description: "d", script: "s", parameters: { topic: null } },
-      "untyped-parameter": { name: "untyped-parameter", description: "d", script: "s", parameters: { topic: {} } },
+      "number-parameter-description": {
+        name: "number-parameter-description",
+        description: "d",
+        script: "s",
+        parameters: { topic: { description: 3 } },
+      },
       "array-file": [{ name: "array-file", description: "d", script: "s" }],
       // A broken project copy must not hide the valid user copy of the same name.
       shadowed: { name: "shadowed", description: "project copy", script: false },
@@ -441,7 +445,7 @@ test(
 );
 
 test(
-  "load accepts a hand-written file without description or savedAt",
+  "load accepts a hand-written file without description or savedAt and keeps only the parameter fields it uses",
   withIsolatedHome(async (cwd) => {
     const dir = workflowProjectPaths(cwd).savedDir;
     mkdirSync(dir, { recursive: true });
@@ -453,7 +457,11 @@ test(
     assert.equal(loaded?.script, "s");
     assert.equal(loaded?.description, "");
     assert.equal(loaded?.savedAt, "");
-    assert.deepEqual(loaded?.parameters, { topic: { type: "string", default: "x" } });
+    assert.deepEqual(
+      loaded?.parameters,
+      { topic: { default: "x" } },
+      "parameter fields the command does not use are dropped",
+    );
   }),
 );
 

@@ -66,7 +66,7 @@ Role instructions.
 { "name": "<name>", "description": "One line", "script": "<workflow script>" }
 ```
 
-`name` equals the file name exactly (case included), at most 128 characters, with no whitespace, control or format characters (such as bidi controls), slashes, `<>:"|?*`, trailing dot, or Windows device name such as `CON` or `COM1`; other files are skipped with a warning. Write `script` per the workflow-authoring skill; `"scriptPath": "<file>.js"` in the same folder can replace it. Optional `"toolset": "web-research"` gives its runs web tools. Run with the `subagents` tool's `name` and `args`.
+`name` equals the file name exactly (case included), at most 128 characters, with no whitespace, control or format characters (such as bidi controls), slashes, `<>:"|?*`, trailing dot, or Windows device name such as `CON` or `COM1`; other files are skipped with a warning. Write `script` per the workflow-authoring skill; `"scriptPath": "<file>.js"` in the same folder can replace it. Optional `"toolset": "web-research"` gives its runs web tools. Optional `"parameters": { "<key>": { "default": <value>, "description": "..." } }`: `/<name> key=value …` passes `args`, and a `default` fills a key the command leaves out. Run with the `subagents` tool's `name` and `args`.
 
 ## When changes apply
 

@@ -522,10 +522,10 @@ test(
   "resume maps persisted ghost (queued/running) agents to interrupted-skipped",
   withTempCwd(async (cwd) => {
     const manager = new WorkflowManager({ cwd, agent: fakeAgent() });
-    // A legacy/dead-process record recovery never settled: one done agent and
+    // A dead process's record that recovery never settled: one done agent and
     // one still-"running" ghost. No journal, so both calls re-execute live.
     manager.getPersistence().save({
-      runId: "legacy-run",
+      runId: "ghost-run",
       workflowName: "two_agent_demo",
       script: twoAgentScript,
       status: "paused",
@@ -533,7 +533,7 @@ test(
       agents: [
         {
           id: 1,
-          callId: "legacy-run:0",
+          callId: "ghost-run:0",
           label: "a",
           prompt: "first",
           status: "done",
@@ -543,7 +543,7 @@ test(
         },
         {
           id: 2,
-          callId: "legacy-run:1",
+          callId: "ghost-run:1",
           label: "b",
           prompt: "second",
           status: "running",
@@ -557,15 +557,15 @@ test(
     manager.on("error", () => {});
     // persistence.save stamps its own updatedAt on every write — read back the
     // authoritative value instead of assuming the fixture's.
-    const savedUpdatedAt = manager.getPersistence().load("legacy-run")?.updatedAt;
+    const savedUpdatedAt = manager.getPersistence().load("ghost-run")?.updatedAt;
     assert.ok(savedUpdatedAt);
 
-    assert.equal(await manager.resume("legacy-run"), true);
-    for (let i = 0; i < 2000 && manager.getRun("legacy-run")?.status === "running"; i++) {
+    assert.equal(await manager.resume("ghost-run"), true);
+    for (let i = 0; i < 2000 && manager.getRun("ghost-run")?.status === "running"; i++) {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
 
-    const persisted = manager.getPersistence().load("legacy-run");
+    const persisted = manager.getPersistence().load("ghost-run");
     assert.equal(persisted?.status, "completed");
     assert.equal(persisted?.agents.length, 2, "each live re-execution takes over its call's row");
     assert.deepEqual(
@@ -4415,16 +4415,16 @@ test("inheritMainModel forwards through the manager and actually routes the suba
         "with the flag on, the untagged agent must run on the manager's mainModel",
       );
 
-      const legacyManager = new WorkflowManager({
+      const defaultManager = new WorkflowManager({
         cwd,
         mainModel: "fauxtest-main/main-model",
         modelRegistry: registry,
       });
       defaultCore.setResponses([fauxAssistantMessage("ran-on-settings-default", { stopReason: "stop" })]);
-      const legacyResult = await legacyManager.startInBackground(oneAgentScript).promise;
+      const defaultResult = await defaultManager.startInBackground(oneAgentScript).promise;
       assert.ok(
-        JSON.stringify(legacyResult.result).includes("ran-on-settings-default"),
-        "with the flag omitted, legacy routing (settings default) is unchanged",
+        JSON.stringify(defaultResult.result).includes("ran-on-settings-default"),
+        "with the flag omitted, untagged agents use the settings default",
       );
     });
   } finally {
@@ -4604,65 +4604,13 @@ function pauseOnThirdCallRunner() {
 }
 
 test(
-  "resume drops journal entries that a legacy nested workflow() frame recorded",
-  withTempCwd(async (cwd) => {
-    // Releases that could nest saved workflows journaled child-frame calls
-    // under the child's runId, with indexes restarting at 0. Such an entry must
-    // neither displace the run's own index-0 entry nor survive the resume.
-    const { seen, state, runner } = pauseOnThirdCallRunner();
-    const manager = new WorkflowManager({ cwd, agent: runner });
-    manager.on("paused", () => {});
-    manager.on("error", () => {});
-    const script = `export const meta = { name: 'legacy_journal', description: 'legacy nested journal entries' }
-const first = await agent('first-call', { label: 'first' })
-const third = await agent('third-call', { label: 'third' })
-return { first, third }`;
-
-    const { runId, promise } = manager.startInBackground(script);
-    await promise.catch(() => {});
-    assert.equal(manager.getRun(runId)?.status, "paused", "run pauses on the third call's usage limit");
-    const persistence = manager.getPersistence();
-    const paused = persistence.load(runId);
-    assert.ok(paused?.journal?.length === 1);
-    const own = paused.journal[0];
-    persistence.save({
-      ...paused,
-      journal: [
-        { ...own, runId },
-        { index: 0, runId: `${runId}-nested1`, hash: "child-frame-hash", result: "child-frame-result" },
-      ] as unknown as typeof paused.journal,
-    });
-
-    state.failThird = false;
-    const seenBeforeResume = seen.length;
-    assert.equal(await manager.resume(runId), true);
-    for (let i = 0; i < 2000 && manager.getRun(runId)?.status === "running"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1));
-    }
-
-    const finalRun = manager.getRun(runId);
-    assert.equal(finalRun?.status, "completed");
-    assert.equal((finalRun?.result?.result as Record<string, unknown> | undefined)?.first, "ran:first-call");
-    assert.deepEqual(seen.slice(seenBeforeResume), ["third-call"], "the run's own journaled call replays");
-    assert.deepEqual(
-      finalRun?.journal.map((entry) => [entry.index, Object.keys(entry).includes("runId")]),
-      [
-        [0, false],
-        [1, false],
-      ],
-      "the child-frame entry is gone and the obsolete frame tag is not carried forward",
-    );
-  }),
-);
-
-test(
-  "resume ignores budget fields that older releases persisted on the run",
+  "resume ignores fields the run record does not define, and drops them",
   withTempCwd(async (cwd) => {
     const { state, runner } = pauseOnThirdCallRunner();
     const manager = new WorkflowManager({ cwd, agent: runner });
     manager.on("paused", () => {});
     manager.on("error", () => {});
-    const script = `export const meta = { name: 'legacy_budget', description: 'legacy budget fields' }
+    const script = `export const meta = { name: 'unknown_fields', description: 'unknown record fields' }
 const first = await agent('first-call', { label: 'first' })
 const third = await agent('third-call', { label: 'third' })
 return { first, third }`;

@@ -266,7 +266,6 @@ export class WorkflowManager extends EventEmitter {
             args,
             taskMoves,
             lease,
-            currentSessionId: this.sessionId,
         });
         // An explicit resume takes delivery here; any resume claims a run nobody
         // owns. moveRunSession() never throws, as nothing may with the lease held.

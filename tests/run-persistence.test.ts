@@ -287,12 +287,12 @@ test(
       phases: [],
       agents: [],
       logs: [],
-      tokenUsage: { input: 100, output: 50, total: 150 },
+      tokenUsage: { input: 100, output: 50, total: 150, cost: 0, cacheRead: 0, cacheWrite: 0 },
       startedAt: "2024-01-01T00:00:00.000Z",
       updatedAt: "2024-01-01T00:00:00.000Z",
     });
     const loaded = rp.load("tokens");
-    assert.deepEqual(loaded?.tokenUsage, { input: 100, output: 50, total: 150 });
+    assert.deepEqual(loaded?.tokenUsage, { input: 100, output: 50, total: 150, cost: 0, cacheRead: 0, cacheWrite: 0 });
   }),
 );
 
@@ -770,7 +770,7 @@ test(
         { id: 2, label: "agent-b", prompt: "analyze", status: "running" },
       ],
       logs: ["started", "phase: Scan", "phase: Analyze"],
-      tokenUsage: { input: 500, output: 200, total: 700 },
+      tokenUsage: { input: 500, output: 200, total: 700, cost: 0, cacheRead: 0, cacheWrite: 0 },
       journal: [{ index: 0, hash: "abc", result: { ok: true } }],
       startedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -791,7 +791,7 @@ test(
     assert.deepEqual(loaded.agents[0].result, { found: true });
     assert.equal(loaded.agents[1].status, "running");
     assert.deepEqual(loaded.logs, ["started", "phase: Scan", "phase: Analyze"]);
-    assert.deepEqual(loaded.tokenUsage, { input: 500, output: 200, total: 700 });
+    assert.deepEqual(loaded.tokenUsage, { input: 500, output: 200, total: 700, cost: 0, cacheRead: 0, cacheWrite: 0 });
     assert.deepEqual(loaded.journal, [{ index: 0, hash: "abc", result: { ok: true } }]);
   }),
 );
@@ -1176,7 +1176,7 @@ test(
         .map((r) => r.runId)
         .sort(),
       ["a", "b"],
-      "unbound lists all runs (legacy/global)",
+      "unbound lists all runs",
     );
 
     // listAllRuns ignores the session binding.

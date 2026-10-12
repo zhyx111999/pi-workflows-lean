@@ -17,7 +17,7 @@ import {
 } from "../src/extension-reload.js";
 import { reportDiagnostic } from "../src/host-diagnostics.js";
 import { PARENT_PROMPT_MESSAGE_TYPE, PARENT_WORKFLOW_PROMPT } from "../src/parent-prompt.js";
-import { useHostSessionClass } from "../src/task-panel/host-session-capture.js";
+import { _useHostSessionClassForTests } from "../src/task-panel/host-session-capture.js";
 import { _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
 import { getWorkflowSettingsPath } from "../src/workflow-settings.js";
 import { withFakeHomeAsync } from "./helpers/fake-home.js";
@@ -205,7 +205,7 @@ describe("workflow extension - tool availability", () => {
           handoffWorkflowRuntime(staged);
 
           // Pi binds the second generation's pi to the replacement host session.
-          useHostSessionClass(FakeHostSession);
+          _useHostSessionClassForTests(FakeHostSession);
           const hostSession = new FakeHostSession(`session-${reason}`);
           const { pi: secondPi, handlers: secondHandlers } = fakeExtensionHost({
             activeTools,
@@ -473,7 +473,7 @@ describe("workflow extension - tool availability", () => {
     try {
       await withFakeHomeAsync(fakeHome, async () => {
         discardWorkflowRuntime();
-        useHostSessionClass(FakeHostSession);
+        _useHostSessionClassForTests(FakeHostSession);
         const hostSession = new FakeHostSession("s-prebind");
         const delivered = () => hostSession.received.map(({ message }) => message.content);
         // Pi throws from sendMessage until it binds the generation to a session.

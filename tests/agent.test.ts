@@ -2003,7 +2003,7 @@ return "done";`;
         `expected the inherit-main degrade message, got: ${JSON.stringify(inheritLogs)}`,
       );
 
-      // Legacy route: medium tier configured but unavailable → medium-tier message.
+      // Untagged route: medium tier configured but unavailable → medium-tier message.
       const tiersDir = join(home, ".pi", "workflows");
       mkdirSync(tiersDir, { recursive: true });
       writeFileSync(
@@ -3010,7 +3010,7 @@ test("a replayed (cache-hit) agent reports the model it actually ran on, not the
   );
 });
 
-test("a legacy journal entry with no model degrades to the pre-resolution guess", async () => {
+test("a journal entry without a model shows the pre-resolution guess", async () => {
   const rec = new CallRecordingAgent();
   const journal: JournalEntry[] = [];
   const script = `export const meta = { name: 'test', description: 't' }
@@ -3019,25 +3019,22 @@ test("a legacy journal entry with no model degrades to the pre-resolution guess"
   await runWorkflow(script, {
     agent: rec,
     persistLogs: false,
-    runId: "legacy-model-run",
+    runId: "no-model-run",
     mainModel: "main-prov/main-model",
     onAgentJournal: (e) => journal.push(e),
   });
-  const legacy = journal.map(({ model: _dropped, ...rest }) => rest as JournalEntry);
+  // A runner that never reports its model journals no model.
+  const withoutModel = journal.map(({ model: _dropped, ...rest }) => rest as JournalEntry);
   const replayed: Array<string | undefined> = [];
   await runWorkflow(script, {
     agent: new CallRecordingAgent(),
     persistLogs: false,
-    runId: "legacy-model-run",
+    runId: "no-model-run",
     mainModel: "main-prov/main-model",
-    resumeJournal: new Map(legacy.map((e) => [e.index, e] as const)),
+    resumeJournal: new Map(withoutModel.map((e) => [e.index, e] as const)),
     onAgentStart: (e) => replayed.push(e.model),
   });
-  assert.deepEqual(
-    replayed,
-    ["main-prov/main-model"],
-    "no journaled model => same behavior as before the field existed",
-  );
+  assert.deepEqual(replayed, ["main-prov/main-model"], "no journaled model => the replayed row shows the main model");
 });
 
 test("agent() accumulates usage across multiple agents", async () => {
@@ -3179,29 +3176,17 @@ test("usageFromStats keeps cost-only stats (billed but tokens unreported)", () =
   assert.equal(usage?.cost, 0.01);
 });
 // ═══════════════════════════════════════════════════════════════════════
-// runtimeOf + 3-way fallback registry construction (omp / legacy / stock pi)
+// runtimeOf and the fallback registry
 // ═══════════════════════════════════════════════════════════════════════
 
-test("runtimeOf returns the backing ModelRuntime on stock pi and undefined on a fork-style registry", async () => {
+test("runtimeOf returns the ModelRuntime behind a registry", async () => {
   const authDir = mkdtempSync(join(tmpdir(), "pi-dw-runtime-of-"));
   try {
     const runtime = await ModelRuntime.create({ authPath: join(authDir, "auth.json"), modelsPath: null });
-    const registry = new ModelRegistry(runtime);
-    assert.equal(runtimeOf(registry), runtime, "stock pi ModelRegistry must expose its runtime for subagent handoff");
-    // omp's auth-storage-backed registry carries no own `.runtime`; the seam
-    // must report undefined there so callers pass the registry itself instead.
-    const forkRegistry: ModelRegistry = Object.create(Object.getPrototypeOf(registry));
-    assert.equal(runtimeOf(forkRegistry), undefined);
+    assert.equal(runtimeOf(new ModelRegistry(runtime)), runtime, "subagent sessions share the host's runtime");
   } finally {
     rmSync(authDir, { recursive: true, force: true });
   }
-});
-
-test("stock pi exposes neither omp's discoverAuthStorage nor a legacy static ModelRegistry.create (fallback must use ModelRuntime.create)", async () => {
-  assert.equal(typeof ModelRuntime.create, "function", "runtime-split construction path must exist on stock pi");
-  const mod = await import("@earendil-works/pi-coding-agent");
-  assert.equal("discoverAuthStorage" in mod, false, "omp-only discovery export must not exist on stock pi");
-  assert.equal("create" in ModelRegistry, false, "legacy static create must not exist on stock pi");
 });
 
 test("fallback registry resolves to a real ModelRegistry on stock pi and is cached across agents (never undefined)", async () => {
