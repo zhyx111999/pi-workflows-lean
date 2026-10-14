@@ -19,8 +19,8 @@ import type {
   WorkflowRunOptions,
 } from "../workflow.js";
 import { CallSequence } from "./call-position.js";
-import { createLimiter } from "./run-limits.js";
 import { createScriptCalls, type ScriptCalls } from "./script-calls.js";
+import type { SlotLimiter } from "./slot-pool.js";
 
 export interface RuntimeState {
   currentPhase?: string;
@@ -37,7 +37,6 @@ export interface RuntimeState {
   journalMissed: boolean;
   /** Journal indices this execution replayed, so a miss can tell the caller which entries remain valid. */
   replayedIndices: Set<number>;
-  limiter: <T>(fn: () => Promise<T>) => Promise<T>;
   /** Logical agent()/checkpoint() slots reserved so far; capped by maxAgents. */
   agentCount: number;
   tokenUsage: AgentUsage;
@@ -56,6 +55,8 @@ export interface RuntimeState {
   seenCheckpointIds: Set<string>;
   /** A durably accepted suspension cannot be swallowed into a successful run. */
   checkpointSuspension?: WorkflowCheckpointSuspensionError;
+  /** Aborted with the suspension: calls still queued for a concurrency slot can no longer start. */
+  suspensionController: AbortController;
   /**
    * Aborted once an error escapes the script uncaught, i.e. the run is lost.
    * Not on the first fan-out rejection: parallel() turns recoverable failures
@@ -91,6 +92,8 @@ interface RunSetup {
   /** Snapshotted once per run so two agent() calls never observe a mid-run edit. */
   readonly agentRegistry: AgentRegistry;
   readonly agentRunner: WorkflowAgentRunner;
+  /** Admits live agents; may be shared with other runs (see WorkflowRunOptions.limiter). */
+  readonly limiter: SlotLimiter;
   readonly store: SharedStore;
   readonly logger: WorkflowLogger;
   readonly state: RuntimeState;
@@ -104,6 +107,13 @@ export interface RunContext extends RunSetup {
   readonly isAborted: () => boolean;
   /** Throw the pending checkpoint suspension or an abort error, if either applies. */
   readonly throwIfAborted: () => void;
+  /**
+   * Fires once a call queued for a concurrency slot can no longer start: an
+   * external abort, the run-fatal seal or a checkpoint suspension, i.e. when
+   * throwIfAborted() starts to throw. Waiting any longer would only hold up
+   * the other runs that share the queue.
+   */
+  readonly callsCancelled: AbortSignal;
   readonly agentLimitError: () => WorkflowError;
   /** Every logical agent() call and checkpoint consumes one slot of the run's maxAgents cap. */
   readonly ensureAgentCapacity: () => void;
@@ -122,7 +132,7 @@ export interface RunContext extends RunSetup {
   ) => JournalEntry | undefined;
 }
 
-export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptions, concurrency: number): RuntimeState {
+export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptions): RuntimeState {
   // The first declared phase is the default, so agents started before any
   // phase() call group under it instead of an orphan "(no phase)" bucket.
   const firstPhase = meta.phases?.[0]?.title;
@@ -133,7 +143,6 @@ export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptio
     scriptCalls: CallSequence.forScript(),
     journalMissed: false,
     replayedIndices: new Set<number>(),
-    limiter: createLimiter(concurrency),
     // Not seeded on resume: the script replays from call 0 and every replayed
     // call counts again, so maxAgents stays a cumulative cap on its own.
     agentCount: 0,
@@ -147,6 +156,7 @@ export function createRuntimeState(meta: WorkflowMeta, options: WorkflowRunOptio
     activeCheckpointResponse: options.resumeCheckpoint ?? null,
     seenCheckpointIds: new Set<string>(),
     runFatalController: new AbortController(),
+    suspensionController: new AbortController(),
     calls: createScriptCalls(),
     activeThreads: new Set<string>(),
     resumeBarrierReached: false,
@@ -202,11 +212,17 @@ export function createRunContext(setup: RunSetup): RunContext {
     state.replayedIndices.add(index);
     return entry;
   };
+  const callsCancelled = AbortSignal.any([
+    ...(options.signal ? [options.signal] : []),
+    state.runFatalController.signal,
+    state.suspensionController.signal,
+  ]);
   return {
     ...setup,
     log,
     isAborted,
     throwIfAborted,
+    callsCancelled,
     agentLimitError,
     ensureAgentCapacity,
     replayable,

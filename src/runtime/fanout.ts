@@ -9,10 +9,23 @@ import type { RunContext } from "./run-context.js";
  * Cancellation flag of one parallel()/pipeline() call. When a fan-out breaches
  * maxAgents, the breaching agent() throws and the fan-out rejects, but agents
  * it already reserved would keep waiting in the limiter and then spend money.
- * They check this flag before dispatch and bail instead.
+ * Their waits end when the batch is cancelled, and they bail instead.
  */
-export interface FanoutBatch {
-  cancelled: boolean;
+export class FanoutBatch {
+  private readonly controller = new AbortController();
+
+  /** Aborts when the batch is cancelled; a call still queued for a slot leaves the queue then. */
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  get cancelled(): boolean {
+    return this.controller.signal.aborted;
+  }
+
+  cancel(): void {
+    this.controller.abort();
+  }
 }
 
 /** What a branch's code sees of the fan-out it runs in. */
@@ -50,7 +63,7 @@ export function createParallel(ctx: RunContext) {
     if (thunks.some((thunk) => typeof thunk !== "function")) {
       throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
     }
-    const batch: FanoutBatch = { cancelled: false };
+    const batch = new FanoutBatch();
     return runBranches(ctx, batch, thunks, async (thunk, index) => {
       try {
         return await thunk();
@@ -69,7 +82,7 @@ export function createPipeline(ctx: RunContext) {
     if (stages.some((stage) => typeof stage !== "function")) {
       throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
     }
-    const batch: FanoutBatch = { cancelled: false };
+    const batch = new FanoutBatch();
     return runBranches(ctx, batch, items, async (item, index) => {
       try {
         let value: unknown = item;
@@ -118,6 +131,6 @@ function settleBranchFailure(ctx: RunContext, batch: FanoutBatch, error: unknown
     ctx.log(`${branch} failed: ${error.message}`);
     return null;
   }
-  if (isWorkflowError(error) && error.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED) batch.cancelled = true;
+  if (isWorkflowError(error) && error.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED) batch.cancel();
   throw error;
 }

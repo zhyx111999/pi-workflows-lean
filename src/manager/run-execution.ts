@@ -18,6 +18,7 @@ import type { LiveRuns } from "./live-runs.js";
 import { runEventHooks } from "./run-events.js";
 import { classifyFailure, controllingLifecycleAction, emptyFleetWarning } from "./run-outcome.js";
 import { settleInterruptedAgents } from "./run-record.js";
+import type { SessionSlots } from "./session-slots.js";
 
 /** Per-execution options shared by new and resumed runs. */
 export interface ExecOptions {
@@ -55,7 +56,6 @@ export interface ExecutionSettings {
     | "modelRegistry"
     | "persistAgentSessions"
     | "inheritMainModel"
-    | "concurrency"
     | "agentRetries"
     | "maxAgents"
     | "agentTimeoutMs"
@@ -63,6 +63,8 @@ export interface ExecutionSettings {
     | "providerMiddlewareExtensions"
   >;
   toolsets?: Record<string, () => ToolDefinition[]>;
+  /** The concurrency ceilings, one per parent session; a run takes its slots from its own parent's. */
+  sessionSlots: SessionSlots;
 }
 
 /**
@@ -104,6 +106,7 @@ function runOptions(
     runId: managed.runId,
     parentSessionFile: managed.parentSessionFile,
     signal: managed.controller.signal,
+    limiter: settings.sessionSlots.limiterFor(managed.parentSessionId),
     drainAbortGraceMs: exec.drainAbortGraceMs,
     // Explicit tools win; otherwise re-resolve the run's toolset name (how a
     // resumed /deep-research keeps its web tools); otherwise the default tools.

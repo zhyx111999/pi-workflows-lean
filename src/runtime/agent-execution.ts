@@ -10,6 +10,7 @@ import { type AttemptUsage, awaitRunnerStop, dispatchAttempt, openAttemptScope, 
 import type { FanoutBatch } from "./fanout.js";
 import type { RunContext } from "./run-context.js";
 import { normalizeAgentRetries, retryBackoffMs } from "./run-limits.js";
+import { type SlotHold, SlotWaitCancelled } from "./slot-pool.js";
 
 /** A validated agent() call with its reserved slot, resume identity and display state. */
 export interface AgentCall {
@@ -59,21 +60,39 @@ function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? "").length / 4);
 }
 
-export function runLiveAgent(ctx: RunContext, call: AgentCall): Promise<unknown> {
-  return ctx.state.limiter(async () => {
-    // The slot can arrive long after the call was made.
-    throwIfCallCancelled(ctx, call);
-    if (call.isolation !== "worktree") return runAttempts(ctx, call, undefined);
+export async function runLiveAgent(ctx: RunContext, call: AgentCall): Promise<unknown> {
+  try {
+    return await ctx.limiter(
+      async (hold) => {
+        // The slot can arrive long after the call was made.
+        throwIfCallCancelled(ctx, call);
+        if (call.isolation !== "worktree") return runAttempts(ctx, call, undefined, hold);
 
-    const worktree = await createIsolatedWorktree(ctx, call);
-    try {
-      // Worktree creation awaited; the run may have stopped meanwhile.
-      throwIfCallCancelled(ctx, call);
-      return await runAttempts(ctx, call, worktree.cwd);
-    } finally {
-      await releaseWorktree(ctx, call, worktree);
-    }
-  });
+        const worktree = await createIsolatedWorktree(ctx, call);
+        try {
+          // Worktree creation awaited; the run may have stopped meanwhile.
+          throwIfCallCancelled(ctx, call);
+          return await runAttempts(ctx, call, worktree.cwd, hold);
+        } finally {
+          await releaseWorktree(ctx, call, worktree);
+        }
+      },
+      queuedCallCancellation(ctx, call),
+    );
+  } catch (error) {
+    // Left the queue without a slot: fail the way the call would on arrival.
+    if (error instanceof SlotWaitCancelled) throwIfCallCancelled(ctx, call);
+    throw error;
+  }
+}
+
+/**
+ * Fires when throwIfCallCancelled() would throw, so a call that can no longer
+ * run stops waiting for a slot instead of holding up the runs that share the
+ * queue.
+ */
+function queuedCallCancellation(ctx: RunContext, call: AgentCall): AbortSignal {
+  return call.batch ? AbortSignal.any([ctx.callsCancelled, call.batch.signal]) : ctx.callsCancelled;
 }
 
 /**
@@ -110,7 +129,12 @@ async function releaseWorktree(ctx: RunContext, call: AgentCall, worktree: Workt
 }
 
 /** Announce the agent, then run attempts until one succeeds or a failure is final. */
-async function runAttempts(ctx: RunContext, call: AgentCall, worktreePath: string | undefined): Promise<unknown> {
+async function runAttempts(
+  ctx: RunContext,
+  call: AgentCall,
+  worktreePath: string | undefined,
+  hold: SlotHold,
+): Promise<unknown> {
   const { state, options, store } = ctx;
   const { id, label, phase, prompt } = call;
   const maxAttempts = normalizeAgentRetries(options.agentRetries ?? 0) + 1;
@@ -129,7 +153,7 @@ async function runAttempts(ctx: RunContext, call: AgentCall, worktreePath: strin
 
   options.onAgentStart?.({ id, label, phase, prompt, model: call.displayModel });
   for (let attempt = 1; ; attempt++) {
-    const outcome = await runAttempt(ctx, call, call.cwd ?? worktreePath, usageTracker.startAttempt(), graceMs);
+    const outcome = await runAttempt(ctx, call, call.cwd ?? worktreePath, usageTracker.startAttempt(), graceMs, hold);
     const end = {
       id,
       label,
@@ -202,6 +226,7 @@ async function runAttempt(
   cwd: string | undefined,
   usage: AttemptUsage,
   graceMs: number,
+  hold: SlotHold,
 ): Promise<AttemptOutcome> {
   const { state } = ctx;
   const finalizeUsage = () => usage.commitTerminalUsage();
@@ -232,6 +257,8 @@ async function runAttempt(
   } catch (error) {
     // A timed-out or aborted runner may still be unwinding.
     const runnerStopped = runner === undefined || (await awaitRunnerStop(runner, graceMs));
+    // The call ends on time, but the abandoned runner is still a live child of the session.
+    if (runner && !runnerStopped) hold.retainUntil(runner);
     if (ctx.isAborted()) {
       usage.commitTerminalUsage();
       throw error;

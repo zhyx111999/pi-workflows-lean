@@ -2,6 +2,7 @@
 
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_CONCURRENCY } from "../config.js";
 import type { WorkflowRunOptions } from "../workflow.js";
+import { type SlotLimiter, SlotPool } from "./slot-pool.js";
 
 /** Largest delay setTimeout accepts; larger values fire immediately. */
 const MAX_TIMER_MS = 2_147_483_647;
@@ -72,21 +73,12 @@ export function retryBackoffMs(
   }
 }
 
-/** Run at most `limit` tasks at once; later callers queue in arrival order. */
-export function createLimiter(limit: number) {
-  let active = 0;
-  const queue: Array<() => void> = [];
-  const next = () => {
-    active--;
-    queue.shift()?.();
-  };
-  return async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (active >= limit) await new Promise<void>((resolve) => queue.push(resolve));
-    active++;
-    try {
-      return await fn();
-    } finally {
-      next();
-    }
-  };
+/**
+ * The gate that admits live agents: the host's shared one, so every run under
+ * the same ceiling counts against it, or a private pool for this run alone.
+ */
+export function resolveLimiter(options: Pick<WorkflowRunOptions, "limiter" | "concurrency">): SlotLimiter {
+  if (options.limiter) return options.limiter;
+  const pool = new SlotPool(resolveConcurrency(options.concurrency));
+  return (fn, cancel) => pool.run(fn, cancel);
 }

@@ -64,6 +64,8 @@ export function createCheckpoint(ctx: RunContext) {
     };
     options.onWorkflowCheckpoint?.(waiting);
     state.checkpointSuspension = new WorkflowCheckpointSuspensionError(waiting.checkpointId);
+    // Siblings still queued for a slot would only be cancelled on arrival; let them go now.
+    state.suspensionController.abort();
     throw state.checkpointSuspension;
   };
 }

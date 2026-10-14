@@ -7,6 +7,7 @@
  * settles the run. The parts live in src/runtime/:
  *   - script-meta.ts, determinism.ts        parse-time checks and the in-realm guard
  *   - run-limits.ts                         host settings turned into enforced limits
+ *   - slot-pool.ts                          the concurrency ceiling, shareable between runs
  *   - run-context.ts                        per-run state and the helpers shared by the globals
  *   - agent-call.ts                         agent(): validation, slot, journal replay
  *   - agent-execution.ts, agent-attempt.ts  live runs: worktree, retries, timeout, usage
@@ -33,12 +34,13 @@ import { cloneDurableJsonValue } from "./runtime/durable-json.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
 import { createLoopGuard, guardLoops } from "./runtime/loop-guard.js";
 import { createRunContext, createRuntimeState, type RunContext } from "./runtime/run-context.js";
-import { resolveAgentTimeoutMs, resolveConcurrency, resolveDrainAbortGraceMs } from "./runtime/run-limits.js";
+import { resolveAgentTimeoutMs, resolveDrainAbortGraceMs, resolveLimiter } from "./runtime/run-limits.js";
 import { finishRun, type ScriptOutcome } from "./runtime/run-teardown.js";
 import { trackScriptCalls } from "./runtime/script-calls.js";
 import { readMetaExport } from "./runtime/script-meta.js";
 import { routeRealmRejections } from "./runtime/script-rejections.js";
 import { createScriptContext, realmPromisePrototype, runScript } from "./runtime/script-vm.js";
+import type { SlotLimiter } from "./runtime/slot-pool.js";
 import { SharedStore } from "./shared-store.js";
 import type { WorkflowRuntimeImplementations } from "./workflow-capability-contract.js";
 
@@ -111,8 +113,15 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * `~/.pi/agent/agents` (user). Injectable for tests.
    */
   agentRegistry?: AgentRegistry;
-  /** Maximum concurrent agents, clamped to 1..16. Hosts pass the defaultConcurrency setting. */
+  /** Maximum concurrent agents of this run alone, clamped to 1..16. Ignored when `limiter` is set. */
   concurrency?: number;
+  /**
+   * Admits this run's live agents. A host that runs several workflows under one
+   * ceiling (the manager does, per parent session) passes the same limiter to
+   * all of them, so together they never exceed it. Without one the run gets a
+   * private pool sized by `concurrency`.
+   */
+  limiter?: SlotLimiter;
   /** Retry attempts after a recoverable agent failure, clamped to 0..3. Default 0. */
   agentRetries?: number;
   signal?: AbortSignal;
@@ -127,7 +136,10 @@ export interface WorkflowRunOptions extends WorkflowAgentOptions {
    * otherwise hold its concurrency slot, or keep the run from ever ending.
    * After the grace a timed-out agent is abandoned without a retry and ends
    * as a timeout failure; the drain stops waiting, the store is disposed,
-   * nothing more is journaled, and the host ignores stale writes.
+   * nothing more is journaled, and the host ignores stale writes. The run
+   * settles on time either way. A run's private pool then frees the slot; a
+   * shared `limiter` such as the manager's may keep it until the runner really
+   * exits, so its ceiling keeps counting live agents.
    *
    * Until the run is aborted the drain waits without limit, also when it
    * paused at a checkpoint, because those results are wanted. Default 10_000;
@@ -343,7 +355,8 @@ export async function runWorkflow<T = unknown>(
     routingConfig,
     agentRegistry,
     logger,
-    state: createRuntimeState(meta, options, resolveConcurrency(options.concurrency)),
+    state: createRuntimeState(meta, options),
+    limiter: resolveLimiter(options),
     agentRunner: options.agent ?? new WorkflowAgent(options),
     store: new SharedStore(),
   });
