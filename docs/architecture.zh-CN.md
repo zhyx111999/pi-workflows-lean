@@ -156,10 +156,10 @@ WorkflowAgent.run()                          agent.ts
 | 文件 | 职责 |
 |---|---|
 | `task-panel.ts` | 入口：实时面板，以及把结果按会话投递回对话 |
-| `task-panel/delivery-*.ts` | 会话端点、发送与确认、有界重试 |
+| `task-panel/delivery-*.ts` | 会话端点、发送与确认、有界重试；`delivery-boundary.ts` 在 Pi 的 `agent_before_settle` 边界插入等待中的结果 |
 | `task-panel/pending-markers.ts` | 先写“待投递”标记再发送，发送失败或进程崩溃都不丢结果 |
 | `task-panel/host-session-capture.ts` | 通过本扩展自己的 `pi.sendMessage` 探测到它绑定的宿主会话，保证结果送回发起它的那个会话；只在这次同步探测期间包装宿主原型、随即还原，未加载本扩展的会话永远不会被捕获 |
-| `task-panel/confirmed-send.ts` | 等宿主空闲再发送，结果写进会话文件后才算送达 |
+| `task-panel/host-session-link.ts` | 宿主会话的投递接口：忙闲状态；只向空闲宿主发送，结果写进会话文件后才算送达；等待 Pi 在边界插入的结果落盘；宿主空闲信号。全程没有定时器 |
 | `task-panel/result-text.ts` | 完成、失败、暂停、等待暂停点时的通知文字 |
 | `task-panel/panel-*.ts` | 输入框下方的实时进度面板 |
 | `workflow-ui.ts` + `navigator/` | `/workflows` 导航器：运行列表 → 阶段 → 子代理 → 详情 → 全文分页 |
@@ -211,6 +211,8 @@ WorkflowAgent.run()                          agent.ts
 **删除跨进程生效。** 一个进程删掉运行后，其他进程不能把它写回来：本实例见过的记录一旦消失，写入就会抛 `RunRecordDeletedError`，持有旧副本的进程丢弃副本，并放弃投递。
 
 **投递先落盘再发送。** 结果先写“待投递”标记，再发给会话，收到确认后才清除。Pi 重启、会话切换、发送失败都不会丢结果，也不会把结果发到别的会话。
+
+**宿主忙时排队，在这一轮结束处插入。** 会话空闲时结果立即发送并触发一轮；会话正在生成时绝不发送（发出去的东西会落进 Pi 看不见的跟进队列，无法确认也无法撤回），结果只留着持久标记。等这一轮的最后一条回复完成后，Pi 触发 `agent_before_settle`：`delivery-boundary.ts` 把所有等待中的结果按签发先后（投递 id 可排序）作为 `custom_message` 条目一起交给 Pi，并请求一次模型请求来回应它们。所以正在生成的回复不会被打断，也不用等用户的下一条消息。条目由 Pi 在处理器返回之后写入，处理器无法确认，所以每条都以会话文件为准：写进去了才清除标记；Pi 没写（例如被中止的运行没有这个边界），就在宿主下一次空闲（`agent_settled` 或压缩结束）时走空闲发送，由 `host-session-link.ts` 在通知之外的微任务里发起，避免被 Pi 正在等待的 `agent_settled` 通知推迟。已经写进会话文件的结果只清标记，不会重复插入。
 
 **隐藏提示词。** 提示词作为 `display:false` 的消息紧跟在用户消息后面：模型能看到，界面上不显示，用户的原文保持不变；写进会话后，之后的请求前缀不变，不会破坏模型缓存。
 

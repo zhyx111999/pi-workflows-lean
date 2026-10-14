@@ -18,7 +18,7 @@ import installExtension from "../src/pi-extension.js";
 import { sessionEndpoints } from "../src/task-panel/delivery-endpoints.js";
 import {
   _useHostSessionClassForTests,
-  captureSessionSend,
+  captureHostLink,
   DELIVERY_PROBE_CUSTOM_TYPE,
 } from "../src/task-panel/host-session-capture.js";
 import { _resetDeliveryRegistriesForTests } from "../src/task-panel.js";
@@ -50,17 +50,17 @@ afterEach(() => {
   discardWorkflowRuntime();
 });
 
-describe("captureSessionSend", () => {
+describe("captureHostLink", () => {
   it("captures the session its own pi is bound to and restores the host prototype", async () => {
     const before = sendDescriptor(FakeHostSession.prototype);
     const session = new FakeHostSession("bound");
 
-    const send = captureSessionSend(piBoundTo(session), "bound");
+    const link = captureHostLink(piBoundTo(session), "bound");
 
-    assert.ok(send, "the bound session is captured");
+    assert.ok(link, "the bound session is captured");
     assert.equal(session.received.length, 0, "the probe never reaches the session's real send");
     assert.deepEqual(sendDescriptor(FakeHostSession.prototype), before, "no hook remains after the probe");
-    await send(result("delivery-1"), { triggerTurn: true, deliverAs: "followUp" });
+    await link.send(result("delivery-1"), { triggerTurn: true, deliverAs: "followUp" });
     assert.deepEqual(
       session.received.map(({ message }) => message.details?.deliveryId),
       ["delivery-1"],
@@ -69,7 +69,7 @@ describe("captureSessionSend", () => {
   });
 
   it("never intercepts a session outside its own probe", () => {
-    captureSessionSend(piBoundTo(new FakeHostSession("bound")), "bound");
+    captureHostLink(piBoundTo(new FakeHostSession("bound")), "bound");
     const other = new FakeHostSession("other");
 
     void other.sendCustomMessage(probe);
@@ -78,7 +78,7 @@ describe("captureSessionSend", () => {
   });
 
   it("refuses a session that is not the one being bound", () => {
-    assert.equal(captureSessionSend(piBoundTo(new FakeHostSession("other")), "bound"), undefined);
+    assert.equal(captureHostLink(piBoundTo(new FakeHostSession("other")), "bound"), undefined);
   });
 
   it("captures nothing through a stale pi and still restores the prototype", () => {
@@ -89,7 +89,7 @@ describe("captureSessionSend", () => {
       },
     } as unknown as ExtensionAPI;
 
-    assert.equal(captureSessionSend(stale, "bound"), undefined);
+    assert.equal(captureHostLink(stale, "bound"), undefined);
     assert.deepEqual(sendDescriptor(FakeHostSession.prototype), before);
   });
 
@@ -97,7 +97,7 @@ describe("captureSessionSend", () => {
     class InheritingHostSession extends FakeHostSession {}
     _useHostSessionClassForTests(InheritingHostSession);
 
-    assert.ok(captureSessionSend(piBoundTo(new InheritingHostSession("bound")), "bound"));
+    assert.ok(captureHostLink(piBoundTo(new InheritingHostSession("bound")), "bound"));
     assert.equal(Object.hasOwn(InheritingHostSession.prototype, "sendCustomMessage"), false);
   });
 
@@ -117,7 +117,7 @@ describe("captureSessionSend", () => {
     const original = sendDescriptor(FakeHostSession.prototype);
 
     try {
-      assert.ok(captureSessionSend(pi, "bound"));
+      assert.ok(captureHostLink(pi, "bound"));
       void session.sendCustomMessage(probe);
       assert.deepEqual(wrapped, [DELIVERY_PROBE_CUSTOM_TYPE, DELIVERY_PROBE_CUSTOM_TYPE]);
       assert.equal(session.received.length, 1, "after the probe the stacked layer reaches the real send");

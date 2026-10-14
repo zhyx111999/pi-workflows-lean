@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { type Context, createFauxCore, type FauxResponseStep, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import {
   type AgentSession,
   createAgentSession,
@@ -24,10 +24,12 @@ export interface RealSession {
 /**
  * Run `drive` against a real AgentSession with only `extensionFactories`
  * installed and no network. `persist` gives the session a session file, which
- * delivery confirmation reads; otherwise it lives in memory.
+ * delivery confirmation reads; otherwise it lives in memory. `responses` script
+ * the model's replies in order (a function step may wait, to keep a turn in
+ * flight); by default every turn answers "ok".
  */
 export async function withRealSession(
-  options: { extensionFactories?: ExtensionFactory[]; persist?: boolean },
+  options: { extensionFactories?: ExtensionFactory[]; persist?: boolean; responses?: FauxResponseStep[] },
   drive: (real: RealSession) => Promise<void>,
 ): Promise<Context[]> {
   const root = await mkdtemp(join(tmpdir(), "pi-dw-real-session-"));
@@ -53,7 +55,9 @@ export async function withRealSession(
         maxTokens: 4096,
       })),
     });
-    core.setResponses(Array.from({ length: 8 }, () => fauxAssistantMessage("ok", { stopReason: "stop" })));
+    core.setResponses(
+      options.responses ?? Array.from({ length: 8 }, () => fauxAssistantMessage("ok", { stopReason: "stop" })),
+    );
     const resourceLoader = new DefaultResourceLoader({
       cwd: root,
       agentDir: root,

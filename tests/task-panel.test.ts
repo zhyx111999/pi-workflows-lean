@@ -8,8 +8,8 @@ import { AgentSession, type ExtensionAPI, type ExtensionUIContext } from "@earen
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { WorkflowError, WorkflowErrorCode } from "../src/errors.js";
 import type { PersistedRunState } from "../src/run-persistence.js";
-import { confirmedSessionSend } from "../src/task-panel/confirmed-send.js";
 import { _useHostSessionClassForTests, DELIVERY_PROBE_CUSTOM_TYPE } from "../src/task-panel/host-session-capture.js";
+import { hostSessionLink } from "../src/task-panel/host-session-link.js";
 import { UsageLimitScheduler } from "../src/usage-limit-scheduler.js";
 import type { WorkflowRunResult } from "../src/workflow.js";
 import { type ManagedRun, WorkflowManager } from "../src/workflow-manager.js";
@@ -302,7 +302,7 @@ describe("installResultDelivery", () => {
 
   function createMockPi(): ExtensionAPI & {
     _calls: DeliveryCall[];
-    emit?: (event: string, ...args: unknown[]) => void;
+    emit?: (event: string, ...args: unknown[]) => unknown;
     _onCount: (event: string) => number;
   } {
     const calls: DeliveryCall[] = [];
@@ -334,10 +334,13 @@ describe("installResultDelivery", () => {
           if (idx !== -1) list.splice(idx, 1);
         };
       },
+      /** Fires the event's handlers; like Pi's boundary events, the last result a handler returns wins. */
       emit: (event: string, ...args: unknown[]) => {
+        let result: unknown;
         for (const handler of handlers.get(event) ?? []) {
-          handler(...args);
+          result = handler(...args) ?? result;
         }
+        return result;
       },
       _onCount: (event: string) => registrations.get(event) ?? 0,
       getActiveTools: () => [],
@@ -347,7 +350,7 @@ describe("installResultDelivery", () => {
     };
     return obj as unknown as ExtensionAPI & {
       _calls: DeliveryCall[];
-      emit?: (event: string, ...args: unknown[]) => void;
+      emit?: (event: string, ...args: unknown[]) => unknown;
       _onCount: (event: string) => number;
     };
   }
@@ -1020,25 +1023,20 @@ describe("installResultDelivery", () => {
     }
   });
 
-  it("waits for an idle host, ignores queue_update, and ACKs only durable history", async () => {
+  it("holds a result for a busy host, ignores queue_update, and ACKs only durable history", async () => {
     const pi = createMockPi();
     const run = makeRun();
     const manager = createMockManager(run);
     const history = createPersistedDeliveryHistory();
     const sent: Array<{ customType: string; content: string; display: boolean; details?: { deliveryId?: string } }> =
       [];
-    const listeners = new Set<
-      (event: {
-        type?: string;
-        message?: { role?: string; customType?: string; details?: unknown };
-        followUp?: unknown[];
-      }) => void
-    >();
-    const emit = (event: {
+    type HostEvent = {
       type?: string;
       message?: { role?: string; customType?: string; details?: unknown };
       followUp?: unknown[];
-    }) => {
+    };
+    const listeners = new Set<(event: HostEvent) => void>();
+    const emit = (event: HostEvent) => {
       for (const listener of listeners) listener(event);
     };
 
@@ -1050,9 +1048,7 @@ describe("installResultDelivery", () => {
         getBranch: () => history.branch,
         getSessionFile: () => history.sessionFile,
       },
-      subscribe: (
-        next: (event: { type?: string; message?: { role?: string; customType?: string; details?: unknown } }) => void,
-      ) => {
+      subscribe: (next: (event: HostEvent) => void) => {
         listeners.add(next);
         return () => listeners.delete(next);
       },
@@ -1062,22 +1058,22 @@ describe("installResultDelivery", () => {
         return Promise.resolve();
       },
     };
-    const hostSend = confirmedSessionSend(session, SESSION);
     mod.installResultDelivery(pi, manager);
     manager.setSessionId(SESSION);
-    mod.bindSessionDelivery(SESSION, pi, { manager, stableSend: hostSend });
+    mod.bindSessionDelivery(SESSION, pi, { manager, host: hostSessionLink(session, SESSION) });
     manager.emit("complete", { runId: "test-run-1" });
     await Promise.resolve();
 
     assert.equal(sent.length, 0, "busy host receives no result send");
+    assert.ok(run.pendingDelivery, "the result waits as a durable marker");
     emit({ type: "queue_update", followUp: [] });
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(sent.length, 0, "queue_update is not an idle or retry signal");
     session.isStreaming = false;
     session.isIdle = true;
     emit({ type: "agent_settled" });
-    await Promise.resolve();
-    assert.equal(sent.length, 1, "idle host receives exactly one result send");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(sent.length, 1, "the idle signal sends the waiting result exactly once");
     assert.ok(run.pendingDelivery, "send acceptance alone must not clear the marker");
     const details = sent[0].details;
     emit({ type: "message_end", message: { role: "custom", customType: "workflow-result", details } });
@@ -1087,14 +1083,15 @@ describe("installResultDelivery", () => {
     assert.equal(run.pendingDelivery, undefined, "matching durable message_end ACKs the delivery");
   });
 
-  it("fails closed when idle-host message persistence cannot be inspected", async () => {
+  it("fails closed when message persistence cannot be inspected", async () => {
     const pi = createMockPi();
     const run = makeRun();
     const manager = createMockManager(run);
-    const hostSend = confirmedSessionSend(
+    let sent = 0;
+    const host = hostSessionLink(
       {
-        isStreaming: true,
-        isIdle: false,
+        isStreaming: false,
+        isIdle: true,
         sessionManager: {
           getSessionId: () => SESSION,
           getBranch: () => {
@@ -1103,28 +1100,32 @@ describe("installResultDelivery", () => {
           getSessionFile: () => "/session.jsonl",
         },
         subscribe: () => () => {},
-        sendCustomMessage: () => Promise.resolve(),
+        sendCustomMessage: () => {
+          sent++;
+          return Promise.resolve();
+        },
       },
       SESSION,
     );
     mod.installResultDelivery(pi, manager);
     manager.setSessionId(SESSION);
-    mod.bindSessionDelivery(SESSION, pi, { manager, stableSend: hostSend });
+    mod.bindSessionDelivery(SESSION, pi, { manager, host });
     manager.emit("complete", { runId: "test-run-1" });
     await Promise.resolve();
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.ok(run.pendingDelivery, "an unverifiable message_end cannot ACK delivery");
+    assert.equal(sent, 0, "a host that cannot confirm is not sent to");
+    assert.ok(run.pendingDelivery, "an unverifiable history cannot ACK delivery");
   });
 
-  it("suspending an unsent idle waiter leaves its durable marker for the replacement", async () => {
+  it("suspending while a busy host holds a result leaves its durable marker for the replacement", async () => {
     const oldPi = createMockPi();
     const freshPi = createMockPi();
     const run = makeRun();
     const manager = createMockManager(run);
     let sent = 0;
 
-    const hostSend = confirmedSessionSend(
+    const host = hostSessionLink(
       {
         isStreaming: true,
         isIdle: false,
@@ -1141,7 +1142,7 @@ describe("installResultDelivery", () => {
     );
     mod.installResultDelivery(oldPi, manager);
     manager.setSessionId(SESSION);
-    mod.bindSessionDelivery(SESSION, oldPi, { manager, stableSend: hostSend });
+    mod.bindSessionDelivery(SESSION, oldPi, { manager, host });
     manager.emit("complete", { runId: "test-run-1" });
     await Promise.resolve();
     assert.equal(sent, 0, "the busy generation owns no custom queue item");
@@ -1206,7 +1207,7 @@ describe("installResultDelivery", () => {
       details: { deliveryId },
     });
 
-    const hostSend = confirmedSessionSend(
+    const host = hostSessionLink(
       {
         isStreaming: false,
         sessionManager: {
@@ -1223,7 +1224,7 @@ describe("installResultDelivery", () => {
     );
     mod.installResultDelivery(pi, manager);
     manager.setSessionId(SESSION);
-    mod.bindSessionDelivery(SESSION, pi, { manager, stableSend: hostSend });
+    mod.bindSessionDelivery(SESSION, pi, { manager, host });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     assert.equal(sends, 0, "an already persisted delivery is not sent twice");
@@ -1347,7 +1348,7 @@ describe("installResultDelivery", () => {
     assert.equal(manager.listenerCount("paused"), 1);
   });
 
-  it("cancels active streaming waiters on suspend so they cannot ACK a later generation", async () => {
+  it("stops listening to the host on suspend, so a later generation owns the delivery", async () => {
     const pi = createMockPi();
     const freshPi = createMockPi();
     const run = makeRun();
@@ -1356,11 +1357,9 @@ describe("installResultDelivery", () => {
       | ((event: { type?: string; message?: { role?: string; customType?: string; details?: unknown } }) => void)
       | undefined;
 
-    const hostSend = confirmedSessionSend(
+    const host = hostSessionLink(
       {
         isStreaming: true,
-        // A real host can confirm deliveries, so the send waits for idle
-        // instead of rejecting at once; that wait is what suspend must cancel.
         sessionManager: {
           getSessionId: () => SESSION,
           getBranch: () => [],
@@ -1381,17 +1380,16 @@ describe("installResultDelivery", () => {
 
     mod.installResultDelivery(pi, manager);
     manager.setSessionId(SESSION);
-    mod.bindSessionDelivery(SESSION, pi, { manager, stableSend: hostSend });
+    mod.bindSessionDelivery(SESSION, pi, { manager, host });
     manager.emit("complete", { runId: "test-run-1" });
     await Promise.resolve();
     assert.ok(run.pendingDelivery);
-    assert.ok(gen1Listener, "the send is waiting for the streaming host to go idle");
+    assert.ok(gen1Listener, "the endpoint listens for the busy host's idle signal");
 
     // Suspend generation 1
     mod.suspendSessionDelivery(SESSION);
 
-    // Generation 1's subscriber should have been unsubscribed by suspend
-    assert.equal(gen1Listener, undefined, "streaming waiter was unsubscribed on suspend");
+    assert.equal(gen1Listener, undefined, "the idle listener was unsubscribed on suspend");
 
     // Bind generation 2
     mod.bindSessionDelivery(SESSION, freshPi, { manager, stableSend: recordingStableSend(freshPi) });
@@ -1430,7 +1428,7 @@ describe("installResultDelivery", () => {
     assert.equal(run.pendingDelivery?.deliveryId, deliveryId, "stale generation send cannot ACK");
   });
 
-  it("registers turn_end once per process and dispatches to the CURRENT manager", async () => {
+  it("registers agent_before_settle once per process and dispatches to the CURRENT manager", async () => {
     const pi = createMockPi();
     // m1 = the OLD project's manager; m2 = current after a cross-project
     // session_start rebuild. Per-manager registration would stack one handler
@@ -1444,11 +1442,11 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi, m2);
     boundHostSession(pi, "sess-new", recordingStableSend(pi));
 
-    pi.emit?.("turn_end", {}, {});
+    pi.emit?.("agent_before_settle", { entries: [] }, {});
     await Promise.resolve();
 
-    assert.equal(pi._onCount("turn_end"), 1, "a rebuild does not stack another turn_end handler");
-    assert.ok(mod._getSessionDeliveryEndpointForTests("sess-new"), "turn_end dispatched to the current manager");
+    assert.equal(pi._onCount("agent_before_settle"), 1, "a rebuild does not stack another boundary handler");
+    assert.ok(mod._getSessionDeliveryEndpointForTests("sess-new"), "the boundary reached the current manager");
     assert.equal(
       mod._getSessionDeliveryEndpointForTests("sess-old"),
       undefined,
@@ -1456,10 +1454,10 @@ describe("installResultDelivery", () => {
     );
   });
 
-  it("registers turn_end per ExtensionAPI generation, not once per process", async () => {
+  it("registers agent_before_settle per ExtensionAPI generation, not once per process", async () => {
     // The built dist module is cached across pi session
     // generations while pi re-runs the factory with a NEW ExtensionAPI — a
-    // bare module-level boolean would leave generations 2+ with NO turn_end
+    // bare module-level boolean would leave generations 2+ with NO boundary
     // handler (fail-closed deliveries never re-probed until session_start).
     const pi1 = createMockPi();
     const pi2 = createMockPi();
@@ -1472,13 +1470,13 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi2, m2); // generation 2: same module, NEW pi
     boundHostSession(pi2, "sess-g2", recordingStableSend(pi2));
 
-    pi2.emit?.("turn_end", {}, {});
+    pi2.emit?.("agent_before_settle", { entries: [] }, {});
     await Promise.resolve();
 
-    assert.ok(mod._getSessionDeliveryEndpointForTests("sess-g2"), "generation-2 pi must have its own turn_end handler");
+    assert.ok(mod._getSessionDeliveryEndpointForTests("sess-g2"), "generation-2 pi must have its own boundary handler");
   });
 
-  it("keeps A/B/A turn_end handlers per instance and dispatches each to its latest manager", async () => {
+  it("keeps A/B/A boundary handlers per instance and dispatches each to its latest manager", async () => {
     const piA = createMockPi();
     const piB = createMockPi();
     const oldA = createMockManager(makeRun());
@@ -1492,16 +1490,16 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(piB, managerB);
     mod.installResultDelivery(piA, latestA);
 
-    assert.equal(piA._onCount("turn_end"), 1, "A registers turn_end once across A/B/A installs");
-    assert.equal(piB._onCount("turn_end"), 1, "B registers turn_end once");
+    assert.equal(piA._onCount("agent_before_settle"), 1, "A registers its boundary handler once across A/B/A installs");
+    assert.equal(piB._onCount("agent_before_settle"), 1, "B registers its boundary handler once");
 
     // Each pi is bound to its own live session; a probe for any other id fails.
     boundHostSession(piA, "sess-a-new", recordingStableSend(piA));
     boundHostSession(piB, "sess-b", recordingStableSend(piB));
 
     // No ctx means each callback must obtain the manager stored for ITS pi.
-    piA.emit?.("turn_end", {}, {});
-    piB.emit?.("turn_end", {}, {});
+    piA.emit?.("agent_before_settle", { entries: [] }, {});
+    piB.emit?.("agent_before_settle", { entries: [] }, {});
     await Promise.resolve();
 
     assert.ok(mod._getSessionDeliveryEndpointForTests("sess-a-new"), "A uses A's newest manager");
@@ -1517,13 +1515,15 @@ describe("installResultDelivery", () => {
     const pi = createMockPi();
     const first = createMockManager(makeRun({ sessionId: SESSION }));
     first.setSessionId(SESSION);
-    let sends = 0;
-    const stableSend: StableSend = () => {
-      sends++;
-      return Promise.resolve();
-    };
+    let announce: ((event: { type: string }) => void) | undefined;
+    boundHostSession(pi, SESSION, recordingStableSend(pi), {
+      subscribe: (listener: (event: { type: string }) => void) => {
+        announce = listener;
+        return () => {};
+      },
+    });
     mod.installResultDelivery(pi, first);
-    mod.bindSessionDelivery(SESSION, pi, { manager: first, stableSend });
+    mod.bindSessionDelivery(SESSION, pi, { manager: first });
     const endpointBefore = mod._getSessionDeliveryEndpointForTests(SESSION);
     assert.ok(endpointBefore?.hasSend, "first manager binds the live session transport");
 
@@ -1533,17 +1533,17 @@ describe("installResultDelivery", () => {
     second.setSessionId(SESSION);
     mod.installResultDelivery(pi, second);
 
-    // No bind follows: turn_end must use the replacement manager but leave the
-    // current session endpoint's transport/generation/suspension untouched.
-    pi.emit?.("turn_end", {}, {});
+    // No bind follows: the host's idle signal must use the replacement manager
+    // but leave the current session endpoint's transport/generation/suspension untouched.
+    announce?.({ type: "agent_settled" });
     await new Promise<void>((resolve) => setImmediate(resolve));
 
-    assert.equal(sends, 1, "turn_end flushes the replacement manager's pending run");
+    assert.equal(piCalls(pi).length, 1, "the idle signal flushes the replacement manager's pending run");
     assert.equal(second.getRun("test-run-1")?.pendingDelivery, undefined, "replacement manager receives the ACK");
     assert.deepEqual(mod._getSessionDeliveryEndpointForTests(SESSION), endpointBefore);
   });
 
-  it("recovers and flushes pending delivery on turn_end when sender becomes available", async () => {
+  it("recovers a missing host capture at the run boundary and hands Pi the waiting result", async () => {
     const pi = createMockPi();
     const run = makeRun({ sessionId: SESSION });
     const manager = createMockManager(run);
@@ -1558,15 +1558,25 @@ describe("installResultDelivery", () => {
     assert.equal(piCalls(pi).length, 0, "no send while sender is unavailable");
     assert.ok(run.pendingDelivery, "delivery stays pending");
 
-    // Pi binds the runtime without a new session_start.
-    boundHostSession(pi, SESSION, recordingStableSend(pi));
+    // Pi binds the runtime without a new session_start; the host is mid-run.
+    boundHostSession(pi, SESSION, recordingStableSend(pi), { isIdle: false });
 
-    // A normal conversation turn ends
-    pi.emit?.("turn_end", {}, { sessionManager: { getSessionId: () => SESSION } });
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    const outcome = pi.emit?.(
+      "agent_before_settle",
+      { entries: [{ type: "custom", customType: "other-extension" }], continue: false },
+      { sessionManager: { getSessionId: () => SESSION } },
+    ) as { entries: Array<{ type: string; customType: string; content?: string }>; continue: boolean };
 
-    assert.equal(piCalls(pi).length, 1, "pending delivery flushed on turn_end idle recovery");
-    assert.equal(run.pendingDelivery, undefined, "pending delivery cleared");
+    assert.ok(mod._getSessionDeliveryEndpointForTests(SESSION)?.hasSend, "the boundary captured the host");
+    assert.equal(piCalls(pi).length, 0, "a busy host is handed the result as an entry, never sent it");
+    assert.deepEqual(
+      outcome.entries.map((entry) => entry.customType),
+      ["other-extension", "workflow-result"],
+      "the boundary adds to the entries other handlers chose",
+    );
+    assert.match(outcome.entries[1].content ?? "", /All tests passed/);
+    assert.equal(outcome.continue, true, "one model request answers the result");
+    assert.ok(run.pendingDelivery, "the marker stays until Pi has persisted the entry");
   });
 
   it("never silently drops pending deliveries when the queue grows past the soft cap", () => {

@@ -22,6 +22,22 @@ export type ClearPendingResult = "cleared" | "stale" | "failed";
  */
 export type PendingSaveResult = "saved" | "stale" | "deleted" | "failed";
 
+let lastIssuedAt = 0;
+
+/**
+ * A fresh delivery id. Ids sort in the order they were issued, even across a
+ * restart, so results waiting for a busy host go out oldest first.
+ */
+function newDeliveryId(): string {
+  lastIssuedAt = Math.max(Date.now(), lastIssuedAt + 1);
+  return `${lastIssuedAt.toString(36).padStart(10, "0")}-${randomUUID()}`;
+}
+
+/** Sort order for deliveries: oldest first. */
+export function byIssueOrder(a: { deliveryId: string }, b: { deliveryId: string }): number {
+  return a.deliveryId < b.deliveryId ? -1 : a.deliveryId > b.deliveryId ? 1 : 0;
+}
+
 /**
  * A marker with its delivery id. A retry passes the marker it is retrying and
  * keeps that id, so host history can deduplicate the resend. A new
@@ -30,7 +46,7 @@ export type PendingSaveResult = "saved" | "stale" | "deleted" | "failed";
  * deliveries even when they are of the same kind.
  */
 export function markerWithId(marker: PendingDeliveryMarker): PendingDeliveryMarker {
-  return marker.deliveryId ? marker : { ...marker, deliveryId: randomUUID() };
+  return marker.deliveryId ? marker : { ...marker, deliveryId: newDeliveryId() };
 }
 
 export function markRunPending(run: ManagedRun, marker: PendingDeliveryMarker): PendingDeliveryMarker {

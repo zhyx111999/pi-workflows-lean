@@ -1,6 +1,6 @@
 /**
- * Finds the host AgentSession this extension instance is bound to and returns a
- * confirmed send for it. pi.sendMessage itself cannot carry results: it is
+ * Finds the host AgentSession this extension instance is bound to and returns
+ * its delivery link. pi.sendMessage itself cannot carry results: it is
  * fire-and-forget and swallows rejections.
  *
  * The only route to a session is this extension's own pi.sendMessage, which Pi
@@ -14,8 +14,7 @@
  */
 
 import { AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { confirmedSessionSend, type HostSession } from "./confirmed-send.js";
-import type { DeliverySend } from "./delivery-endpoints.js";
+import { type HostSession, type HostSessionLink, hostSessionLink } from "./host-session-link.js";
 
 /** Custom type of the capture-only probe. The wrapper swallows it: nothing is appended, persisted, or turned. */
 export const DELIVERY_PROBE_CUSTOM_TYPE = "workflow-delivery-probe";
@@ -37,11 +36,11 @@ export function _useHostSessionClassForTests(sessionClass: HostSessionClass): vo
 }
 
 /**
- * The confirmed send of the session `pi` is bound to, or undefined when `pi` is
+ * The delivery link of the session `pi` is bound to, or undefined when `pi` is
  * stale or not yet bound, the host shape changed, or the bound session is not
  * `sessionId`. Callers stay fail-closed on undefined.
  */
-export function captureSessionSend(pi: ExtensionAPI, sessionId: string): DeliverySend | undefined {
+export function captureHostLink(pi: ExtensionAPI, sessionId: string): HostSessionLink | undefined {
   const session = probeBoundSession(pi);
   if (!session) return undefined;
   try {
@@ -49,7 +48,7 @@ export function captureSessionSend(pi: ExtensionAPI, sessionId: string): Deliver
   } catch {
     return undefined;
   }
-  return confirmedSessionSend(session, sessionId);
+  return hostSessionLink(session, sessionId);
 }
 
 function probeBoundSession(pi: ExtensionAPI): HostSession | undefined {

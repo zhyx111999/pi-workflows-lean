@@ -2,7 +2,8 @@
  * A host AgentSession double for delivery tests. As on the real class, its
  * sendCustomMessage lives on the prototype, so the capture probe can intercept
  * it; a delivered result is appended to a session file, as Pi persists it, so
- * the confirmed send can read the delivery back.
+ * the delivery link can read the delivery back. `emit` and `append` let a test
+ * play the events Pi sends its listeners.
  */
 
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -17,6 +18,7 @@ export type HostMessage = {
 };
 
 type SessionEntry = { id: string; type: string; customType: string; details?: unknown };
+export type HostEvent = { type: string; entry?: SessionEntry };
 
 const sessionRoot = mkdtempSync(join(tmpdir(), "pi-fake-host-sessions-"));
 process.on("exit", () => rmSync(sessionRoot, { recursive: true, force: true }));
@@ -33,6 +35,7 @@ export class FakeHostSession {
     getSessionFile: () => string;
   };
   private readonly branch: SessionEntry[] = [];
+  private readonly listeners = new Set<(event: HostEvent) => void>();
 
   constructor(sessionId: string) {
     const file = join(sessionRoot, `session-${++sessionFiles}.jsonl`);
@@ -44,23 +47,43 @@ export class FakeHostSession {
     };
   }
 
-  subscribe(): () => void {
-    return () => {};
+  subscribe(listener: (event: HostEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** How many listeners are attached. */
+  get subscribers(): number {
+    return this.listeners.size;
+  }
+
+  emit(event: HostEvent): void {
+    for (const listener of [...this.listeners]) listener(event);
+  }
+
+  /** Persist a message the way Pi appends a boundary entry, then announce it. */
+  append(message: HostMessage): void {
+    const entry = this.persist(message);
+    if (entry) this.emit({ type: "entry_appended", entry });
   }
 
   sendCustomMessage(message: HostMessage, options?: unknown): Promise<void> {
     this.received.push({ message, options });
-    if (message.details?.deliveryId) {
-      const entry = {
-        id: `entry-${this.branch.length}`,
-        type: "custom_message",
-        customType: message.customType,
-        details: message.details,
-      };
-      this.branch.push(entry);
-      appendFileSync(this.sessionManager.getSessionFile(), `${JSON.stringify(entry)}\n`);
-    }
+    this.persist(message);
     return Promise.resolve();
+  }
+
+  private persist(message: HostMessage): SessionEntry | undefined {
+    if (!message.details?.deliveryId) return undefined;
+    const entry = {
+      id: `entry-${this.branch.length}`,
+      type: "custom_message",
+      customType: message.customType,
+      details: message.details,
+    };
+    this.branch.push(entry);
+    appendFileSync(this.sessionManager.getSessionFile(), `${JSON.stringify(entry)}\n`);
+    return entry;
   }
 }
 
