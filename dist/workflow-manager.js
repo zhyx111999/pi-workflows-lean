@@ -18,6 +18,7 @@ import { resumedRun } from "./manager/resume-state.js";
 import { executeRun } from "./manager/run-execution.js";
 import { initialRunRecord } from "./manager/run-record.js";
 import { adoptRunsToSession, moveRunSession } from "./manager/session-owner.js";
+import { SessionSlots } from "./manager/session-slots.js";
 import { taskListMoves } from "./manager/task-list-reuse.js";
 import { DEFAULT_MAX_TERMINAL_RUNS_IN_MEMORY } from "./manager/terminal-retention.js";
 import { createRunPersistence, sanitizeAutoResumeAttempts, } from "./run-persistence.js";
@@ -34,7 +35,8 @@ export class WorkflowManager extends EventEmitter {
     executions = new WeakMap();
     persistence;
     cwd;
-    concurrency;
+    /** Concurrency ceilings per parent session; they outlive any one run and are handed over with the manager on reload. */
+    sessionSlots;
     agent;
     mainModel;
     modelRegistry;
@@ -53,7 +55,7 @@ export class WorkflowManager extends EventEmitter {
     constructor(options = {}) {
         super();
         this.cwd = options.cwd ?? process.cwd();
-        this.concurrency = options.concurrency ?? 8;
+        this.sessionSlots = new SessionSlots(options.concurrency ?? 8);
         this.agent = options.agent;
         this.mainModel = options.mainModel;
         this.modelRegistry = options.modelRegistry;
@@ -74,10 +76,13 @@ export class WorkflowManager extends EventEmitter {
     /**
      * Refresh host configuration after Pi reloads the extension, keeping live
      * runs, leases, and listeners. Running executions keep the options they
-     * started with; later runs and resumes use the new ones.
+     * started with; later runs and resumes use the new ones. The exception is
+     * concurrency, a ceiling shared by every run of a session: the new value
+     * governs each session's next admission at once, and never stops an agent
+     * that already runs.
      */
     reconfigureAfterReload(options) {
-        this.concurrency = options.concurrency ?? 8;
+        this.sessionSlots.setConcurrency(options.concurrency ?? 8);
         this.maxAgents = options.maxAgents ?? DEFAULT_MAX_AGENTS;
         this.agentTimeoutMs = options.agentTimeoutMs ?? null;
         this.agentRetries = options.agentRetries ?? 0;
@@ -117,7 +122,9 @@ export class WorkflowManager extends EventEmitter {
      * result. Finished, delivered runs keep their session so history stays where
      * it ran; parent lineage never moves. Runs another session owns stay with it,
      * even when this process executes them or caches a stale copy. Returns how
-     * many runs moved.
+     * many runs moved. Only delivery moves: a run keeps drawing concurrency slots
+     * from its parent session's ceiling (see manager/session-slots.ts), and the
+     * adopting session's own runs have a ceiling of their own.
      */
     adoptLiveRunsToSession(sessionId, previousSessionId) {
         if (!sessionId)
@@ -168,7 +175,6 @@ export class WorkflowManager extends EventEmitter {
                 modelRegistry: this.modelRegistry,
                 persistAgentSessions: this.persistAgentSessions,
                 inheritMainModel: this.inheritMainModel,
-                concurrency: this.concurrency,
                 agentRetries: this.agentRetries,
                 maxAgents: this.maxAgents,
                 agentTimeoutMs: this.agentTimeoutMs,
@@ -176,6 +182,7 @@ export class WorkflowManager extends EventEmitter {
                 providerMiddlewareExtensions: this.providerMiddlewareExtensions,
             },
             toolsets: this.toolsets,
+            sessionSlots: this.sessionSlots,
         });
         this.executions.set(managed, execution);
         return execution;

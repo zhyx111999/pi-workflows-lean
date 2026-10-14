@@ -14,11 +14,11 @@
     },
     "providerVisibleToolDefinitions": {
       "serialization": "sum of UTF-8 bytes of JSON.stringify({ name, description, parameters }) per tool",
-      "bytes": 1951,
+      "bytes": 1936,
       "tools": [
         {
           "name": "subagents",
-          "bytes": 964
+          "bytes": 949
         },
         {
           "name": "subagents_control",
@@ -49,16 +49,16 @@
     },
     "ordinaryWorkflowOwnedAlwaysOn": {
       "serialization": "sum of permanent prompt, provider-visible tool definitions, and every registered skill's discovery bytes",
-      "bytes": 3132
+      "bytes": 3117
     },
     "workflowAuthoringSkillCorpus": {
       "serialization": "sum of UTF-8 bytes for every file under skills/workflow-authoring",
       "files": 20,
-      "bytes": 56437
+      "bytes": 56818
     },
     "representativeAuthoringProfiles": {
       "serialization": "sum of UTF-8 bytes for each profile's declared package-relative files",
-      "medianBytes": 16269,
+      "medianBytes": 16577,
       "profiles": [
         {
           "name": "write",
@@ -82,7 +82,7 @@
             "skills/workflow-authoring/examples/structured-output.js",
             "skills/workflow-authoring/examples/bounded-semantic-retry.js"
           ],
-          "bytes": 16269
+          "bytes": 16577
         },
         {
           "name": "review",
@@ -93,7 +93,7 @@
             "skills/workflow-authoring/references/lifecycle.md",
             "skills/workflow-authoring/examples/classify-and-act.js"
           ],
-          "bytes": 16863
+          "bytes": 17171
         },
         {
           "name": "debug",
@@ -117,7 +117,7 @@
             "skills/workflow-authoring/examples/loop-until-done.js",
             "skills/workflow-authoring/examples/structured-output.js"
           ],
-          "bytes": 18123
+          "bytes": 18431
         },
         {
           "name": "retry",
@@ -129,7 +129,7 @@
             "skills/workflow-authoring/examples/bounded-semantic-retry.js",
             "skills/workflow-authoring/examples/structured-output.js"
           ],
-          "bytes": 16269
+          "bytes": 16577
         }
       ]
     }

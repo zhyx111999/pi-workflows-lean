@@ -42,7 +42,7 @@ test("subagents is one background entry point with a short description and a sin
   assert.equal(tool.name, SUBAGENTS_TOOL_NAME);
   assert.equal(tool.name, "subagents");
   assert.match(tool.description, /background subagents with exactly one of tasks, script, or name/i);
-  assert.match(tool.description, /Returns a runId at once.*delivered to this conversation when the run finishes/i);
+  assert.match(tool.description, /Returns a runId at once.*Results queue until the main model's full turn ends/i);
   assert.match(tool.promptSnippet ?? "", /background subagents/);
   assert.deepEqual(tool.promptGuidelines, [SUBAGENTS_GATE_GUIDELINE]);
   assert.match(SUBAGENTS_GATE_GUIDELINE, /decided by the hidden note that follows the user message/);
@@ -118,6 +118,7 @@ test("startedText names the run, says where the result goes, and points at subag
   const text = startedText("subagents-abc", "2 subagents");
   assert.match(text, /Started 2 subagents in the background as run subagents-abc/);
   assert.match(text, /delivered to this conversation automatically/);
+  assert.match(text, /queues until the current response and tools finish, then enters immediately/);
   assert.match(text, /wait or keep working/);
   assert.match(text, /subagents_control/);
 });

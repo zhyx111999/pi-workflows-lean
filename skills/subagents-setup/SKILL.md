@@ -31,7 +31,7 @@ A change in an earlier file is shadowed while a later file sets the same key. `/
 
 | Key | Default | Meaning |
 |---|---|---|
-| `defaultConcurrency` | 8 (≤16) | parallel subagents |
+| `defaultConcurrency` | 8 (≤16) | simultaneous subagents per parent session; all of its runs share one ceiling |
 | `defaultAgentRetries` | 0 (≤3) | retries after recoverable failures |
 | `defaultAgentTimeoutMs` | none | ms per subagent; `null` clears an earlier file |
 | `defaultMaxAgents` | 1000 | subagents per run |
@@ -42,6 +42,8 @@ A change in an earlier file is shadowed while a later file sets the same key. `/
 | `deliveredResultMaxChars` | 400 | cap on a result's JSON fallback |
 | `excludeSubagentTools` | [] | extra tools denied to subagents; `[]` clears an earlier file |
 | `providerMiddlewareExtensions` | [] | trusted provider/auth extensions for subagents |
+
+Different parent sessions have independent concurrency allowances. Retries and resumes retain their original parent's allowance. Results wait while the main model is busy, then enter immediately after its full response and tools finish, in arrival order.
 
 ## Agent roles
 
@@ -72,5 +74,5 @@ Role instructions.
 
 - Next `subagents` run: tiers, roles, saved scripts, run limits.
 - Live: progress panel; `deliveredResultMaxChars` on the next result.
-- After `/reload` or a new session: the other settings, run limits for slash-command runs, and a new saved workflow's `/<name>`.
+- After `/reload` or a new session: the other settings, run limits for slash-command runs, and a new saved workflow's `/<name>`. Concurrency updates running sessions too; lowering it waits for existing agents to finish.
 - After restarting Pi: plugin updates. `/reload` keeps the loaded build and warns that it changed; runs active across the restart pause and resume from `/workflows`.

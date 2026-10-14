@@ -590,8 +590,10 @@ test(
 test(
   "resume refuses to overlap pause teardown that exceeds the settlement grace period",
   withTempCwd(async (cwd) => {
-    // Shrink the (10s) settle grace so the 1.1s teardown below exceeds it.
-    _setPausedExecutionSettleTimeoutForTests(1_000);
+    // Keep teardown under explicit control; loaded CI hosts can exhaust a 100ms margin before resume begins.
+    _setPausedExecutionSettleTimeoutForTests(20);
+    const keepAlive = setInterval(() => {}, 1_000);
+    let finishAbort = () => {};
     try {
       let markFirstAttemptStarted: () => void = () => {};
       const firstAttemptStarted = new Promise<void>((resolve) => {
@@ -611,7 +613,7 @@ test(
                 options?.signal?.addEventListener(
                   "abort",
                   () => {
-                    setTimeout(() => {
+                    finishAbort = () => {
                       options.onUsage?.({
                         input: 20,
                         output: 5,
@@ -621,7 +623,7 @@ test(
                         cacheWrite: 0,
                       });
                       reject(new Error("first attempt finished slow abort teardown"));
-                    }, 1_100);
+                    };
                   },
                   { once: true },
                 );
@@ -639,6 +641,7 @@ test(
       assert.equal(manager.pause(runId), true);
       assert.equal(await manager.resume(runId), false, "resume must not overlap an execution still tearing down");
       assert.equal(attempts, 1, "no replacement agent may start before pause teardown settles");
+      finishAbort();
       await assert.rejects(promise);
 
       const paused = manager.getPersistence().load(runId);
@@ -653,6 +656,8 @@ test(
       assert.equal(completed?.tokenUsage?.total, 35);
       assert.equal(attempts, 2);
     } finally {
+      finishAbort();
+      clearInterval(keepAlive);
       _setPausedExecutionSettleTimeoutForTests(undefined);
     }
   }),

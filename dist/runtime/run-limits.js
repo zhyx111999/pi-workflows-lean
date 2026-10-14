@@ -1,5 +1,6 @@
 /** Turns host-supplied run settings into the bounded limits the runtime enforces, including the concurrency gate. */
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_RETRIES, MAX_CONCURRENCY } from "../config.js";
+import { SlotPool } from "./slot-pool.js";
 /** Largest delay setTimeout accepts; larger values fire immediately. */
 const MAX_TIMER_MS = 2_147_483_647;
 const DEFAULT_DRAIN_ABORT_GRACE_MS = 10_000;
@@ -63,23 +64,13 @@ export function retryBackoffMs(failedAttempt, options) {
         return defaultMs;
     }
 }
-/** Run at most `limit` tasks at once; later callers queue in arrival order. */
-export function createLimiter(limit) {
-    let active = 0;
-    const queue = [];
-    const next = () => {
-        active--;
-        queue.shift()?.();
-    };
-    return async (fn) => {
-        if (active >= limit)
-            await new Promise((resolve) => queue.push(resolve));
-        active++;
-        try {
-            return await fn();
-        }
-        finally {
-            next();
-        }
-    };
+/**
+ * The gate that admits live agents: the host's shared one, so every run under
+ * the same ceiling counts against it, or a private pool for this run alone.
+ */
+export function resolveLimiter(options) {
+    if (options.limiter)
+        return options.limiter;
+    const pool = new SlotPool(resolveConcurrency(options.concurrency));
+    return (fn, cancel) => pool.run(fn, cancel);
 }

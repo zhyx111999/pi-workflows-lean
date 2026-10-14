@@ -29,7 +29,7 @@ export function createSubagentsTool(host) {
     return defineTool({
         name: SUBAGENTS_TOOL_NAME,
         label: "Subagents",
-        description: "Start background subagents with exactly one of tasks, script, or name. Returns a runId at once; the result is delivered to this conversation when the run finishes.",
+        description: "Start background subagents with exactly one of tasks, script, or name. Returns a runId at once. Results queue until the main model's full turn ends.",
         promptSnippet: "Delegate independent or multi-step work to background subagents",
         promptGuidelines: [SUBAGENTS_GATE_GUIDELINE],
         parameters: subagentsSchema,
@@ -72,7 +72,7 @@ export function createSubagentsTool(host) {
 export function startedText(runId, started) {
     return [
         `Started ${started} in the background as run ${runId}.`,
-        "The result is delivered to this conversation automatically when it finishes, so this turn can end; tell the user they can wait or keep working.",
+        "The result is delivered to this conversation automatically; if busy, it queues until the current response and tools finish, then enters immediately. The user can wait or keep working.",
         "Use subagents_control to check, read, message, stop, or resume this run.",
     ].join("\n");
 }

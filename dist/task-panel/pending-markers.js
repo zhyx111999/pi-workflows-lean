@@ -8,6 +8,19 @@ import { warnDelivery } from "./delivery-endpoints.js";
 import { cancelDeliveryRetry } from "./delivery-retry.js";
 /** Confirmed deliveries whose pending marker still needs to be cleared durably. */
 export const deliveredAwaitingClear = new Map();
+let lastIssuedAt = 0;
+/**
+ * A fresh delivery id. Ids sort in the order they were issued, even across a
+ * restart, so results waiting for a busy host go out oldest first.
+ */
+function newDeliveryId() {
+    lastIssuedAt = Math.max(Date.now(), lastIssuedAt + 1);
+    return `${lastIssuedAt.toString(36).padStart(10, "0")}-${randomUUID()}`;
+}
+/** Sort order for deliveries: oldest first. */
+export function byIssueOrder(a, b) {
+    return a.deliveryId < b.deliveryId ? -1 : a.deliveryId > b.deliveryId ? 1 : 0;
+}
 /**
  * A marker with its delivery id. A retry passes the marker it is retrying and
  * keeps that id, so host history can deduplicate the resend. A new
@@ -16,7 +29,7 @@ export const deliveredAwaitingClear = new Map();
  * deliveries even when they are of the same kind.
  */
 export function markerWithId(marker) {
-    return marker.deliveryId ? marker : { ...marker, deliveryId: randomUUID() };
+    return marker.deliveryId ? marker : { ...marker, deliveryId: newDeliveryId() };
 }
 export function markRunPending(run, marker) {
     const identified = markerWithId(marker);

@@ -3,12 +3,18 @@
  * only after the send is confirmed, and redelivers whatever is still pending.
  * Nothing a send's settlement throws escapes: the marker stays, the session's
  * warning channel reports it, and a bounded retry follows.
+ *
+ * A result reaches a session at one of two points. An idle host gets it sent
+ * at once. A busy host never does: the marker stays durable and the result
+ * goes in at the host's agent_before_settle boundary ({@link claimInsertion}),
+ * or, when the run ends without one, in the flush that follows the host's
+ * idle signal. Results always go out oldest first.
  */
 import { errorMessage } from "../errors.js";
 import { claimRunSession } from "../manager/session-owner.js";
-import { resolveDeliverySessionId, sessionEndpoints, warnDelivery, } from "./delivery-endpoints.js";
+import { resolveDeliverySessionId, resultMessage, sessionEndpoints, warnDelivery, } from "./delivery-endpoints.js";
 import { cancelDeliveryRetry, scheduleDeliveryRetry } from "./delivery-retry.js";
-import { abandonDeletedDelivery, clearRunPending, deliveredAwaitingClear, markerWithId, markRunPending, persistDiskMarker, persistRunPending, } from "./pending-markers.js";
+import { abandonDeletedDelivery, byIssueOrder, clearRunPending, deliveredAwaitingClear, markerWithId, markRunPending, persistDiskMarker, persistRunPending, } from "./pending-markers.js";
 let renderPendingText;
 /** Installed once by task-panel.ts, which owns the delivered wording. */
 export function setPendingTextRenderer(render) {
@@ -17,7 +23,15 @@ export function setPendingTextRenderer(render) {
 /** Run id → token of the send that holds its lock, so a stale settlement cannot release a newer send. */
 const inFlightDeliveries = new Map();
 let inFlightSeq = 0;
-/** Text for any thrown value. Never throws, so reporting a failure cannot become a failure itself. */
+function takeLock(runId) {
+    const token = ++inFlightSeq;
+    inFlightDeliveries.set(runId, token);
+    return token;
+}
+function releaseDelivery(runId, token) {
+    if (inFlightDeliveries.get(runId) === token)
+        inFlightDeliveries.delete(runId);
+}
 /**
  * Resolve true only after the endpoint's thenable send settles while the
  * session is still live. Void sends and durable appends are not an ACK: an
@@ -31,7 +45,7 @@ async function tryDeliverEndpoint(endpoint, content, deliveryId) {
     if (sessionId && sessionEndpoints.get(sessionId) !== endpoint)
         return false;
     try {
-        const ack = endpoint.send({ customType: "workflow-result", content, display: true, details: { deliveryId } }, { triggerTurn: true, deliverAs: "followUp" });
+        const ack = endpoint.send(resultMessage(content, deliveryId), { triggerTurn: true, deliverAs: "followUp" });
         if (typeof ack?.then !== "function") {
             warnDelivery(sessionId, `[workflow-delivery] send for session ${sessionId} did not return a thenable; ` +
                 "not treating as delivered (fail closed).");
@@ -47,9 +61,21 @@ async function tryDeliverEndpoint(endpoint, content, deliveryId) {
     const current = sessionEndpoints.get(sessionId);
     return !!current && !current.suspended;
 }
-function releaseDelivery(runId, token) {
-    if (inFlightDeliveries.get(runId) === token)
-        inFlightDeliveries.delete(runId);
+/**
+ * Resolve true once Pi has persisted a result it was handed at its boundary,
+ * under this or a newer live endpoint. False when the host settled without it
+ * or the wait was cancelled; the marker then stays for the next flush.
+ */
+async function confirmInsertion(endpoint, deliveryId) {
+    try {
+        if (!(await endpoint.host?.awaitInsertion(deliveryId)))
+            return false;
+    }
+    catch {
+        return false;
+    }
+    const current = sessionEndpoints.get(endpoint.sessionId);
+    return !!current && !current.suspended;
 }
 function retryLater(manager, runId, sessionId, generation) {
     scheduleDeliveryRetry(runId, sessionId, generation, (endpoint) => flushSessionDiskPending(manager, sessionId, endpoint));
@@ -83,19 +109,20 @@ function handOffToOwner(manager, runId, endpoint) {
     }
 }
 /**
- * Send under the run's in-flight lock, then settle the marker on the endpoint
- * that sent it: clear it after a confirmed send, otherwise retry. A replaced,
- * suspended, or dropped endpoint settles nothing; its successor's flush, or the
- * hand-off, delivers the marker instead.
+ * Wait, under the run's in-flight lock, for the delivery's confirmation, then
+ * settle the marker on the endpoint that carried it: clear it after a
+ * confirmed delivery, otherwise retry. A replaced, suspended, or dropped
+ * endpoint settles nothing; its successor's flush, or the hand-off, delivers
+ * the marker instead.
  */
-async function sendAndSettle(manager, runId, endpoint, content, deliveryId, token, run) {
+async function settleDelivery(manager, runId, endpoint, deliveryId, token, confirmation, run) {
     let delivered;
     try {
-        delivered = await tryDeliverEndpoint(endpoint, content, deliveryId);
+        delivered = await confirmation;
     }
     finally {
-        // Everything after the send is synchronous, so releasing here admits no
-        // concurrent send, and lets a flush below start this run's next one.
+        // Everything after the confirmation is synchronous, so releasing here
+        // admits no concurrent send, and lets a flush below start this run's next one.
         releaseDelivery(runId, token);
     }
     const live = sessionEndpoints.get(endpoint.sessionId) === endpoint && !endpoint.suspended;
@@ -106,16 +133,17 @@ async function sendAndSettle(manager, runId, endpoint, content, deliveryId, toke
         retryLater(manager, runId, endpoint.sessionId, endpoint.generation);
     }
     else if (clearConfirmedDelivery(manager, runId, deliveryId, endpoint, run) === "stale" && endpoint.manager) {
-        // This send belonged to an older marker; deliver the newer one now.
+        // This delivery belonged to an older marker; deliver the newer one now.
         flushSessionDiskPending(endpoint.manager, endpoint.sessionId, endpoint);
     }
     handOffToOwner(manager, runId, endpoint);
 }
 /**
- * The last stop for anything a send's settlement throws, such as a run record
- * that has become unreadable. Only a confirmed clear removes a marker, so the
- * result is still pending: report it and retry on the session's live endpoint,
- * which may be a rebind whose own flush skipped the locked run. Never throws.
+ * The last stop for anything a delivery's settlement throws, such as a run
+ * record that has become unreadable. Only a confirmed clear removes a marker,
+ * so the result is still pending: report it and retry on the session's live
+ * endpoint, which may be a rebind whose own flush skipped the locked run.
+ * Never throws.
  */
 function keepPending(manager, runId, sessionId, error) {
     warnDelivery(sessionId, `Workflow ${runId}: result remains pending: ${errorMessage(error)}`);
@@ -123,20 +151,32 @@ function keepPending(manager, runId, sessionId, error) {
     if (endpoint && !endpoint.suspended)
         retryLater(manager, runId, sessionId, endpoint.generation);
 }
-function deliverAndAck(manager, runId, sessionId, content, deliveryId, run) {
+/**
+ * The live endpoint a result may go out on, or undefined when it must not go
+ * out now: the run's result is already in flight, the endpoint is gone or
+ * suspended, or the result was confirmed and only its marker clear was left
+ * (done here).
+ */
+function endpointForDelivery(manager, runId, sessionId, deliveryId, run) {
     if (inFlightDeliveries.has(runId))
-        return;
+        return undefined;
     const endpoint = sessionEndpoints.get(sessionId);
     if (!endpoint || endpoint.suspended)
-        return;
+        return undefined;
     // Already confirmed on this endpoint generation: only the marker clear is left.
     const delivered = deliveredAwaitingClear.get(runId);
     if (delivered?.deliveryId === deliveryId &&
         delivered.sessionId === sessionId &&
         delivered.generation === endpoint.generation) {
         clearConfirmedDelivery(manager, runId, deliveryId, endpoint, run);
-        return;
+        return undefined;
     }
+    return endpoint;
+}
+function deliverAndAck(manager, runId, sessionId, content, deliveryId, run) {
+    const endpoint = endpointForDelivery(manager, runId, sessionId, deliveryId, run);
+    if (!endpoint)
+        return;
     // Fail closed without a send, and without taking the lock: a synchronous
     // rebind + flush (e.g. the probe retry on the next session_start) must not be
     // locked out by a microtask that has not run yet.
@@ -144,9 +184,34 @@ function deliverAndAck(manager, runId, sessionId, content, deliveryId, run) {
         warnDelivery(sessionId, `[workflow-delivery] delivery for ${runId} deferred: endpoint for session ${sessionId} has no thenable send function`);
         return;
     }
-    const token = ++inFlightSeq;
-    inFlightDeliveries.set(runId, token);
-    void sendAndSettle(manager, runId, endpoint, content, deliveryId, token, run).catch((error) => keepPending(manager, runId, sessionId, error));
+    // A busy host is never sent to. Its marker is durable; the result goes in at
+    // the host's boundary or when the host reports it is idle, with no timer.
+    if (endpoint.host?.isBusy())
+        return;
+    const token = takeLock(runId);
+    void settleDelivery(manager, runId, endpoint, deliveryId, token, tryDeliverEndpoint(endpoint, content, deliveryId), run).catch((error) => keepPending(manager, runId, sessionId, error));
+}
+/**
+ * Take a ready result for the host's agent_before_settle boundary. Returns true
+ * when the caller must hand it to Pi as a boundary entry: the run is locked and
+ * settles once Pi has persisted the entry. False when nothing is to be
+ * inserted: the host cannot confirm its history (so the result stays pending,
+ * never inserted blind), already holds the result (only the clear is left), or
+ * the result is already in flight.
+ */
+export function claimInsertion(manager, sessionId, ready) {
+    const { runId, deliveryId, run } = ready;
+    const endpoint = endpointForDelivery(manager, runId, sessionId, deliveryId, run);
+    const host = endpoint?.host;
+    if (!endpoint || !host)
+        return false;
+    const held = host.hasDelivery(deliveryId);
+    if (held === undefined)
+        return false;
+    const token = takeLock(runId);
+    const confirmation = held ? Promise.resolve(true) : confirmInsertion(endpoint, deliveryId);
+    void settleDelivery(manager, runId, endpoint, deliveryId, token, confirmation, run).catch((error) => keepPending(manager, runId, sessionId, error));
+    return !held;
 }
 /**
  * Deliver a live background run's result: save the marker first so a crash or
@@ -174,11 +239,15 @@ export function routeBackgroundDelivery(manager, run, marker, content) {
     }
     deliverAndAck(manager, run.runId, sessionId, content, deliveryId, run);
 }
-/** Deliver every result still pending for a session, from live runs and from disk. */
-export function flushSessionDiskPending(manager, sessionId, endpoint) {
-    if (endpoint.suspended)
-        return;
-    const tryOne = (runId, marker, run, persisted) => {
+/**
+ * Every result still pending for a session, oldest first: from live runs and
+ * from disk. Each has its marker made durable and its text rendered; one that
+ * cannot be (a run another process deleted, a record that stays unwritable) is
+ * left out and reported.
+ */
+export function readyDeliveries(manager, sessionId, endpoint) {
+    const ready = [];
+    const prepare = (runId, marker, run, persisted) => {
         if (inFlightDeliveries.has(runId))
             return;
         // A live run re-persists its marker; a disk-only run only needs a missing id.
@@ -212,15 +281,15 @@ export function flushSessionDiskPending(manager, sessionId, endpoint) {
         const content = renderPendingText?.(manager, runId, identified, endpoint.loadSettings, run, persisted);
         if (content === undefined)
             return;
-        deliverAndAck(manager, runId, sessionId, content, deliveryId, run);
+        ready.push({ runId, deliveryId, content, run });
     };
     // Live in-memory runs this session owns by their record. A run nobody owns is
     // claimable only from this manager's own live runs (completions before the
     // first bind), never from a foreign manager.
     // One failing run must not keep the others from going out.
-    const tryEach = (deliver) => {
+    const tryEach = (collect) => {
         try {
-            deliver();
+            collect();
         }
         catch {
             // A run another process just deleted, or whose record is unreadable, is skipped.
@@ -233,7 +302,7 @@ export function flushSessionDiskPending(manager, sessionId, endpoint) {
             if (claimRunSession(manager.getPersistence(), run, sessionId) !== sessionId)
                 return;
             if (run.pendingDelivery)
-                tryOne(run.runId, run.pendingDelivery, run);
+                prepare(run.runId, run.pendingDelivery, run);
         });
     }
     // Disk runs, including terminal runs already evicted from memory. Require an
@@ -252,11 +321,20 @@ export function flushSessionDiskPending(manager, sessionId, endpoint) {
             // Only an execution holding the lease is newer than the record. A settled
             // copy may predate a resume another process ran, so the record renders.
             const pending = state.pendingDelivery;
-            tryEach(() => tryOne(state.runId, pending, live?.lease ? live : undefined, state));
+            tryEach(() => prepare(state.runId, pending, live?.lease ? live : undefined, state));
         }
     }
     catch {
         // best-effort
+    }
+    return ready.sort(byIssueOrder);
+}
+/** Deliver every result still pending for a session, oldest first, as far as its host allows. */
+export function flushSessionDiskPending(manager, sessionId, endpoint) {
+    if (endpoint.suspended)
+        return;
+    for (const { runId, content, deliveryId, run } of readyDeliveries(manager, sessionId, endpoint)) {
+        deliverAndAck(manager, runId, sessionId, content, deliveryId, run);
     }
 }
 /** @internal test helper — drop every in-flight lock. */

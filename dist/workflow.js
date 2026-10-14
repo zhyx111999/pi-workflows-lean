@@ -7,6 +7,7 @@
  * settles the run. The parts live in src/runtime/:
  *   - script-meta.ts, determinism.ts        parse-time checks and the in-realm guard
  *   - run-limits.ts                         host settings turned into enforced limits
+ *   - slot-pool.ts                          the concurrency ceiling, shareable between runs
  *   - run-context.ts                        per-run state and the helpers shared by the globals
  *   - agent-call.ts                         agent(): validation, slot, journal replay
  *   - agent-execution.ts, agent-attempt.ts  live runs: worktree, retries, timeout, usage
@@ -28,7 +29,7 @@ import { cloneDurableJsonValue } from "./runtime/durable-json.js";
 import { createParallel, createPipeline } from "./runtime/fanout.js";
 import { createLoopGuard, guardLoops } from "./runtime/loop-guard.js";
 import { createRunContext, createRuntimeState } from "./runtime/run-context.js";
-import { resolveAgentTimeoutMs, resolveConcurrency, resolveDrainAbortGraceMs } from "./runtime/run-limits.js";
+import { resolveAgentTimeoutMs, resolveDrainAbortGraceMs, resolveLimiter } from "./runtime/run-limits.js";
 import { finishRun } from "./runtime/run-teardown.js";
 import { trackScriptCalls } from "./runtime/script-calls.js";
 import { readMetaExport } from "./runtime/script-meta.js";
@@ -64,7 +65,8 @@ export async function runWorkflow(script, options = {}) {
         routingConfig,
         agentRegistry,
         logger,
-        state: createRuntimeState(meta, options, resolveConcurrency(options.concurrency)),
+        state: createRuntimeState(meta, options),
+        limiter: resolveLimiter(options),
         agentRunner: options.agent ?? new WorkflowAgent(options),
         store: new SharedStore(),
     });

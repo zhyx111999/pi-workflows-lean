@@ -33,6 +33,7 @@ function runOptions(live, managed, script, args, exec, settings) {
         runId: managed.runId,
         parentSessionFile: managed.parentSessionFile,
         signal: managed.controller.signal,
+        limiter: settings.sessionSlots.limiterFor(managed.parentSessionId),
         drainAbortGraceMs: exec.drainAbortGraceMs,
         // Explicit tools win; otherwise re-resolve the run's toolset name (how a
         // resumed /deep-research keeps its web tools); otherwise the default tools.

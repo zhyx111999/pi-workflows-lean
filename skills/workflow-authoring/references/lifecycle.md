@@ -2,9 +2,11 @@
 
 ## Bounds
 
-Bound loops, fan-out, and semantic retries inside the script. Run limits come only from the workflow settings: `defaultConcurrency` (1–16), `defaultAgentRetries` (0–3, recoverable failures only), `defaultAgentTimeoutMs` (unset means no hard timeout), and `defaultMaxAgents` (default 1000). Neither a script nor a workflow call can override them. `defaultMaxAgents` counts logical `agent()` and `checkpoint()` calls; agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. A run that stops at the cap finishes by raising the setting and resuming it. Token usage is measured and reported, never capped.
+Bound loops, fan-out, and semantic retries inside the script. Run limits come only from the workflow settings: `defaultConcurrency` (1–16 per parent session, shared by all of its runs; other sessions have independent ceilings), `defaultAgentRetries` (0–3, recoverable failures only), `defaultAgentTimeoutMs` (unset means no hard timeout), and `defaultMaxAgents` (default 1000). Neither a script nor a workflow call can override them. `defaultMaxAgents` counts logical `agent()` and `checkpoint()` calls; agent execution retries do not add slots, but every attempt of a script-level loop or semantic retry is a new `agent()` call and does. A run that stops at the cap finishes by raising the setting and resuming it. Token usage is measured and reported, never capped.
 
 ## Checkpoints
+
+Results, errors, checkpoint requests, and quota reports queue while the main model is busy. They enter in arrival order immediately after the current response and tools finish, without waiting for another user message.
 
 A checkpoint consumes an agent slot but no tokens. Every run starts in the background, so nothing prompts a human mid-run. `checkpoint({ kind, checkpointId, payload })` pauses the run until a response is stored for that exact checkpoint ID and the run resumes; it displays no UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
 

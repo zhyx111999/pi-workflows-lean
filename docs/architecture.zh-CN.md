@@ -88,6 +88,7 @@ WorkflowAgent.run()                          agent.ts
 | `live-runs.ts` | 让内存中的运行与磁盘记录保持一致，忽略已被替代的旧执行 |
 | `record-ops.ts` | 对本进程不拥有的记录，在租约保护下修改 |
 | `session-owner.ts` | 会话归属：结果投递给哪个会话；会话切换时接管、恢复时认领、投递前以记录为准 |
+| `session-slots.ts` | One shared concurrency pool per original parent session; retained runners hold their slots until exit, and reload updates the live ceiling |
 | `resume-state.ts` | 从磁盘记录重建运行，以便恢复 |
 | `agent-rows.ts` | 一个调用一行：重跑的调用接管原来那一行，被取代的执行作为历史留在该行 |
 | `run-restart.ts` | 从运行记录得出重启（另起一个新运行）所需的脚本、参数和执行选项（如 toolset）；所有重启入口都用它 |
@@ -104,7 +105,8 @@ WorkflowAgent.run()                          agent.ts
 |---|---|
 | `script-meta.ts` / `determinism.ts` | 读取并校验脚本开头的 `export const meta`；拒绝 `Date.now()`、`Math.random()` 等不可重放的写法 |
 | `run-context.ts` | 一次运行的可变状态，以及各全局函数共享的服务 |
-| `run-limits.ts` | 把设置变成运行限制：并发闸门、最大子代理数、超时、重试 |
+| `run-limits.ts` | Resolve bounded concurrency, total calls, timeout, retries, and the host's shared limiter |
+| `slot-pool.ts` | FIFO admission with cancellable waits, dynamic ceilings, and optional retention of abandoned runners |
 | `script-vm.ts` | 建立 vm 上下文，只暴露声明过的全局 |
 | `deep-freeze.ts` | 冻结脚本拿到的 `args` 副本，原地修改会报错，恢复运行看到的仍是原参数 |
 | `agent-options.ts` | 按能力契约 `AGENT_OPTIONS` 声明的取值规则校验 `agent()` 的 prompt 与每个选项（名称和值），并解析 isolation |

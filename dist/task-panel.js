@@ -13,18 +13,24 @@
  * holds its own host AgentSession.sendCustomMessage, which returns a real
  * Promise (actions.sendMessage is void and swallows rejections). A result is
  * saved as a pending marker first, sent only through its run's session
- * endpoint, and cleared only after that send is confirmed. A missing or
+ * endpoint, and cleared only after the session file holds it. A missing or
  * suspended endpoint leaves it pending; nothing falls back to pi.sendMessage.
  *
+ * A busy session is never sent to: its results queue as durable markers and go
+ * in, oldest first, at the host's agent_before_settle boundary (or, when the
+ * run ends without one, as soon as the host reports it is idle).
+ *
  * The internals live in ./task-panel/: panel rendering, session endpoints, host
- * session capture, confirmed sends, pending markers, retries, and dispatch.
+ * session capture and link, pending markers, retries, dispatch, and the boundary.
  */
 import { fmtCompact, fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
-import { _resetConfirmedSendsForTests, cancelUnsentWaiters } from "./task-panel/confirmed-send.js";
+import { errorMessage } from "./errors.js";
+import { insertionDrafts } from "./task-panel/delivery-boundary.js";
 import { _resetDeliveryDispatchForTests, flushSessionDiskPending, routeBackgroundDelivery, setPendingTextRenderer, } from "./task-panel/delivery-dispatch.js";
-import { resolveDeliverySessionId, sessionEndpoints, } from "./task-panel/delivery-endpoints.js";
+import { clearEndpoints, removeEndpoint, replaceEndpoint, resolveDeliverySessionId, sessionEndpoints, warnDelivery, } from "./task-panel/delivery-endpoints.js";
 import { _resetDeliveryRetriesForTests, cancelSessionRetries } from "./task-panel/delivery-retry.js";
-import { _resetHostSessionCaptureForTests, captureSessionSend } from "./task-panel/host-session-capture.js";
+import { _resetHostSessionCaptureForTests, captureHostLink } from "./task-panel/host-session-capture.js";
+import { _resetHostLinksForTests, cancelInsertionWaits } from "./task-panel/host-session-link.js";
 import { panelWidget } from "./task-panel/panel-widget.js";
 import { deliveredAwaitingClear, forgetAwaitingClear } from "./task-panel/pending-markers.js";
 import { deliveredMaxChars, failedRunText, pausedRunText, persistedResultPath, summarizeResult, } from "./task-panel/result-text.js";
@@ -92,7 +98,9 @@ setPendingTextRenderer(pendingResultText);
  * Register or refresh the delivery endpoint for a pi session, then flush what is
  * pending for that session only. Requires a confirming send: the host session
  * `pi` is bound to, captured afresh on every bind, or `stableSend`. A durable
- * appendCustomMessageEntry is not an ACK because it starts no turn.
+ * appendCustomMessageEntry is not an ACK because it starts no turn. The endpoint
+ * also listens for the host's idle signal, which flushes whatever a busy host
+ * made wait.
  *
  * Call from session_start, after Pi's bindCore.
  */
@@ -108,23 +116,37 @@ export function bindSessionDelivery(sessionId, pi, opts = {}) {
     catch {
         // getSessionId unavailable — continue
     }
-    const send = opts.stableSend ?? captureSessionSend(pi, sessionId);
+    const host = opts.host ?? (opts.stableSend ? undefined : captureHostLink(pi, sessionId));
     const prev = sessionEndpoints.get(sessionId);
     // Already-started sends keep their lock until they settle: a reload is not an
-    // SDK abort barrier.
-    cancelUnsentWaiters(sessionId, "session delivery rebound before send");
+    // SDK abort barrier. A result handed to Pi's boundary is committed by Pi
+    // whatever this does, so its wait is only released to be checked afresh.
+    cancelInsertionWaits(sessionId, "session delivery rebound");
     const endpoint = {
         sessionId,
-        send,
+        send: opts.stableSend ?? host?.send,
+        host,
         loadSettings: opts.loadSettings ?? prev?.loadSettings,
         suspended: false,
         generation: (prev?.generation ?? 0) + 1,
         manager: opts.manager ?? prev?.manager,
         reportWarning: opts.reportWarning ?? prev?.reportWarning,
     };
-    sessionEndpoints.set(sessionId, endpoint);
+    replaceEndpoint(endpoint);
+    endpoint.unwatch = host?.onIdle(() => flushWhenIdle(endpoint));
     if (endpoint.manager)
         flushSessionDiskPending(endpoint.manager, sessionId, endpoint);
+}
+/** The host went idle (a run settled, a compaction ended): deliver what it made wait. Never throws. */
+function flushWhenIdle(endpoint) {
+    if (sessionEndpoints.get(endpoint.sessionId) !== endpoint || endpoint.suspended || !endpoint.manager)
+        return;
+    try {
+        flushSessionDiskPending(endpoint.manager, endpoint.sessionId, endpoint);
+    }
+    catch (error) {
+        warnDelivery(endpoint.sessionId, `Workflow results remain pending: ${errorMessage(error)}`);
+    }
 }
 /**
  * Suspend delivery for a session. Completions only mark disk pending until
@@ -134,9 +156,11 @@ export function suspendSessionDelivery(sessionId) {
     if (!sessionId)
         return;
     const endpoint = sessionEndpoints.get(sessionId);
-    if (endpoint)
+    if (endpoint) {
         endpoint.suspended = true;
-    cancelUnsentWaiters(sessionId, "session delivery suspended");
+        endpoint.unwatch?.();
+    }
+    cancelInsertionWaits(sessionId, "session delivery suspended");
     cancelSessionRetries(sessionId);
 }
 /**
@@ -150,7 +174,7 @@ export function dropSessionDelivery(sessionId) {
         return;
     suspendSessionDelivery(sessionId);
     forgetAwaitingClear(sessionId);
-    sessionEndpoints.delete(sessionId);
+    removeEndpoint(sessionId);
 }
 /**
  * Stop live sends for the manager's currently bound session. In-flight
@@ -168,20 +192,24 @@ export function suspendResultDelivery(manager) {
  * seen on install (used when binding endpoints).
  */
 let deliveryInstalls = new WeakMap();
-// turn_end is registered once per ExtensionAPI instance (pi.on has no off()), and
-// each handler looks up that instance's latest manager: several live pi
-// instances can interleave installs, and a cross-project rebuild must not stack
-// another handler.
-let turnEndDeliveryManagers = new WeakMap();
+// agent_before_settle is registered once per ExtensionAPI instance, and each
+// handler looks up that instance's latest manager: several live pi instances can
+// interleave installs, and a cross-project rebuild must not stack another handler.
+let boundaryDeliveryManagers = new WeakMap();
 /**
  * When a background run finishes, fails, or pauses for the model, deliver it
- * into the originating conversation and continue the turn so the assistant can
- * act on it, without blocking the user meanwhile:
+ * into the originating conversation so the assistant can act on it, without
+ * blocking the user meanwhile:
  *
  *  - Delivery goes to the session the run's record names as its owner.
- *  - `triggerTurn: true` starts a fresh turn when the agent is idle.
- *  - `deliverAs: "followUp"` queues behind an in-flight turn — never interrupts.
- *  - The durable pending marker clears only after the send is confirmed.
+ *  - An idle host gets it at once, and `triggerTurn: true` starts the turn.
+ *  - A busy host is never sent to, so a response in flight is never
+ *    interrupted. The result waits as a durable marker and is inserted at the
+ *    host's agent_before_settle boundary, right after the run's last response,
+ *    with one model request to answer it. When the run ends without that
+ *    boundary (an abort), the host's idle signal sends it instead.
+ *  - Waiting results go out oldest first, together at one boundary.
+ *  - The durable pending marker clears only after the session file holds the result.
  *
  * One set of listeners per manager: installing again, from this or a reloaded
  * copy of the module, replaces the previous set. Across session replacement the
@@ -192,16 +220,16 @@ export function installResultDelivery(pi, manager, opts = {}) {
     const install = deliveryInstalls.get(manager) ?? {};
     install.loadSettings = opts.loadSettings;
     deliveryInstalls.set(manager, install);
-    // After each turn, bind the session if its send was not captured yet, then
-    // flush whatever is still pending for it.
-    const existingTurnEnd = turnEndDeliveryManagers.get(pi);
-    if (existingTurnEnd) {
-        existingTurnEnd.manager = manager;
+    // The end of every run: bind the session if its send was not captured yet,
+    // then hand Pi the results that waited for this run to finish.
+    const existingBoundary = boundaryDeliveryManagers.get(pi);
+    if (existingBoundary) {
+        existingBoundary.manager = manager;
     }
     else {
-        turnEndDeliveryManagers.set(pi, { manager });
-        pi.on?.("turn_end", (_event, ctx) => {
-            const activeManager = turnEndDeliveryManagers.get(pi)?.manager;
+        boundaryDeliveryManagers.set(pi, { manager });
+        pi.on?.("agent_before_settle", (event, ctx) => {
+            const activeManager = boundaryDeliveryManagers.get(pi)?.manager;
             if (!activeManager)
                 return;
             let sid;
@@ -213,23 +241,28 @@ export function installResultDelivery(pi, manager, opts = {}) {
             }
             if (!sid)
                 return;
-            const endpoint = sessionEndpoints.get(sid);
+            let endpoint = sessionEndpoints.get(sid);
             if (!endpoint || typeof endpoint.send !== "function") {
-                // Bind only once a send is captured; a failed capture leaves the
-                // session as it was for the next turn to retry. Binding flushes.
-                const send = captureSessionSend(pi, sid);
-                if (send) {
-                    bindSessionDelivery(sid, pi, {
-                        loadSettings: deliveryInstalls.get(activeManager)?.loadSettings,
-                        manager: activeManager,
-                        sessionManager: ctx?.sessionManager,
-                        stableSend: send,
-                    });
-                }
-                return;
+                // Bind only once a host is captured; a failed capture leaves the
+                // session as it was for the next run to retry.
+                const host = captureHostLink(pi, sid);
+                if (!host)
+                    return;
+                bindSessionDelivery(sid, pi, {
+                    loadSettings: deliveryInstalls.get(activeManager)?.loadSettings,
+                    manager: activeManager,
+                    sessionManager: ctx?.sessionManager,
+                    host,
+                });
+                endpoint = sessionEndpoints.get(sid);
             }
-            if (!endpoint.suspended && endpoint.manager)
-                flushSessionDiskPending(endpoint.manager, sid, endpoint);
+            if (!endpoint?.manager)
+                return;
+            // Pi hands every handler the entries chosen so far and keeps only what is returned.
+            const drafts = insertionDrafts(endpoint.manager, sid, endpoint);
+            if (!drafts.length)
+                return;
+            return { entries: [...(event.entries ?? []), ...drafts], continue: true };
         });
     }
     // A newly-created manager can replace the current project while this pi and
@@ -304,13 +337,13 @@ function replaceDeliveryListeners(manager, listeners) {
 // ─── Test helpers ──────────────────────────────────────────────────────────────
 /** @internal test helper — reset process-wide delivery registries between cases. */
 export function _resetDeliveryRegistriesForTests() {
-    _resetConfirmedSendsForTests();
+    _resetHostLinksForTests();
     _resetHostSessionCaptureForTests();
     _resetDeliveryDispatchForTests();
     _resetDeliveryRetriesForTests();
     deliveredAwaitingClear.clear();
-    sessionEndpoints.clear();
-    turnEndDeliveryManagers = new WeakMap();
+    clearEndpoints();
+    boundaryDeliveryManagers = new WeakMap();
     deliveryInstalls = new WeakMap();
 }
 /** @internal test helper — inspect a session's endpoint state. */

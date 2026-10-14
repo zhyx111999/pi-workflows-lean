@@ -2,6 +2,25 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isWorkflowError, WorkflowErrorCode } from "../errors.js";
 /**
+ * Cancellation flag of one parallel()/pipeline() call. When a fan-out breaches
+ * maxAgents, the breaching agent() throws and the fan-out rejects, but agents
+ * it already reserved would keep waiting in the limiter and then spend money.
+ * Their waits end when the batch is cancelled, and they bail instead.
+ */
+export class FanoutBatch {
+    controller = new AbortController();
+    /** Aborts when the batch is cancelled; a call still queued for a slot leaves the queue then. */
+    get signal() {
+        return this.controller.signal;
+    }
+    get cancelled() {
+        return this.controller.signal.aborted;
+    }
+    cancel() {
+        this.controller.abort();
+    }
+}
+/**
  * Each fan-out runs its branches inside its own batch, so a breach cancels only
  * that fan-out's queued agents: a concurrent sibling or an enclosing fan-out
  * keeps running its already-reserved agents (still within maxAgents overall).
@@ -27,7 +46,7 @@ export function createParallel(ctx) {
         if (thunks.some((thunk) => typeof thunk !== "function")) {
             throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
         }
-        const batch = { cancelled: false };
+        const batch = new FanoutBatch();
         return runBranches(ctx, batch, thunks, async (thunk, index) => {
             try {
                 return await thunk();
@@ -47,7 +66,7 @@ export function createPipeline(ctx) {
         if (stages.some((stage) => typeof stage !== "function")) {
             throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
         }
-        const batch = { cancelled: false };
+        const batch = new FanoutBatch();
         return runBranches(ctx, batch, items, async (item, index) => {
             try {
                 let value = item;
@@ -89,6 +108,6 @@ function settleBranchFailure(ctx, batch, error, branch) {
         return null;
     }
     if (isWorkflowError(error) && error.code === WorkflowErrorCode.AGENT_LIMIT_EXCEEDED)
-        batch.cancelled = true;
+        batch.cancel();
     throw error;
 }

@@ -45,6 +45,7 @@ test("published extension loads through the unbundled host aliases and probes th
     // Bind the runtime to a host session the way AgentSession._bindExtensionCore does.
     const receiver = Object.create(sdk.AgentSession.prototype);
     receiver.sessionManager = { getSessionId: () => "node-host-test" };
+    receiver.subscribe = () => () => {};
     let hookedDuringProbe = false;
     let reachedRealSend;
     runtime.sendMessage = (message, options) => {
@@ -135,6 +136,7 @@ test("published extension probes the host SDK class even when a native sibling p
 
     const receiver = Object.create(HostSession.prototype);
     receiver.sessionManager = { getSessionId: () => `host-module-${generation}` };
+    receiver.subscribe = () => () => {};
     const duringProbe: Array<{ hostHooked: boolean; siblingUntouched: boolean }> = [];
     let reachedRealSend: unknown;
     const handlers = new Map<string, Array<(event: unknown, ctx?: unknown) => unknown>>();

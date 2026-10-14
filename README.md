@@ -15,7 +15,7 @@ Built for work that is too broad for one agent and one context window. The built
 
 ## Install
 
-Requires Pi 0.84.0 or newer. `dist/` is committed, so Pi installs and runs it straight from git:
+Requires Pi 1.1.0 or newer. `dist/` is committed, so Pi installs and runs it straight from git:
 
 ```bash
 pi install git:github.com/zhyx111999/pi-workflows-lean
@@ -29,7 +29,7 @@ Run `/reload` after a first install (restart Pi after an update), then ask natur
 Run a workflow to audit every route under src/routes/ for missing auth checks.
 ```
 
-Pi starts subagents in the background — a task list for independent work, or a workflow script for multi-step work. A live panel tracks progress while you keep working, and the final result is delivered back into the conversation automatically.
+Pi starts subagents in the background — a task list for independent work, or a workflow script for multi-step work. A live panel tracks progress while you keep working. If the main model is busy, results queue until its current response and tools finish, then enter the conversation immediately in arrival order and trigger the follow-up. Completed, failed, checkpoint, and quota reports use this same boundary; no new user message is needed.
 
 Each message you type carries a hidden note for the model, not shown in the chat, on when delegating to subagents is worthwhile. `/workflows run <prompt>` starts subagents explicitly. Configuration is plain JSON that the model can edit for you; the packaged `subagents-setup` skill tells it where everything lives.
 
@@ -70,7 +70,7 @@ return await agent(
 
 ## Why use it
 
-- **Real parallel orchestration** — fan out up to 16 concurrent and, by default, 1000 total subagents from one orchestration script.
+- **Real parallel orchestration** — up to 16 concurrent subagents per parent session, shared by all runs of that session. Different sessions have independent ceilings. Each run allows 1000 logical calls by default.
 - **Per-agent model routing** — use `small`, `medium`, or `big` tiers, or choose an exact provider/model and thinking level.
 - **Task lists without a script** — pass `tasks: [{ label, task, model? }]` and each task runs in its own subagent, all in parallel.
 - **Journaled resume** — replay completed agents after interruption without rerunning them or spending their tokens again. The orchestrator can also resume with an **edited task list or script**: unchanged work replays from cache and only edited/new work re-runs — so a single bad prompt no longer means paying to re-run the whole run.
@@ -206,12 +206,12 @@ Run limits come only from settings; neither a tool call nor a script can overrid
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `defaultConcurrency` | 8 | Agents running at once, clamped to 1–16 |
+| `defaultConcurrency` | 8 | Agents running at once per parent session, shared across its runs; clamped to 1–16 |
 | `defaultMaxAgents` | 1000 | Logical `agent()` and `checkpoint()` calls per run; retries add none |
 | `defaultAgentRetries` | 0 | Retries after a recoverable agent failure, clamped to 0–3 |
 | `defaultAgentTimeoutMs` | none | Hard timeout per agent attempt; unset or `null` means no timeout |
 
-Changes apply after `/reload` or in a new session. Every execution, including a resumed one, uses the current values, so a run that stopped at the agent cap finishes after you raise `defaultMaxAgents` and resume it. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific.
+Changes apply after `/reload` or in a new session. A concurrency change updates the shared ceiling of running sessions as well: raising it admits waiting agents immediately; lowering it lets existing agents finish before admitting more. Other limits apply to the next execution, including a resumed one, so a run that stopped at the agent cap finishes after you raise `defaultMaxAgents` and resume it. Programmatic runs can tune the retry pacing via `agentRetryBackoffMs?: (failedAttempt: number) => number` (default `min(250*2^(N-1), 2000)` ms; the retry holds its concurrency slot during the wait). Settings load in order (later wins): global `~/.pi/workflows/settings.json` → repo-local `<cwd>/.pi/workflows/settings.json` → the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. Repo-local defaults can be version-controlled and shared as common repository configuration; external project overrides remain user-specific.
 
 Child sessions intentionally disable host extensions to avoid per-child factory churn and recursive orchestration. Some providers require extension request/auth hooks in addition to a shared model registry. To opt in, set `"providerMiddlewareExtensions": ["example-provider-adapter"]` in `~/.pi/workflows/settings.json` (also available on `WorkflowAgent`, `runWorkflow`, and `WorkflowManager` SDK options). Omitted or `[]` keeps all host extensions disabled. Names match an extension filename without its JS/TS suffix, an exact npm package identity, or a resolved local/Git package source name, case-insensitively; ancestor directory names do not authorize descendants; only enabled resources are considered, and project resources still require Pi project trust. `pi-dynamic-workflows`, `workflow`, and `pi-subagents` are always excluded, even if allowlisted. Only allow trusted, child-safe middleware: the allowlist enables whole extensions, not a hook-only sandbox, and opted-in factories and runtimes are isolated per child session and receive session_shutdown before disposal. Extension-free resource loaders remain shared. Explicit SDK resource-loader injection remains authoritative and bypasses this discovery filter.
 
@@ -219,7 +219,7 @@ A schema-less agent call that comes back as whitespace-only text is a recoverabl
 
 Token totals stay cumulative across a pause and resume.
 
-Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the wait for agents that ignore cancellation: the final wait of a cancelled run, and the wait after an agent attempt times out. A timed-out agent still running after the grace is abandoned without a retry and ends as a timeout failure, freeing its concurrency slot. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
+Programmatic hosts can set `drainAbortGraceMs` on `runWorkflow` or manager execution options to bound the wait for agents that ignore cancellation: the final wait of a cancelled run, and the wait after an agent attempt times out. A timed-out agent still running after the grace is abandoned without a retry and ends as a timeout failure. Managed runs retain its parent session's slot until the runner actually exits, so a timeout cannot exceed that session's ceiling. A standalone `runWorkflow` uses a private pool unless the host supplies a shared `limiter`. The default is 10,000 ms; `Infinity` waits without a bound. Finite values from 1 through 2,147,483,647 are rounded down; other values use the default. This is a host-only option, not a tool input or persisted setting. It does not limit a successful run's final wait or a checkpoint suspension unless the run is also cancelled. After abandonment, already-reported terminal usage is retained, provisional usage is rolled back, and late agent callbacks cannot modify the settled run.
 
 </details>
 
@@ -232,7 +232,7 @@ Extension state lives outside the repository under `~/.pi/workflows`:
 - project runs, journals, locks, saved overrides, and optional tier overlay: `~/.pi/workflows/projects/<project>/`
 - repo-local `<cwd>/.pi/workflows/settings.json` is also read for shared defaults, between global settings and the existing external project override `~/.pi/workflows/projects/<project>/settings.json`. This path is relative to the supplied project cwd; it does not search parent directories. Missing, corrupt, or invalid files are ignored. `/workflows-progress` saves to the global settings and, for every key the repo-local file or the external project override already sets, also to the external project override (creating it), so the saved value is the one that loads; it never writes the repo-local file.
 
-Subagents are in-memory by default. Set `persistAgentSessions: true` to retain full transcripts in Pi's standard session directory, with one file per unthreaded call or named thread. Persisted child session headers link back to the originating host session through `parentSession` when the parent has a persisted file. Workflow run JSON records the original parent session ID/file and each call's child session ID/file; those links and historical call timestamps survive journal replay on resume. Delivery may move to a replacement host session, or to a session that explicitly resumes the run, without rewriting the original parent lineage. In-memory children still have session IDs, but no session files for reconstructing historical per-message usage. Persisted transcripts may store sensitive material that an agent read, so enable them deliberately.
+Subagents are in-memory by default. Set `persistAgentSessions: true` to retain full transcripts in Pi's standard session directory, with one file per unthreaded call or named thread. Persisted child session headers link back to the originating host session through `parentSession` when the parent has a persisted file. Workflow run JSON records the original parent session ID/file and each call's child session ID/file; those links and historical call timestamps survive journal replay on resume. Delivery may move to a replacement host session, or to a session that explicitly resumes the run, without rewriting the original parent lineage. Concurrency continues to count against that original parent session; moving delivery does not create another allowance for the run. The counter belongs to the live manager and survives compatible reloads; it is not shared across Pi processes. In-memory children still have session IDs, but no session files for reconstructing historical per-message usage. Persisted transcripts may store sensitive material that an agent read, so enable them deliberately.
 
 `PI_WORKFLOW_AGENT_CACHE_RETENTION` sets the prompt-cache retention tier for agent sessions, overriding `PI_CACHE_RETENTION` for them only. Anthropic charges more per cache write on the 1h tier than the 5m one; a long-lived parent conversation earns that back by surviving idle gaps, but agent sessions are short-lived and rarely idle long enough to claim the longer window, so a wide fan-out pays the higher write price without the benefit. Set `PI_CACHE_RETENTION=long PI_WORKFLOW_AGENT_CACHE_RETENTION=short` to keep the longer window for your own conversation only. Unset by default, so agents inherit the parent's retention and behaviour is unchanged unless you opt in. The override is applied to each agent session's own stream function rather than to `process.env`, so a background run cannot change retention for a parent turn streaming at the same time.
 

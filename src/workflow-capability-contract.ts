@@ -272,7 +272,7 @@ const capabilities: readonly CapabilityDescriptor[] = [
       "prompt must be a non-empty string; options must be an object using only the declared option names, each value matching its declared type (undefined means omitted); anything else fails before dispatch with SCRIPT_VALIDATION_ERROR listing the accepted names or values",
       "recoverable failures return null after retries; nonrecoverable failures throw",
       "schema noncompliance after bounded structured-output repair is nonrecoverable and bypasses agent retries",
-      "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once (1..16)",
+      "run limits come only from settings: recoverable failures retry defaultAgentRetries times (0..3), each attempt is bounded by defaultAgentTimeoutMs (unset means no hard timeout), and defaultConcurrency agents run at once per parent session (1..16), shared by its runs and independent of other sessions",
       "every agent() and checkpoint() call consumes one of the run's defaultMaxAgents slots (default 1000); execution retries consume none",
       "resume replays only the longest unchanged prefix; the first miss and every later call execute live",
       "a named thread retains its full Pi transcript and session identity only within one uninterrupted workflow invocation",
