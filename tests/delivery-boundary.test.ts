@@ -1,6 +1,6 @@
 /**
  * Queued result delivery against a host double that plays Pi's events: results
- * wait while the host is busy, go in at agent_before_settle oldest first, and
+ * wait while the host is busy, go in at the turn_end boundary oldest first, and
  * stay durable and deduplicated through cancellation, rebinds, session
  * switches, and retries. The real-session ordering is in queued-delivery.test.ts.
  */
@@ -24,6 +24,14 @@ const SESSION = "boundary-session";
 
 type Draft = { type: string; customType: string; content: string; display: boolean; details?: { deliveryId?: string } };
 type BoundaryOutcome = { entries: Draft[]; continue: boolean } | undefined;
+type TurnOptions = {
+  /** The turn's outcome as Pi reports it. */
+  outcome?: "completed" | "aborted" | "error";
+  /** The run's signal has been aborted, as when Esc interrupts the tools the turn ran. */
+  cancelling?: boolean;
+  /** Pi throws the boundary's entries away, as when another extension's entries are invalid. */
+  piDropsEntries?: boolean;
+};
 
 /** An ExtensionAPI whose handlers can be fired, and whose sendMessage reaches `session` as Pi's does. */
 function extensionApi(session: FakeHostSession) {
@@ -40,6 +48,7 @@ function extensionApi(session: FakeHostSession) {
   } as unknown as ExtensionAPI;
   return {
     pi,
+    handlerCount: (event: string) => handlers.get(event)?.length ?? 0,
     /** Pi stops serving this instance once its session is replaced. */
     goStale: () => {
       stale = true;
@@ -72,20 +81,26 @@ function startSession(sessionId = SESSION, manager?: DeliveryManagerDouble) {
     session.emit({ type: "agent_settled", aborted } as never);
     await tick();
   };
-  /** Pi's agent_before_settle: hand every handler the chosen entries, then append what comes back. */
-  const boundary = async (): Promise<BoundaryOutcome> => {
-    const outcome = api.fire(
-      "agent_before_settle",
-      { type: "agent_before_settle", entries: [], continue: false },
-      { sessionManager: session.sessionManager },
+  /** The handlers' view of one turn's end, before Pi appends anything. */
+  const fireTurnEnd = ({ outcome = "completed", cancelling = false }: TurnOptions = {}) =>
+    api.fire(
+      "turn_end",
+      { type: "turn_end", outcome, entries: [], continue: false },
+      { sessionManager: session.sessionManager, signal: cancelling ? { aborted: true } : undefined },
     ) as BoundaryOutcome;
-    for (const entry of outcome?.entries ?? []) {
-      if (entry.type === "custom_message") session.append(entry);
+  /** Pi's turn_end boundary: every handler sees the chosen entries, Pi appends what comes back, then announces the turn's end. */
+  const turnEnd = async (options: TurnOptions = {}): Promise<BoundaryOutcome> => {
+    const outcome = fireTurnEnd(options);
+    if (!options.piDropsEntries) {
+      for (const entry of outcome?.entries ?? []) {
+        if (entry.type === "custom_message") session.append(entry);
+      }
     }
+    session.emit({ type: "turn_end" });
     await tick();
     return outcome;
   };
-  return { session, api, owner, warnings, busy, settle, boundary };
+  return { session, api, owner, warnings, busy, settle, fireTurnEnd, turnEnd };
 }
 
 const verdictOf = (draft: Draft) => /RESULT_\w+/.exec(draft.content)?.[0];
@@ -101,7 +116,7 @@ afterEach(() => {
 });
 
 describe("results queued for a busy host", () => {
-  it("wait with no send, no warning, and no timer to give up, then go in oldest first at the boundary", async () => {
+  it("wait with no send, no warning, and no timer to give up, then go in oldest first at the turn's end", async () => {
     mock.timers.enable({ apis: ["setTimeout"] });
     const s = startSession();
     s.busy();
@@ -119,7 +134,7 @@ describe("results queued for a busy host", () => {
       "every result is a durable marker",
     );
 
-    const outcome = await s.boundary();
+    const outcome = await s.turnEnd();
 
     assert.deepEqual(outcome?.entries.map(verdictOf), ["RESULT_r3", "RESULT_r1", "RESULT_r2"]);
     assert.equal(outcome?.continue, true);
@@ -132,7 +147,7 @@ describe("results queued for a busy host", () => {
     assert.deepEqual(s.warnings, []);
   });
 
-  it("go out oldest first from the idle signal when the run ends without a boundary", async () => {
+  it("go out oldest first from the idle signal when the run ends without a turn that can take them", async () => {
     const s = startSession();
     s.busy();
     for (const id of ["r1", "r2"]) s.owner.addRun(id, `RESULT_${id}`);
@@ -148,19 +163,56 @@ describe("results queued for a busy host", () => {
     assert.ok(s.owner.pending("r2") === undefined);
   });
 
-  it("are never handed to Pi once something else could have run in between: only what is still pending", async () => {
+  it("wait through a compaction and go out when it ends", async () => {
+    const s = startSession();
+    s.session.isIdle = false; // compacting: no run is streaming, but the host cannot take a prompt
+    s.owner.addRun("r1", "RESULT_r1");
+    s.owner.complete("r1");
+    await tick();
+    assert.equal(s.session.received.length, 0, "nothing is sent into a compaction");
+    assert.ok(s.owner.pending("r1"));
+
+    s.session.isIdle = true;
+    s.session.emit({ type: "compaction_end" });
+    await tick();
+
+    assert.equal(s.session.received.length, 1);
+    assert.equal(s.owner.pending("r1"), undefined);
+  });
+
+  it("are offered at every completed turn: only what is still pending, and what arrived since", async () => {
     const s = startSession();
     s.busy();
     s.owner.addRun("r1", "RESULT_r1");
     s.owner.complete("r1");
 
-    const first = await s.boundary();
+    const first = await s.turnEnd();
     assert.equal(first?.entries.length, 1);
     s.owner.addRun("r2", "RESULT_r2");
     s.owner.complete("r2");
-    const second = await s.boundary();
+    const second = await s.turnEnd();
+    const third = await s.turnEnd();
 
     assert.deepEqual(second?.entries.map(verdictOf), ["RESULT_r2"], "an inserted result is not inserted again");
+    assert.equal(third, undefined, "a turn with nothing waiting hands Pi nothing");
+  });
+
+  it("add to the entries other extensions chose, and never replace them", async () => {
+    const s = startSession();
+    s.busy();
+    s.owner.addRun("r1", "RESULT_r1");
+    s.owner.complete("r1");
+
+    const outcome = s.api.fire(
+      "turn_end",
+      { type: "turn_end", outcome: "completed", entries: [{ type: "custom", customType: "other" }], continue: false },
+      { sessionManager: s.session.sessionManager },
+    ) as BoundaryOutcome;
+
+    assert.deepEqual(
+      outcome?.entries.map((entry) => entry.customType),
+      ["other", "workflow-result"],
+    );
   });
 
   it("insert nothing for a result another session owns", async () => {
@@ -171,7 +223,7 @@ describe("results queued for a busy host", () => {
     s.owner.complete("theirs");
     s.owner.complete("mine");
 
-    const outcome = await s.boundary();
+    const outcome = await s.turnEnd();
 
     assert.deepEqual(outcome?.entries.map(verdictOf), ["RESULT_mine"]);
     assert.ok(s.owner.pending("theirs"), "the other session's result stays pending for it");
@@ -186,7 +238,7 @@ describe("results queued for a busy host", () => {
       throw new Error("history unavailable");
     };
 
-    assert.equal(await s.boundary(), undefined);
+    assert.equal(await s.turnEnd(), undefined);
     assert.ok(s.owner.pending("r1"));
   });
 
@@ -199,9 +251,70 @@ describe("results queued for a busy host", () => {
     const deliveryId = s.owner.pending("r1")?.deliveryId;
     s.session.append({ customType: "workflow-result", content: "x", display: true, details: { deliveryId } });
 
-    assert.equal(await s.boundary(), undefined, "no duplicate entry is handed to Pi");
+    assert.equal(await s.turnEnd(), undefined, "no duplicate entry is handed to Pi");
     await tick();
     assert.equal(s.owner.pending("r1"), undefined, "the persisted result only needs its marker cleared");
+  });
+});
+
+describe("turns that cannot answer a result", () => {
+  for (const [name, options] of [
+    ["a failed turn", { outcome: "error" }],
+    ["an aborted turn", { outcome: "aborted" }],
+    ["a turn of a run that is being cancelled", { cancelling: true }],
+  ] as const) {
+    it(`${name} hands Pi nothing, and the idle signal delivers the result`, async () => {
+      const s = startSession();
+      s.busy();
+      s.owner.addRun("r1", "RESULT_r1");
+      s.owner.complete("r1");
+
+      assert.equal(await s.turnEnd(options), undefined);
+      assert.ok(s.owner.pending("r1"), "the marker stays");
+      assert.equal(s.session.received.length, 0);
+
+      await s.settle(true);
+      assert.equal(s.session.received.length, 1, "the host's idle signal sends it, and that send starts a turn");
+      assert.equal(s.owner.pending("r1"), undefined);
+    });
+  }
+});
+
+describe("entries Pi does not append", () => {
+  it("are offered again at the next turn's end, with no timer and no warning", async () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const s = startSession();
+    s.busy();
+    s.owner.addRun("r1", "RESULT_r1");
+    s.owner.complete("r1");
+    const deliveryId = s.owner.pending("r1")?.deliveryId;
+
+    const dropped = await s.turnEnd({ piDropsEntries: true });
+    assert.equal(dropped?.entries[0]?.details?.deliveryId, deliveryId);
+    assert.ok(s.owner.pending("r1"), "a result Pi did not append keeps its marker");
+    mock.timers.tick(10 * 60_000);
+    await tick();
+    assert.deepEqual(s.warnings, [], "a missed boundary is not a failed delivery");
+
+    const next = await s.turnEnd();
+    assert.equal(next?.entries[0]?.details?.deliveryId, deliveryId, "the same delivery id is offered again");
+    assert.equal(s.owner.pending("r1"), undefined);
+    assert.equal(s.session.received.length, 0);
+  });
+
+  it("are delivered by the idle signal with the same delivery id when no further turn comes", async () => {
+    const s = startSession();
+    s.busy();
+    s.owner.addRun("r1", "RESULT_r1");
+    s.owner.complete("r1");
+    const deliveryId = s.owner.pending("r1")?.deliveryId;
+
+    await s.turnEnd({ piDropsEntries: true });
+    await s.settle();
+
+    assert.equal(s.session.received.length, 1);
+    assert.equal(s.session.received[0]?.message.details?.deliveryId, deliveryId);
+    assert.equal(s.owner.pending("r1"), undefined);
   });
 });
 
@@ -213,12 +326,12 @@ describe("cancellation, rebind, and session switch", () => {
     s.owner.complete("r1");
 
     suspendSessionDelivery(SESSION);
-    assert.equal(await s.boundary(), undefined, "a dying generation hands Pi nothing");
+    assert.equal(await s.turnEnd(), undefined, "a dying generation hands Pi nothing");
     assert.equal(s.session.subscribers, 0, "and no longer listens to the host");
     assert.ok(s.owner.pending("r1"));
 
     bindSessionDelivery(SESSION, s.api.pi, { manager: s.owner.manager });
-    const outcome = await s.boundary();
+    const outcome = await s.turnEnd();
     assert.deepEqual(outcome?.entries.map(verdictOf), ["RESULT_r1"]);
     assert.equal(s.owner.pending("r1"), undefined);
   });
@@ -228,11 +341,7 @@ describe("cancellation, rebind, and session switch", () => {
     s.busy();
     s.owner.addRun("r1", "RESULT_r1");
     s.owner.complete("r1");
-    const outcome = s.api.fire(
-      "agent_before_settle",
-      { entries: [] },
-      { sessionManager: s.session.sessionManager },
-    ) as BoundaryOutcome;
+    const outcome = s.fireTurnEnd();
     assert.equal(outcome?.entries.length, 1);
 
     // /reload lands between the handler's return and Pi's append.
@@ -244,31 +353,6 @@ describe("cancellation, rebind, and session switch", () => {
 
     assert.equal(s.session.received.length, 0, "the result was not sent a second time");
     assert.equal(s.owner.pending("r1"), undefined, "the new generation cleared the marker");
-  });
-
-  it("entries Pi never appends are retried through the idle path with the same delivery id", async () => {
-    mock.timers.enable({ apis: ["setTimeout"] });
-    const s = startSession();
-    s.busy();
-    s.owner.addRun("r1", "RESULT_r1");
-    s.owner.complete("r1");
-    const deliveryId = s.owner.pending("r1")?.deliveryId;
-    const outcome = s.api.fire(
-      "agent_before_settle",
-      { entries: [] },
-      { sessionManager: s.session.sessionManager },
-    ) as BoundaryOutcome;
-    assert.equal(outcome?.entries[0]?.details?.deliveryId, deliveryId);
-
-    // Pi discards the boundary entries (another handler's were invalid) and the run settles.
-    await s.settle();
-    assert.equal(s.session.received.length, 0, "the claim holds the run until its wait has ended");
-    mock.timers.tick(250);
-    await tick();
-
-    assert.equal(s.session.received.length, 1);
-    assert.equal(s.session.received[0]?.message.details?.deliveryId, deliveryId);
-    assert.equal(s.owner.pending("r1"), undefined);
   });
 
   it("a session switch moves the waiting result to the new session, which gets it at once", async () => {
@@ -285,7 +369,7 @@ describe("cancellation, rebind, and session switch", () => {
     const next = startSession("session-next", old.owner);
     await tick();
 
-    assert.equal(await old.boundary(), undefined, "the replaced session's boundary hands Pi nothing");
+    assert.equal(await old.turnEnd(), undefined, "the replaced session's boundary hands Pi nothing");
     assert.equal(old.session.received.length, 0, "the old session never receives the result");
     assert.equal(next.session.received.length, 1, "the idle new session receives it at once");
     assert.equal(old.owner.pending("r1"), undefined);
@@ -328,5 +412,16 @@ describe("cancellation, rebind, and session switch", () => {
     assert.equal(attempts.length, 2);
     assert.equal(attempts[1], attempts[0], "a retry keeps the id, so history can deduplicate it");
     assert.equal(owner.pending("r1"), undefined);
+  });
+});
+
+describe("the turn boundary handler", () => {
+  it("is registered once per ExtensionAPI however often delivery is installed, and the old boundary is gone", () => {
+    const s = startSession();
+    installResultDelivery(s.api.pi, s.owner.manager);
+    installResultDelivery(s.api.pi, deliveryManager(SESSION).manager);
+
+    assert.equal(s.api.handlerCount("turn_end"), 1);
+    assert.equal(s.api.handlerCount("agent_before_settle"), 0, "nothing waits for the end of the run");
   });
 });

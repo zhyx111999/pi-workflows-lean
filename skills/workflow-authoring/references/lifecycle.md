@@ -6,7 +6,7 @@ Bound loops, fan-out, and semantic retries inside the script. Run limits come on
 
 ## Checkpoints
 
-Results, errors, checkpoint requests, and quota reports queue while the main model is busy. They enter in arrival order immediately after the current response and tools finish, without waiting for another user message.
+Results, errors, checkpoint requests, and quota reports queue while the main model is busy. They enter in arrival order immediately after the model's current response and its tool calls finish, inside the same agent loop, so its next request already carries them; nothing waits for the loop to end or for another user message.
 
 A checkpoint consumes an agent slot but no tokens. Every run starts in the background, so nothing prompts a human mid-run. `checkpoint({ kind, checkpointId, payload })` pauses the run until a response is stored for that exact checkpoint ID and the run resumes; it displays no UI. See [checkpoints](checkpoint.md) for the controller handoff and replay contract.
 

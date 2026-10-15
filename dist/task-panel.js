@@ -17,15 +17,17 @@
  * suspended endpoint leaves it pending; nothing falls back to pi.sendMessage.
  *
  * A busy session is never sent to: its results queue as durable markers and go
- * in, oldest first, at the host's agent_before_settle boundary (or, when the
- * run ends without one, as soon as the host reports it is idle).
+ * in, oldest first, when the model's current response (and its tool calls) is
+ * complete, at Pi's turn_end boundary, so the agent loop's next request already
+ * carries them. A run that ends without such a turn (an abort) delivers as soon
+ * as the host reports it is idle.
  *
  * The internals live in ./task-panel/: panel rendering, session endpoints, host
  * session capture and link, pending markers, retries, dispatch, and the boundary.
  */
 import { fmtCompact, fmtCost, fmtTokenSegment, tokenFigures } from "./display.js";
 import { errorMessage } from "./errors.js";
-import { insertionDrafts } from "./task-panel/delivery-boundary.js";
+import { _resetTurnBoundaryForTests, installTurnBoundary } from "./task-panel/delivery-boundary.js";
 import { _resetDeliveryDispatchForTests, flushSessionDiskPending, routeBackgroundDelivery, setPendingTextRenderer, } from "./task-panel/delivery-dispatch.js";
 import { clearEndpoints, removeEndpoint, replaceEndpoint, resolveDeliverySessionId, sessionEndpoints, warnDelivery, } from "./task-panel/delivery-endpoints.js";
 import { _resetDeliveryRetriesForTests, cancelSessionRetries } from "./task-panel/delivery-retry.js";
@@ -192,10 +194,15 @@ export function suspendResultDelivery(manager) {
  * seen on install (used when binding endpoints).
  */
 let deliveryInstalls = new WeakMap();
-// agent_before_settle is registered once per ExtensionAPI instance, and each
-// handler looks up that instance's latest manager: several live pi instances can
-// interleave installs, and a cross-project rebuild must not stack another handler.
-let boundaryDeliveryManagers = new WeakMap();
+/** Binds a session whose host the turn boundary captured only now, with the project's current manager. */
+function bindCapturedHost(pi) {
+    return (target, sessionId, host, sessionManager) => bindSessionDelivery(sessionId, pi, {
+        loadSettings: target.loadSettings,
+        manager: target.manager,
+        sessionManager,
+        host,
+    });
+}
 /**
  * When a background run finishes, fails, or pauses for the model, deliver it
  * into the originating conversation so the assistant can act on it, without
@@ -205,9 +212,10 @@ let boundaryDeliveryManagers = new WeakMap();
  *  - An idle host gets it at once, and `triggerTurn: true` starts the turn.
  *  - A busy host is never sent to, so a response in flight is never
  *    interrupted. The result waits as a durable marker and is inserted at the
- *    host's agent_before_settle boundary, right after the run's last response,
- *    with one model request to answer it. When the run ends without that
- *    boundary (an abort), the host's idle signal sends it instead.
+ *    host's turn_end boundary, right after the current response and its tool
+ *    calls complete: the agent loop's next request carries it, and a final
+ *    response gets one more request to answer it. When the run ends without a
+ *    turn that can take it (an abort), the host's idle signal sends it instead.
  *  - Waiting results go out oldest first, together at one boundary.
  *  - The durable pending marker clears only after the session file holds the result.
  *
@@ -220,51 +228,9 @@ export function installResultDelivery(pi, manager, opts = {}) {
     const install = deliveryInstalls.get(manager) ?? {};
     install.loadSettings = opts.loadSettings;
     deliveryInstalls.set(manager, install);
-    // The end of every run: bind the session if its send was not captured yet,
-    // then hand Pi the results that waited for this run to finish.
-    const existingBoundary = boundaryDeliveryManagers.get(pi);
-    if (existingBoundary) {
-        existingBoundary.manager = manager;
-    }
-    else {
-        boundaryDeliveryManagers.set(pi, { manager });
-        pi.on?.("agent_before_settle", (event, ctx) => {
-            const activeManager = boundaryDeliveryManagers.get(pi)?.manager;
-            if (!activeManager)
-                return;
-            let sid;
-            try {
-                sid = ctx?.sessionManager?.getSessionId?.() ?? activeManager.getSessionId();
-            }
-            catch {
-                sid = activeManager.getSessionId();
-            }
-            if (!sid)
-                return;
-            let endpoint = sessionEndpoints.get(sid);
-            if (!endpoint || typeof endpoint.send !== "function") {
-                // Bind only once a host is captured; a failed capture leaves the
-                // session as it was for the next run to retry.
-                const host = captureHostLink(pi, sid);
-                if (!host)
-                    return;
-                bindSessionDelivery(sid, pi, {
-                    loadSettings: deliveryInstalls.get(activeManager)?.loadSettings,
-                    manager: activeManager,
-                    sessionManager: ctx?.sessionManager,
-                    host,
-                });
-                endpoint = sessionEndpoints.get(sid);
-            }
-            if (!endpoint?.manager)
-                return;
-            // Pi hands every handler the entries chosen so far and keeps only what is returned.
-            const drafts = insertionDrafts(endpoint.manager, sid, endpoint);
-            if (!drafts.length)
-                return;
-            return { entries: [...(event.entries ?? []), ...drafts], continue: true };
-        });
-    }
+    // The end of every completed turn: bind the session if its send was not
+    // captured yet, then hand Pi the results that waited for the turn to finish.
+    installTurnBoundary(pi, { manager, loadSettings: opts.loadSettings }, bindCapturedHost(pi));
     // A newly-created manager can replace the current project while this pi and
     // session endpoint remain live. Refresh only the routing pointers; preserve
     // the session transport, generation, and suspension state until bindCore.
@@ -343,7 +309,7 @@ export function _resetDeliveryRegistriesForTests() {
     _resetDeliveryRetriesForTests();
     deliveredAwaitingClear.clear();
     clearEndpoints();
-    boundaryDeliveryManagers = new WeakMap();
+    _resetTurnBoundaryForTests();
     deliveryInstalls = new WeakMap();
 }
 /** @internal test helper — inspect a session's endpoint state. */

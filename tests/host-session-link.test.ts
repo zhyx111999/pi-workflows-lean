@@ -1,8 +1,9 @@
 /**
  * The delivery link to a host session: a busy host is never sent to, a send
  * counts as delivered only once the session file holds the result, a result
- * Pi inserts at its own boundary is confirmed the same way, and the host's
- * idle signals reach the endpoint without any timer.
+ * Pi appends at its turn_end boundary is confirmed the same way (or reported
+ * missed when the turn ends without it), and the host's idle signals reach the
+ * endpoint without any timer.
  */
 
 import assert from "node:assert/strict";
@@ -246,23 +247,38 @@ test("a host that cannot show its history confirms nothing", async () => {
   );
 });
 
-test("a result Pi inserts at its boundary is confirmed once it is persisted, not before", async () => {
+test("a result Pi appends at its boundary is confirmed once it is persisted, not before", async () => {
   const h = host();
   h.busy();
-  let outcome: boolean | undefined;
-  const waiting = h.link.awaitInsertion("delivery-one").then((persisted) => {
-    outcome = persisted;
+  let outcome: string | undefined;
+  const waiting = h.link.awaitInsertion("delivery-one").then((result) => {
+    outcome = result;
   });
   h.emit({ type: "message_end" });
   await tick();
   assert.equal(outcome, undefined, "an event without the result in the file decides nothing");
 
-  // Pi appends the entry, then announces it.
+  // Pi appends the entry, then announces it, then announces the turn's end.
   const entry = h.persist(message);
   h.emit({ type: "entry_appended", entry });
+  h.emit({ type: "turn_end" });
   await waiting;
-  assert.equal(outcome, true);
+  assert.equal(outcome, "persisted", "the turn's end does not undo an entry that landed first");
   assert.equal(h.listeners.size, 0);
+});
+
+test("a boundary result is missed when the turn ends without it, however busy the host stays", async () => {
+  const h = host();
+  h.busy();
+  const waiting = h.link.awaitInsertion("delivery-one");
+  h.emit({ type: "message_end" });
+  await tick();
+  assert.equal(h.listeners.size, 1, "still waiting while the turn is open");
+
+  h.emit({ type: "turn_end" });
+  assert.equal(await waiting, "missed");
+  assert.equal(h.listeners.size, 0);
+  assert.equal(h.link.isBusy(), true, "the run goes on; the next turn's boundary offers the result again");
 });
 
 test("a boundary result the host never appended is reported when the host settles idle", async () => {
@@ -270,8 +286,27 @@ test("a boundary result the host never appended is reported when the host settle
   h.busy();
   const waiting = h.link.awaitInsertion("delivery-one");
   await h.idle();
-  assert.equal(await waiting, false);
+  assert.equal(await waiting, "missed");
   assert.equal(h.listeners.size, 0);
+});
+
+test("an idle send does not give up when a turn ends", async () => {
+  const h = host({ sendDefersUntilSettled: true });
+  let outcome: unknown = "unsettled";
+  const pending = Promise.resolve(h.link.send(message, { triggerTurn: true, deliverAs: "followUp" })).then(
+    () => {
+      outcome = "delivered";
+    },
+    (error: Error) => {
+      outcome = error.message;
+    },
+  );
+  h.emit({ type: "turn_end" });
+  await tick();
+  assert.equal(outcome, "unsettled", "only the settle decides a send; a turn end is not a verdict on it");
+  h.persistWithSendEvent();
+  await pending;
+  assert.equal(outcome, "delivered");
 });
 
 test("cancelling a session's insertion waits rejects them and frees the host listener", async () => {

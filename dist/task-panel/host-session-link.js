@@ -1,8 +1,8 @@
 /**
  * What delivery needs from a host AgentSession: whether it is busy, a send that
  * counts as delivered only once the session file holds the result, the wait
- * for a result Pi inserts at its own agent_before_settle boundary, and a signal
- * when the session can take a prompt again.
+ * for a result Pi appends at its turn_end boundary, and a signal when the
+ * session can take a prompt again.
  *
  * Nothing here waits for the host to become idle and nothing runs on a timer: a
  * busy host is never sent to, and its owner is told when to try again.
@@ -41,15 +41,17 @@ function isBusy(session) {
     return session.isStreaming === true || session.isIdle === false;
 }
 /**
- * Watch the host until the result is in its session file, or until the host
- * settles and stays idle without it. Pi tells listeners about a message just
- * before it appends it, so each notice is rechecked a microtask later; a host
- * that has already started its next turn by then (a send Pi deferred past the
- * settle) is given that turn. Nothing else ends the watch without the result
- * but the caller (a rejected send, a cancel): elapsed time proves nothing
- * about a prompt Pi has accepted.
+ * Watch the host until the result is in its session file or the watch gives
+ * up. Pi tells listeners about a message just before it appends it, so each
+ * notice is rechecked a microtask later. It gives up when the host settles and
+ * stays idle without the result; a host that has already started its next turn
+ * by then (a send Pi deferred past the settle) is given that turn. With
+ * `endsWithTurn` it also gives up when the turn ends, which a boundary entry
+ * must beat: Pi appends boundary entries before it announces the turn's end.
+ * Nothing else ends the watch without the result but the caller (a rejected
+ * send, a cancel): elapsed time proves nothing about a prompt Pi has accepted.
  */
-function watchPersistence(session, deliveryId) {
+function watchPersistence(session, deliveryId, endsWithTurn) {
     let ended = false;
     let unsubscribe = () => { };
     let resolveDone;
@@ -72,6 +74,9 @@ function watchPersistence(session, deliveryId) {
                     if (sessionHasDelivery(session, deliveryId) === true)
                         end(() => resolveDone(true));
                 });
+            }
+            else if (event.type === "turn_end" && endsWithTurn) {
+                queueMicrotask(() => end(() => resolveDone(sessionHasDelivery(session, deliveryId) === true)));
             }
             else if (event.type === "agent_settled") {
                 queueMicrotask(() => {
@@ -107,7 +112,7 @@ function sendIntoIdleHost(session, sid, send) {
         if (session.sessionManager?.getSessionId?.() !== sid) {
             return Promise.reject(new Error("host session identity changed before delivery"));
         }
-        const watch = watchPersistence(session, deliveryId);
+        const watch = watchPersistence(session, deliveryId, false);
         try {
             const pending = send.call(session, message, options);
             if (pending == null || typeof pending.then !== "function") {
@@ -150,13 +155,13 @@ export function hostSessionLink(session, sid) {
         send: sendIntoIdleHost(session, sid, send),
         isBusy: () => isBusy(session),
         hasDelivery: (deliveryId) => typeof session.subscribe === "function" ? sessionHasDelivery(session, deliveryId) : undefined,
-        awaitInsertion(deliveryId) {
-            const watch = watchPersistence(session, deliveryId);
+        async awaitInsertion(deliveryId) {
+            const watch = watchPersistence(session, deliveryId, true);
             const wait = { sessionId: sid, cancel: watch.fail };
             insertionWaits.add(wait);
             const release = () => insertionWaits.delete(wait);
             watch.done.then(release, release);
-            return watch.done;
+            return (await watch.done) ? "persisted" : "missed";
         },
         onIdle(listener) {
             return (session.subscribe?.((event) => {

@@ -6,9 +6,10 @@
  *
  * A result reaches a session at one of two points. An idle host gets it sent
  * at once. A busy host never does: the marker stays durable and the result
- * goes in at the host's agent_before_settle boundary ({@link claimInsertion}),
- * or, when the run ends without one, in the flush that follows the host's
- * idle signal. Results always go out oldest first.
+ * goes in at the end of the host's current assistant turn, the turn_end
+ * boundary ({@link claimInsertion}), or, when the run ends without a turn that
+ * can take it (an abort), in the flush that follows the host's idle signal.
+ * Results always go out oldest first.
  */
 import { errorMessage } from "../errors.js";
 import { claimRunSession } from "../manager/session-owner.js";
@@ -33,49 +34,49 @@ function releaseDelivery(runId, token) {
         inFlightDeliveries.delete(runId);
 }
 /**
- * Resolve true only after the endpoint's thenable send settles while the
+ * "delivered" only after the endpoint's thenable send settles while the
  * session is still live. Void sends and durable appends are not an ACK: an
  * append writes history without starting a turn. Never clears markers.
  */
-async function tryDeliverEndpoint(endpoint, content, deliveryId) {
+async function sendToIdleHost(endpoint, content, deliveryId) {
     const { sessionId } = endpoint;
     if (endpoint.suspended || typeof endpoint.send !== "function")
-        return false;
+        return "failed";
     // A stale endpoint object left behind by a rebind or drop must not send.
     if (sessionId && sessionEndpoints.get(sessionId) !== endpoint)
-        return false;
+        return "failed";
     try {
         const ack = endpoint.send(resultMessage(content, deliveryId), { triggerTurn: true, deliverAs: "followUp" });
         if (typeof ack?.then !== "function") {
             warnDelivery(sessionId, `[workflow-delivery] send for session ${sessionId} did not return a thenable; ` +
                 "not treating as delivered (fail closed).");
-            return false;
+            return "failed";
         }
         await ack;
     }
     catch (error) {
         warnDelivery(sessionId, `Workflow result remains pending: ${errorMessage(error)}`);
-        return false;
+        return "failed";
     }
     // Succeeded under this or a newer live endpoint for the same session.
     const current = sessionEndpoints.get(sessionId);
-    return !!current && !current.suspended;
+    return current && !current.suspended ? "delivered" : "failed";
 }
 /**
- * Resolve true once Pi has persisted a result it was handed at its boundary,
- * under this or a newer live endpoint. False when the host settled without it
- * or the wait was cancelled; the marker then stays for the next flush.
+ * "delivered" once Pi has persisted a result it was handed at its boundary,
+ * under this or a newer live endpoint. "missed" when the turn ended or the host
+ * settled without it, or the wait was cancelled; the marker then stays.
  */
 async function confirmInsertion(endpoint, deliveryId) {
     try {
-        if (!(await endpoint.host?.awaitInsertion(deliveryId)))
-            return false;
+        if ((await endpoint.host?.awaitInsertion(deliveryId)) !== "persisted")
+            return "missed";
     }
     catch {
-        return false;
+        return "missed";
     }
     const current = sessionEndpoints.get(endpoint.sessionId);
-    return !!current && !current.suspended;
+    return current && !current.suspended ? "delivered" : "missed";
 }
 function retryLater(manager, runId, sessionId, generation) {
     scheduleDeliveryRetry(runId, sessionId, generation, (endpoint) => flushSessionDiskPending(manager, sessionId, endpoint));
@@ -109,28 +110,32 @@ function handOffToOwner(manager, runId, endpoint) {
     }
 }
 /**
- * Wait, under the run's in-flight lock, for the delivery's confirmation, then
+ * Wait, under the run's in-flight lock, for the delivery's outcome, then
  * settle the marker on the endpoint that carried it: clear it after a
- * confirmed delivery, otherwise retry. A replaced, suspended, or dropped
- * endpoint settles nothing; its successor's flush, or the hand-off, delivers
- * the marker instead.
+ * confirmed delivery, retry on a timer after a failed send, and offer it again
+ * at once after a missed insertion (a busy host sends nothing, so it waits for
+ * the next boundary). A replaced, suspended, or dropped endpoint settles
+ * nothing; its successor's flush, or the hand-off, delivers the marker instead.
  */
-async function settleDelivery(manager, runId, endpoint, deliveryId, token, confirmation, run) {
-    let delivered;
+async function settleDelivery(manager, runId, endpoint, deliveryId, token, attempt, run) {
+    let outcome;
     try {
-        delivered = await confirmation;
+        outcome = await attempt;
     }
     finally {
-        // Everything after the confirmation is synchronous, so releasing here
-        // admits no concurrent send, and lets a flush below start this run's next one.
+        // Everything after the outcome is synchronous, so releasing here admits no
+        // concurrent send, and lets a flush below start this run's next one.
         releaseDelivery(runId, token);
     }
     const live = sessionEndpoints.get(endpoint.sessionId) === endpoint && !endpoint.suspended;
     if (!live) {
         cancelDeliveryRetry(runId);
     }
-    else if (!delivered) {
+    else if (outcome === "failed") {
         retryLater(manager, runId, endpoint.sessionId, endpoint.generation);
+    }
+    else if (outcome === "missed") {
+        flushSessionDiskPending(manager, endpoint.sessionId, endpoint);
     }
     else if (clearConfirmedDelivery(manager, runId, deliveryId, endpoint, run) === "stale" && endpoint.manager) {
         // This delivery belonged to an older marker; deliver the newer one now.
@@ -185,19 +190,20 @@ function deliverAndAck(manager, runId, sessionId, content, deliveryId, run) {
         return;
     }
     // A busy host is never sent to. Its marker is durable; the result goes in at
-    // the host's boundary or when the host reports it is idle, with no timer.
+    // the end of the host's current turn or when the host reports it is idle,
+    // with no timer.
     if (endpoint.host?.isBusy())
         return;
     const token = takeLock(runId);
-    void settleDelivery(manager, runId, endpoint, deliveryId, token, tryDeliverEndpoint(endpoint, content, deliveryId), run).catch((error) => keepPending(manager, runId, sessionId, error));
+    void settleDelivery(manager, runId, endpoint, deliveryId, token, sendToIdleHost(endpoint, content, deliveryId), run).catch((error) => keepPending(manager, runId, sessionId, error));
 }
 /**
- * Take a ready result for the host's agent_before_settle boundary. Returns true
- * when the caller must hand it to Pi as a boundary entry: the run is locked and
- * settles once Pi has persisted the entry. False when nothing is to be
- * inserted: the host cannot confirm its history (so the result stays pending,
- * never inserted blind), already holds the result (only the clear is left), or
- * the result is already in flight.
+ * Take a ready result for the host's turn_end boundary. Returns true when the
+ * caller must hand it to Pi as a boundary entry: the run is locked and settles
+ * once Pi has persisted the entry or passed the boundary without it. False when
+ * nothing is to be inserted: the host cannot confirm its history (so the
+ * result stays pending, never inserted blind), already holds the result (only
+ * the clear is left), or the result is already in flight.
  */
 export function claimInsertion(manager, sessionId, ready) {
     const { runId, deliveryId, run } = ready;
@@ -209,8 +215,8 @@ export function claimInsertion(manager, sessionId, ready) {
     if (held === undefined)
         return false;
     const token = takeLock(runId);
-    const confirmation = held ? Promise.resolve(true) : confirmInsertion(endpoint, deliveryId);
-    void settleDelivery(manager, runId, endpoint, deliveryId, token, confirmation, run).catch((error) => keepPending(manager, runId, sessionId, error));
+    const attempt = held ? Promise.resolve("delivered") : confirmInsertion(endpoint, deliveryId);
+    void settleDelivery(manager, runId, endpoint, deliveryId, token, attempt, run).catch((error) => keepPending(manager, runId, sessionId, error));
     return !held;
 }
 /**

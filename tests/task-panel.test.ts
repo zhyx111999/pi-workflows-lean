@@ -1428,7 +1428,7 @@ describe("installResultDelivery", () => {
     assert.equal(run.pendingDelivery?.deliveryId, deliveryId, "stale generation send cannot ACK");
   });
 
-  it("registers agent_before_settle once per process and dispatches to the CURRENT manager", async () => {
+  it("registers the turn boundary once per process and dispatches to the CURRENT manager", async () => {
     const pi = createMockPi();
     // m1 = the OLD project's manager; m2 = current after a cross-project
     // session_start rebuild. Per-manager registration would stack one handler
@@ -1442,10 +1442,10 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi, m2);
     boundHostSession(pi, "sess-new", recordingStableSend(pi));
 
-    pi.emit?.("agent_before_settle", { entries: [] }, {});
+    pi.emit?.("turn_end", { outcome: "completed", entries: [] }, {});
     await Promise.resolve();
 
-    assert.equal(pi._onCount("agent_before_settle"), 1, "a rebuild does not stack another boundary handler");
+    assert.equal(pi._onCount("turn_end"), 1, "a rebuild does not stack another boundary handler");
     assert.ok(mod._getSessionDeliveryEndpointForTests("sess-new"), "the boundary reached the current manager");
     assert.equal(
       mod._getSessionDeliveryEndpointForTests("sess-old"),
@@ -1454,7 +1454,7 @@ describe("installResultDelivery", () => {
     );
   });
 
-  it("registers agent_before_settle per ExtensionAPI generation, not once per process", async () => {
+  it("registers the turn boundary per ExtensionAPI generation, not once per process", async () => {
     // The built dist module is cached across pi session
     // generations while pi re-runs the factory with a NEW ExtensionAPI — a
     // bare module-level boolean would leave generations 2+ with NO boundary
@@ -1470,7 +1470,7 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(pi2, m2); // generation 2: same module, NEW pi
     boundHostSession(pi2, "sess-g2", recordingStableSend(pi2));
 
-    pi2.emit?.("agent_before_settle", { entries: [] }, {});
+    pi2.emit?.("turn_end", { outcome: "completed", entries: [] }, {});
     await Promise.resolve();
 
     assert.ok(mod._getSessionDeliveryEndpointForTests("sess-g2"), "generation-2 pi must have its own boundary handler");
@@ -1490,16 +1490,16 @@ describe("installResultDelivery", () => {
     mod.installResultDelivery(piB, managerB);
     mod.installResultDelivery(piA, latestA);
 
-    assert.equal(piA._onCount("agent_before_settle"), 1, "A registers its boundary handler once across A/B/A installs");
-    assert.equal(piB._onCount("agent_before_settle"), 1, "B registers its boundary handler once");
+    assert.equal(piA._onCount("turn_end"), 1, "A registers its boundary handler once across A/B/A installs");
+    assert.equal(piB._onCount("turn_end"), 1, "B registers its boundary handler once");
 
     // Each pi is bound to its own live session; a probe for any other id fails.
     boundHostSession(piA, "sess-a-new", recordingStableSend(piA));
     boundHostSession(piB, "sess-b", recordingStableSend(piB));
 
     // No ctx means each callback must obtain the manager stored for ITS pi.
-    piA.emit?.("agent_before_settle", { entries: [] }, {});
-    piB.emit?.("agent_before_settle", { entries: [] }, {});
+    piA.emit?.("turn_end", { outcome: "completed", entries: [] }, {});
+    piB.emit?.("turn_end", { outcome: "completed", entries: [] }, {});
     await Promise.resolve();
 
     assert.ok(mod._getSessionDeliveryEndpointForTests("sess-a-new"), "A uses A's newest manager");
@@ -1543,7 +1543,7 @@ describe("installResultDelivery", () => {
     assert.deepEqual(mod._getSessionDeliveryEndpointForTests(SESSION), endpointBefore);
   });
 
-  it("recovers a missing host capture at the run boundary and hands Pi the waiting result", async () => {
+  it("recovers a missing host capture at the turn boundary and hands Pi the waiting result", async () => {
     const pi = createMockPi();
     const run = makeRun({ sessionId: SESSION });
     const manager = createMockManager(run);
@@ -1562,8 +1562,8 @@ describe("installResultDelivery", () => {
     boundHostSession(pi, SESSION, recordingStableSend(pi), { isIdle: false });
 
     const outcome = pi.emit?.(
-      "agent_before_settle",
-      { entries: [{ type: "custom", customType: "other-extension" }], continue: false },
+      "turn_end",
+      { outcome: "completed", entries: [{ type: "custom", customType: "other-extension" }], continue: false },
       { sessionManager: { getSessionId: () => SESSION } },
     ) as { entries: Array<{ type: string; customType: string; content?: string }>; continue: boolean };
 

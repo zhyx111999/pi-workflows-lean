@@ -29,7 +29,7 @@ Run `/reload` after a first install (restart Pi after an update), then ask natur
 Run a workflow to audit every route under src/routes/ for missing auth checks.
 ```
 
-Pi starts subagents in the background — a task list for independent work, or a workflow script for multi-step work. A live panel tracks progress while you keep working. If the main model is busy, results queue until its current response and tools finish, then enter the conversation immediately in arrival order and trigger the follow-up. Completed, failed, checkpoint, and quota reports use this same boundary; no new user message is needed.
+Pi starts subagents in the background — a task list for independent work, or a workflow script for multi-step work. A live panel tracks progress while you keep working. If the main model is busy, results queue until its current response and that response's tool calls finish, then enter the conversation in arrival order: the agent loop's next request already carries them, and a final response gets one more request to answer them. Nothing waits for the loop or the conversation to end, and no new user message is needed. Completed, failed, checkpoint, and quota reports are delivered the same way. Stopping the main model with Esc does not cancel background runs; their results are delivered as soon as it is idle.
 
 Each message you type carries a hidden note for the model, not shown in the chat, on when delegating to subagents is worthwhile. `/workflows run <prompt>` starts subagents explicitly. Configuration is plain JSON that the model can edit for you; the packaged `subagents-setup` skill tells it where everything lives.
 
